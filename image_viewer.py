@@ -1,7 +1,8 @@
 import numpy as np
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QEvent
 from PyQt6.QtGui import QAction, QPixmap, QImage, QIcon
 from PyQt6.QtWidgets import (
+    QApplication,
     QMainWindow,
     QLabel,
     QVBoxLayout,
@@ -27,8 +28,10 @@ class ImageViewer(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Image Viewer")
+        QApplication.instance().installEventFilter(self)
 
         self.image_handler = ImageHandler()
+        self.display_data = None
         self.recent_files = settings.load_recent_files()
 
         screen_geometry = self.screen().geometry()
@@ -62,14 +65,19 @@ class ImageViewer(QMainWindow):
         welcome_widget = QWidget()
         welcome_layout = QVBoxLayout(welcome_widget)
         welcome_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_label = QLabel("Image Viewer")
-        font = title_label.font()
-        font.setPointSize(24)
-        title_label.setFont(font)
+        # title_label = QLabel("Image Viewer")
+        # font = title_label.font()
+        # font.setPointSize(24)
+        # title_label.setFont(font)
         open_button = QPushButton("Open Image")
         open_button.clicked.connect(self.open_image_dialog)
-        welcome_layout.addWidget(title_label)
+
+        drag_drop_label = QLabel("(or drag and drop an image file here)")
+        drag_drop_label.setStyleSheet("color: gray; font-style: italic;")
+
+        # welcome_layout.addWidget(title_label)
         welcome_layout.addWidget(open_button)
+        welcome_layout.addWidget(drag_drop_label)
         self.stacked_widget.addWidget(welcome_widget)
 
     def _create_image_display(self):
@@ -106,7 +114,7 @@ class ImageViewer(QMainWindow):
         settings_action = QAction(QIcon.fromTheme("preferences-system"), "Settings", self)
         settings_action.triggered.connect(self.open_zoom_settings)
         toolbar.addAction(settings_action)
-        restore_action = QAction(QIcon.fromTheme("zoom-original"), "Restore View", self)
+        restore_action = QAction(QIcon("assets/icons/expand.png"), "Restore View", self)
         restore_action.triggered.connect(self.image_label.restore_view)
         toolbar.addAction(restore_action)
         self.colormap_combo = QComboBox(self)
@@ -178,17 +186,19 @@ class ImageViewer(QMainWindow):
     def reapply_raw_parameters(self, settings):
         try:
             self.image_handler.load_image(self.image_handler.current_file_path, override_settings=settings)
+            self.display_data = self.image_handler.original_image_data.copy()
             self.apply_colormap(is_new_image=True)
-            self.update_histogram_data()
+            self.update_histogram_data(new_image=True)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error applying parameters:\n{e}")
 
     def apply_math_transform(self, expression):
         try:
-            self.image_handler.apply_math_transform(expression)
+            self.display_data = self.image_handler.apply_math_transform(expression)
+            self.colormap_combo.setEnabled(True)
             self.apply_colormap()
             self.math_transform_pane.set_error_message("")
-            self.update_histogram_data()
+            self.update_histogram_data(new_image=True)
         except Exception as e:
             self.math_transform_pane.set_error_message(f"Error: {e}")
 
@@ -215,27 +225,45 @@ class ImageViewer(QMainWindow):
         self.apply_colormap()
 
     def apply_colormap(self, is_new_image=False):
-        if self.image_handler.image_data is None:
+        if self.display_data is None:
             return
 
-        data_to_display = self.image_handler.image_data.copy()
+        data = self.display_data
 
-        if self.contrast_limits:
-            min_val, max_val = self.contrast_limits
-            data_to_display = np.clip(data_to_display, min_val, max_val)
+        if len(data.shape) == 3 and data.shape[2] == 3:  # Color Image
+            if self.contrast_limits:
+                min_val, max_val = self.contrast_limits
+                stretched_channels = []
+                for i in range(3):
+                    channel = data[..., i].astype(np.float32)
+                    stretched = 255 * (channel - min_val) / (max_val - min_val)
+                    stretched_channels.append(np.clip(stretched, 0, 255))
+                processed_data = np.stack(stretched_channels, axis=-1).astype(np.uint8)
+            else:
+                processed_data = data.astype(np.uint8)
 
-        min_val, max_val = np.min(data_to_display), np.max(data_to_display)
-        if min_val == max_val:
-            norm_data = np.zeros_like(data_to_display, dtype=float)
-        else:
-            norm_data = (data_to_display - min_val) / (max_val - min_val)
-        colored_data = cm.get_cmap(self.current_colormap)(norm_data)
-        image_data_8bit = (colored_data[:, :, :3] * 255).astype(np.uint8)
-        h, w, _ = image_data_8bit.shape
-        q_image = QImage(image_data_8bit.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+            h, w, _ = processed_data.shape
+            q_image = QImage(processed_data.tobytes(), w, h, 3 * w, QImage.Format.Format_RGB888)
+
+        else:  # Grayscale Image
+            processed_data = data.copy()
+            if self.contrast_limits:
+                min_val, max_val = self.contrast_limits
+                processed_data = np.clip(processed_data, min_val, max_val)
+
+            min_val, max_val = np.min(processed_data), np.max(processed_data)
+            if min_val == max_val:
+                norm_data = np.zeros_like(processed_data, dtype=float)
+            else:
+                norm_data = (processed_data - min_val) / (max_val - min_val)
+
+            colored_data = cm.get_cmap(self.current_colormap)(norm_data)
+            image_data_8bit = (colored_data[:, :, :3] * 255).astype(np.uint8)
+            h, w, _ = image_data_8bit.shape
+            q_image = QImage(image_data_8bit.data, w, h, 3 * w, QImage.Format.Format_RGB888)
 
         if is_new_image:
-            self.image_label.set_pixmap(QPixmap.fromImage(q_image), self.image_handler.image_data)
+            self.image_label.set_pixmap(QPixmap.fromImage(q_image), self.display_data)
         else:
             self.image_label.update_pixmap_content(QPixmap.fromImage(q_image))
 
@@ -248,25 +276,29 @@ class ImageViewer(QMainWindow):
     def open_file(self, file_path):
         try:
             self.image_handler.load_image(file_path)
+            self.display_data = self.image_handler.original_image_data.copy()
+
             self.info_action.setEnabled(self.image_handler.is_raw)
             self.info_pane.set_raw_mode(self.image_handler.is_raw)
             self.math_transform_action.setEnabled(True)
             self.zoom_slider.setEnabled(True)
             self.histogram_action.setEnabled(True)
+            self.colormap_combo.setEnabled(self.image_handler.is_single_channel_image())
+
             if self.image_handler.is_raw:
                 self.info_pane.update_info(self.image_handler.width, self.image_handler.height,
                                            self.image_handler.dtype, self.image_handler.dtype_map)
             else:
                 self.info_pane.hide()
 
-            self.contrast_limits = None  # Reset contrast limits for new image
+            self.contrast_limits = None
             self.apply_colormap(is_new_image=True)
 
             if self.image_label.current_pixmap:
                 self.stacked_widget.setCurrentIndex(1)
                 self.recent_files = settings.add_to_recent_files(self.recent_files, file_path)
                 self._update_recent_files_menu()
-            self.update_histogram_data()
+            self.update_histogram_data(new_image=True)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error opening image:\n{e}")
             self.math_transform_action.setEnabled(False)
@@ -283,9 +315,9 @@ class ImageViewer(QMainWindow):
             self.image_label.current_pixmap.save(file_name, "png")
 
     def update_status_bar(self, x_coord, y_coord):
-        if self.image_handler.image_data is not None and y_coord < self.image_handler.image_data.shape[0] and x_coord < \
-                self.image_handler.image_data.shape[1]:
-            value = self.image_handler.image_data[y_coord, x_coord]
+        if self.display_data is not None and y_coord < self.display_data.shape[0] and x_coord < self.display_data.shape[
+            1]:
+            value = self.display_data[y_coord, x_coord]
             self.status_bar.showMessage(f"({x_coord}, {y_coord}): {value}")
 
     def _update_recent_files_menu(self):
@@ -299,12 +331,20 @@ class ImageViewer(QMainWindow):
             action.triggered.connect(lambda checked, path=file_path: self.open_file(path))
             self.recent_files_menu.addAction(action)
 
-    def update_histogram_data(self):
+    def update_histogram_data(self, new_image=False):
         visible_data = self._get_visible_image_data()
-        self.histogram_window.update_histogram(visible_data)
+
+        try:
+            self.histogram_window.region_changed.disconnect(self.set_contrast_limits)
+        except TypeError:
+            pass
+
+        self.histogram_window.update_histogram(visible_data, new_image)
+
+        self.histogram_window.region_changed.connect(self.set_contrast_limits)
 
     def keyPressEvent(self, event):
-        if self.image_handler.image_data is not None:
+        if self.display_data is not None:
             if event.key() == Qt.Key.Key_M:
                 if event.modifiers() == Qt.KeyboardModifier.ShiftModifier:
                     self._apply_histogram_preset(5, 95)
@@ -315,14 +355,22 @@ class ImageViewer(QMainWindow):
     def _apply_histogram_preset(self, min_percent, max_percent):
         visible_data = self._get_visible_image_data()
         if visible_data is not None and visible_data.size > 0:
-            min_val = np.percentile(visible_data, min_percent)
-            max_val = np.percentile(visible_data, max_percent)
+            if len(visible_data.shape) == 3:
+                hist_data = np.dot(visible_data[..., :3], [0.2989, 0.5870, 0.1140])
+            else:
+                hist_data = visible_data
+
+            min_val = np.percentile(hist_data, min_percent)
+            max_val = np.percentile(hist_data, max_percent)
             self.set_contrast_limits(min_val, max_val)
             self.histogram_window.region.setRegion([min_val, max_val])
 
     def _get_visible_image_data(self):
-        if self.image_handler.image_data is None or not self.image_label.cached_scaled_pixmap:
+        if self.image_handler.original_image_data is None or not self.image_label.cached_scaled_pixmap:
             return None
+
+        data_for_hist = self.image_handler.original_image_data
+
         visible_rect = self.image_label.rect()
         pixmap_rect = self.image_label.cached_scaled_pixmap.rect()
         pixmap_rect.moveCenter(self.image_label.rect().center() + self.image_label.pixmap_offset.toPoint())
@@ -341,4 +389,30 @@ class ImageViewer(QMainWindow):
         y2 = min(self.image_handler.height, y2)
         if x2 <= x1 or y2 <= y1:
             return None
-        return self.image_handler.image_data[y1:y2, x1:x2]
+        return data_for_hist[y1:y2, x1:x2]
+
+    def restore_image_view(self):
+        self.contrast_limits = None
+        self.display_data = self.image_handler.original_image_data.copy()
+        self.colormap_combo.setEnabled(self.image_handler.is_single_channel_image())
+        self.apply_colormap(is_new_image=True)
+        self.update_histogram_data(new_image=True)
+
+    def eventFilter(self, source, event):
+        if event.type() == QEvent.Type.DragEnter:
+            if event.mimeData().hasUrls():
+                urls = event.mimeData().urls()
+                if urls:
+                    file_path = urls[0].toLocalFile()
+                    _, ext = os.path.splitext(file_path)
+                    supported_extensions = ['.png', '.jpg', '.jpeg', '.bmp',
+                                            '.tiff'] + self.image_handler.raw_extensions
+                    if ext.lower() in supported_extensions:
+                        event.acceptProposedAction()
+        elif event.type() == QEvent.Type.Drop:
+            urls = event.mimeData().urls()
+            if urls:
+                file_path = urls[0].toLocalFile()
+                self.open_file(file_path)
+                return True
+        return super().eventFilter(source, event)

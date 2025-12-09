@@ -6,18 +6,15 @@ from PIL import Image
 
 class ImageHandler:
     def __init__(self):
-        self.original_image_data = None
+        self.original_image_data = None  # Always grayscale for analysis
+        self.original_color_data = None  # Stores original color if present
         self.width = 0
         self.height = 0
         self.dtype = None
         self.is_raw = False
+        self.is_color = False
         self.raw_extensions = [".raw", ".f32", ".f16", ".uint8"]
         self.dtype_map = {".f32": np.float32, ".f16": np.float16, ".uint8": np.uint8, ".raw": np.uint8}
-
-    def is_single_channel_image(self):
-        if self.original_image_data is None:
-            return True
-        return self.original_image_data.ndim == 2
 
     def load_image(self, file_path, override_settings=None):
         _, ext = os.path.splitext(file_path)
@@ -31,14 +28,20 @@ class ImageHandler:
     def _load_standard_image(self, file_name):
         with Image.open(file_name) as img:
             if img.mode in ("RGB", "RGBA"):
-                self.original_image_data = np.array(img.convert("RGB"))
+                self.is_color = True
+                self.original_color_data = np.array(img.convert("RGB"))
             else:
-                self.original_image_data = np.array(img.convert("L"))
+                self.is_color = False
+                self.original_color_data = None
 
+            self.original_image_data = np.array(img.convert("L"))
             self.width, self.height = img.width, img.height
             self.dtype = self.original_image_data.dtype
 
     def _load_raw_image(self, file_name, override_settings=None):
+        self.is_color = False
+        self.original_color_data = None
+
         if override_settings:
             width, height, dtype = override_settings['width'], override_settings['height'], override_settings['dtype']
         else:
@@ -54,7 +57,6 @@ class ImageHandler:
             raise ValueError(f"For {width}x{height}, expected {expected_size} data points, but found {data.size}")
 
         self.original_image_data = data.reshape((height, width))
-        self.dtype = self.original_image_data.dtype
 
     def _parse_raw_filename(self, file_name):
         basename = os.path.basename(file_name)
@@ -79,7 +81,10 @@ class ImageHandler:
 
         transformed_data = eval(expression, {"__builtins__": {}}, safe_dict)
 
-        if not isinstance(transformed_data, np.ndarray):
-            raise ValueError("Expression must return a NumPy array.")
+        if not isinstance(transformed_data, np.ndarray) or transformed_data.shape != self.original_image_data.shape:
+            raise ValueError("Expression must return a NumPy array of the same shape as the original image.")
 
-        return transformed_data
+        # This operation results in single-channel data, so update state accordingly
+        self.is_color = False
+        self.image_data = transformed_data
+        return True

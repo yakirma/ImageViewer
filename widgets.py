@@ -1,6 +1,6 @@
 import numpy as np
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QPointF, QEvent
-from PyQt6.QtGui import QPixmap, QPainter, QNativeGestureEvent
+from PyQt6.QtGui import QPixmap, QPainter, QNativeGestureEvent, QDoubleValidator
 from PyQt6.QtWidgets import (
     QLabel,
     QDialog,
@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QHBoxLayout,
+    QMessageBox,
 )
 import pyqtgraph as pg
 
@@ -36,9 +37,10 @@ class HistogramWidget(QWidget):
         self.region.sigRegionChanged.connect(self._on_region_changed)
         self.plot_widget.addItem(self.region)
 
-        self.histogram = None
+        self.histograms = []
         self.data = None
 
+        # Preset buttons
         presets_layout = QHBoxLayout()
         self.min_max_btn = QPushButton("Min-Max")
         self.p5_95_btn = QPushButton("5%-95%")
@@ -52,30 +54,58 @@ class HistogramWidget(QWidget):
         self.p5_95_btn.clicked.connect(lambda: self.set_region_to_percentile(5, 95))
         self.p1_99_btn.clicked.connect(lambda: self.set_region_to_percentile(1, 99))
 
-    def update_histogram(self, data):
+        # Custom value input
+        value_input_layout = QHBoxLayout()
+        self.min_val_label = QLabel("Min Value:")
+        self.min_val_input = QLineEdit("0")
+        self.max_val_label = QLabel("Max Value:")
+        self.max_val_input = QLineEdit("255")
+        self.apply_value_btn = QPushButton("Apply Values")
+        self.apply_value_btn.clicked.connect(self._apply_custom_values)
+
+        value_input_layout.addWidget(self.min_val_label)
+        value_input_layout.addWidget(self.min_val_input)
+        value_input_layout.addWidget(self.max_val_label)
+        value_input_layout.addWidget(self.max_val_input)
+        value_input_layout.addWidget(self.apply_value_btn)
+        self.layout.addLayout(value_input_layout)
+
+    def update_histogram(self, data, new_image=False):
+        for item in self.histograms:
+            self.plot_widget.removeItem(item)
+        self.histograms.clear()
+
         if data is None or data.size == 0:
-            if self.histogram:
-                self.plot_widget.removeItem(self.histogram)
             self.data = None
             return
 
-        self.data = data.flatten().astype(np.float64)
+        self.data = data.astype(np.float64)
+
+        if len(self.data.shape) == 3 and self.data.shape[2] == 3:  # RGB
+            colors = [(255, 0, 0, 150), (0, 255, 0, 150), (0, 0, 255, 150)]
+            for i in range(3):
+                channel_data = self.data[..., i].flatten()
+                y, x = np.histogram(channel_data, bins=256)
+                hist = self.plot_widget.plot(x, y, stepMode="center", fillLevel=0, brush=colors[i])
+                self.histograms.append(hist)
+            self.data = np.dot(self.data[..., :3], [0.2989, 0.5870, 0.1140])
+        else:  # Grayscale
+            self.data = self.data.flatten()
+            y, x = np.histogram(self.data, bins=256)
+            hist = self.plot_widget.plot(x, y, stepMode="center", fillLevel=0, brush=(200, 200, 200, 150))
+            self.histograms.append(hist)
+
         min_val, max_val = np.min(self.data), np.max(self.data)
-
-        y, x = np.histogram(self.data, bins=256)
-
-        if self.histogram:
-            self.histogram.setData(x, y)
-        else:
-            self.histogram = self.plot_widget.plot(x, y, stepMode="center", fillLevel=0, brush=(0, 0, 255, 150))
-
         if min_val < max_val:
             self.plot_widget.setXRange(min_val, max_val, padding=0.05)
             self.region.setBounds([min_val, max_val])
-            self.region.setRegion([min_val, max_val])
+            if new_image:
+                self.region.setRegion([min_val, max_val])
 
     def _on_region_changed(self, region_item):
         min_val, max_val = region_item.getRegion()
+        self.min_val_input.setText(f"{min_val:.2f}")
+        self.max_val_input.setText(f"{max_val:.2f}")
         self.region_changed.emit(min_val, max_val)
 
     def set_region_to_percentile(self, min_percent, max_percent):
@@ -83,7 +113,20 @@ class HistogramWidget(QWidget):
             min_val = np.percentile(self.data, min_percent)
             max_val = np.percentile(self.data, max_percent)
             self.region.setRegion([min_val, max_val])
-            self.region_changed.emit(min_val, max_val)
+            # No need to emit here, setRegion triggers _on_region_changed
+
+    def _apply_custom_values(self):
+        try:
+            min_v = float(self.min_val_input.text())
+            max_v = float(self.max_val_input.text())
+
+            if min_v > max_v:
+                QMessageBox.warning(self, "Invalid Input", "Min Value must be less than or equal to Max Value.")
+                return
+
+            self.region.setRegion([min_v, max_v])
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Input", "Please enter valid numbers for values.")
 
 
 class MathTransformPane(QDockWidget):
@@ -228,16 +271,19 @@ class ZoomableDraggableLabel(QLabel):
         self._pinch_start_scale_factor = None
 
     def set_pixmap(self, pixmap, image_data_for_hover):
+        """Used only when a new image is loaded."""
         self.current_pixmap = pixmap
         self.image_data_for_hover = image_data_for_hover
-        self.restore_view()
+        self.fit_to_view()
 
     def update_pixmap_content(self, pixmap):
+        """Used to update the visual content without changing zoom/pan."""
         self.current_pixmap = pixmap
         self._update_scaled_pixmap()
         self.update()
 
-    def restore_view(self):
+    def fit_to_view(self):
+        """Calculates the initial 'fit-to-view' scale and applies it."""
         self.pixmap_offset = QPointF()
         if self.current_pixmap:
             label_size = self.size()
@@ -255,6 +301,10 @@ class ZoomableDraggableLabel(QLabel):
         self.update()
         self.zoom_factor_changed.emit(self.scale_factor)
         self.view_changed.emit()
+
+    def restore_view(self):
+        """Resets the view to the initial 'fit-to-view' state."""
+        self.fit_to_view()
 
     def _update_scaled_pixmap(self):
         if self.current_pixmap is None:

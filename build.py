@@ -45,10 +45,13 @@ def main():
             command.extend(['--icon', ICON_MACOS])
 
     # --- Add data and hooks for libraries ---
-    
+
     # Correctly find and add Qt plugins
     plugins_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)
-    command.extend(['--add-data', f'{plugins_path}{os.pathsep}PyQt6/plugins'])
+    command.extend([
+        '--add-data', f'{plugins_path}{os.pathsep}PyQt6/plugins',
+        '--add-data', 'assets/icons:assets/icons'
+    ])
 
     # Add pyqtgraph hooks
     hooks_path = get_pyqtgraph_hooks()
