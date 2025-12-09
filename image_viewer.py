@@ -1,5 +1,7 @@
+import os
+
 import numpy as np
-from PyQt6.QtCore import Qt, QEvent
+from PyQt6.QtCore import Qt, QEvent, QPoint
 from PyQt6.QtGui import QAction, QPixmap, QImage, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
@@ -16,23 +18,32 @@ from PyQt6.QtWidgets import (
     QToolBar,
     QSizePolicy,
     QSlider,
+    QGridLayout,
 )
 import matplotlib.cm as cm
 
-from widgets import ZoomableDraggableLabel, InfoPane, MathTransformPane, ZoomSettingsDialog, HistogramWidget
+from widgets import ZoomableDraggableLabel, InfoPane, MathTransformPane, ZoomSettingsDialog, HistogramWidget, \
+    ThumbnailPane, SharedViewState
 from image_handler import ImageHandler
 import settings
 
 
 class ImageViewer(QMainWindow):
-    def __init__(self):
+
+    def __init__(self, window_list):
         super().__init__()
         self.setWindowTitle("Image Viewer")
         QApplication.instance().installEventFilter(self)
 
+        self.window_list = window_list
+        self.window_list.append(self)
+
         self.image_handler = ImageHandler()
-        self.display_data = None
         self.recent_files = settings.load_recent_files()
+        self.current_file_path = None
+        self.montage_shared_state = None
+        self.montage_labels = []
+        self.active_label = None
 
         screen_geometry = self.screen().geometry()
         self.resize(screen_geometry.width() // 2, screen_geometry.height() // 2)
@@ -43,39 +54,35 @@ class ImageViewer(QMainWindow):
 
         self._create_welcome_screen()
         self._create_image_display()
+        self._create_montage_view()
 
         self.current_colormap = "gray"
-        self.contrast_limits = None
         self.zoom_settings = {"zoom_speed": 1.1, "zoom_in_interp": "Nearest", "zoom_out_interp": "Smooth"}
 
         self._create_menus_and_toolbar()
         self._create_info_pane()
         self._create_math_transform_pane()
         self._create_histogram_window()
+        self._create_thumbnail_pane()
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-
-        self.image_label.hover_moved.connect(self.update_status_bar)
-        self.image_label.hover_left.connect(self.status_bar.clearMessage)
-        self.image_label.zoom_factor_changed.connect(self._on_image_label_zoom_changed)
-        self.image_label.view_changed.connect(self.update_histogram_data)
 
     def _create_welcome_screen(self):
         welcome_widget = QWidget()
         welcome_layout = QVBoxLayout(welcome_widget)
         welcome_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # title_label = QLabel("Image Viewer")
-        # font = title_label.font()
-        # font.setPointSize(24)
-        # title_label.setFont(font)
+        title_label = QLabel("Image Viewer")
+        font = title_label.font()
+        font.setPointSize(24)
+        title_label.setFont(font)
         open_button = QPushButton("Open Image")
         open_button.clicked.connect(self.open_image_dialog)
 
         drag_drop_label = QLabel("(or drag and drop an image file here)")
         drag_drop_label.setStyleSheet("color: gray; font-style: italic;")
 
-        # welcome_layout.addWidget(title_label)
+        welcome_layout.addWidget(title_label)
         welcome_layout.addWidget(open_button)
         welcome_layout.addWidget(drag_drop_label)
         self.stacked_widget.addWidget(welcome_widget)
@@ -87,13 +94,16 @@ class ImageViewer(QMainWindow):
         self.zoom_slider.setValue(2000)
         self.zoom_slider.setTickInterval(1000)
         self.zoom_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.zoom_slider.valueChanged.connect(self._on_zoom_slider_changed)
-        self.zoom_slider.setEnabled(False)
-        image_display_container = QWidget()
-        image_display_layout = QVBoxLayout(image_display_container)
+        self.image_display_container = QWidget()
+        image_display_layout = QVBoxLayout(self.image_display_container)
         image_display_layout.addWidget(self.image_label)
         image_display_layout.addWidget(self.zoom_slider)
-        self.stacked_widget.addWidget(image_display_container)
+        self.stacked_widget.addWidget(self.image_display_container)
+
+    def _create_montage_view(self):
+        self.montage_widget = QWidget()
+        self.montage_layout = QGridLayout(self.montage_widget)
+        self.stacked_widget.addWidget(self.montage_widget)
 
     def _create_menus_and_toolbar(self):
         menu_bar = self.menuBar()
@@ -114,8 +124,8 @@ class ImageViewer(QMainWindow):
         settings_action = QAction(QIcon.fromTheme("preferences-system"), "Settings", self)
         settings_action.triggered.connect(self.open_zoom_settings)
         toolbar.addAction(settings_action)
-        restore_action = QAction(QIcon("assets/icons/expand.png"), "Restore View", self)
-        restore_action.triggered.connect(self.image_label.restore_view)
+        restore_action = QAction(QIcon.fromTheme("zoom-original"), "Restore View", self)
+        restore_action.triggered.connect(self.restore_image_view)
         toolbar.addAction(restore_action)
         self.colormap_combo = QComboBox(self)
         self.colormap_combo.addItems(["gray", "turbo", "viridis"])
@@ -126,7 +136,8 @@ class ImageViewer(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
-        self.histogram_action = QAction(QIcon("assets/icons/histogram.png"), "Histogram", self)
+
+        self.histogram_action = QAction(QIcon.fromTheme("chart-bar"), "Histogram", self)
         self.histogram_action.triggered.connect(self.toggle_histogram_window)
         self.histogram_action.setEnabled(False)
         toolbar.addAction(self.histogram_action)
@@ -138,6 +149,10 @@ class ImageViewer(QMainWindow):
         self.info_action.triggered.connect(self.toggle_info_pane)
         self.info_action.setEnabled(False)
         toolbar.addAction(self.info_action)
+
+        thumbnail_action = QAction(QIcon.fromTheme("view-grid"), "Thumbnails", self)
+        thumbnail_action.triggered.connect(self.toggle_thumbnail_pane)
+        toolbar.addAction(thumbnail_action)
 
     def _create_info_pane(self):
         self.info_pane = InfoPane(self)
@@ -153,8 +168,84 @@ class ImageViewer(QMainWindow):
 
     def _create_histogram_window(self):
         self.histogram_window = HistogramWidget()
-        self.histogram_window.region_changed.connect(self.set_contrast_limits)
         self.histogram_window.hide()
+
+    def _create_thumbnail_pane(self):
+        self.thumbnail_pane = ThumbnailPane(self)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.thumbnail_pane)
+        self.thumbnail_pane.hide()
+        self.thumbnail_pane.selection_changed.connect(self.display_montage)
+
+    def display_montage(self, file_paths):
+        for i in reversed(range(self.montage_layout.count())):
+            widget = self.montage_layout.itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
+        self.montage_labels.clear()
+
+        if not file_paths:
+            if self.current_file_path:
+                self.open_file(self.current_file_path)
+            return
+
+        self.montage_shared_state = SharedViewState()
+
+        row, col = 0, 0
+        for file_path in file_paths:
+            temp_handler = ImageHandler()
+            temp_handler.load_image(file_path)
+
+            image_label = ZoomableDraggableLabel(shared_state=self.montage_shared_state)
+            image_label.set_data(temp_handler.original_image_data)
+            image_label.clicked.connect(lambda label=image_label: self._set_active_montage_label(label))
+            self.montage_labels.append(image_label)
+
+            self.montage_layout.addWidget(image_label, row, col)
+            col += 1
+            if col % 3 == 0:
+                row += 1
+                col = 0
+
+        if self.montage_labels:
+            self._set_active_montage_label(self.montage_labels[0])
+
+        self.stacked_widget.setCurrentWidget(self.montage_widget)
+
+    def _set_active_montage_label(self, label):
+        if self.active_label:
+            self.active_label.set_active(False)
+        self.active_label = label
+        if self.active_label:
+            self.active_label.set_active(True)
+        self._update_active_view()
+
+    def _update_active_view(self):
+        if not self.active_label:
+            return
+
+        # Disconnect all signals first to prevent multiple connections
+        try:
+            self.zoom_slider.valueChanged.disconnect()
+            self.image_label.zoom_factor_changed.disconnect()
+            self.image_label.hover_moved.disconnect()
+            self.image_label.view_changed.disconnect()
+            for label in self.montage_labels:
+                label.zoom_factor_changed.disconnect()
+                label.hover_moved.disconnect()
+                label.view_changed.disconnect()
+            self.histogram_window.region_changed.disconnect()
+        except TypeError:
+            pass
+
+        # Connect signals for the active label
+        self.active_label.zoom_factor_changed.connect(self._on_image_label_zoom_changed)
+        self.zoom_slider.valueChanged.connect(self._on_zoom_slider_changed)
+        self.active_label.hover_moved.connect(self.update_status_bar)
+        self.active_label.view_changed.connect(self.update_histogram_data)
+        self.histogram_window.region_changed.connect(self.set_contrast_limits)
+
+        self.colormap_combo.setEnabled(self.active_label.is_single_channel())
+        self.update_histogram_data(new_image=True)
 
     def toggle_info_pane(self):
         self.info_pane.setVisible(not self.info_pane.isVisible())
@@ -169,14 +260,23 @@ class ImageViewer(QMainWindow):
             self.histogram_window.show()
             self.update_histogram_data()
 
+    def toggle_thumbnail_pane(self):
+        if self.thumbnail_pane.isVisible():
+            self.thumbnail_pane.hide()
+        else:
+            self.thumbnail_pane.populate(self.window_list)
+            self.thumbnail_pane.show()
+            self.thumbnail_pane.setFocus()
+
     def _on_zoom_slider_changed(self, value):
-        zoom_factor = 10 ** ((value / 1000.0) - 2.0)
-        if abs(self.image_label.scale_factor - zoom_factor) > 1e-5:
-            self.image_label.blockSignals(True)
-            self.image_label._apply_zoom(zoom_factor)
-            self.image_label.blockSignals(False)
+        if self.sender() is not self.zoom_slider: return
+        if self.active_label:
+            zoom_factor = 10 ** ((value / 1000.0) - 2.0)
+            if abs(self.active_label._get_scale_factor() - zoom_factor) > 1e-5:
+                self.active_label._apply_zoom(zoom_factor)
 
     def _on_image_label_zoom_changed(self, scale_factor):
+        if self.sender() is not self.active_label: return
         if scale_factor > 0:
             slider_value = int((np.log10(scale_factor) + 2.0) * 1000.0)
             self.zoom_slider.blockSignals(True)
@@ -185,20 +285,20 @@ class ImageViewer(QMainWindow):
 
     def reapply_raw_parameters(self, settings):
         try:
-            self.image_handler.load_image(self.image_handler.current_file_path, override_settings=settings)
-            self.display_data = self.image_handler.original_image_data.copy()
-            self.apply_colormap(is_new_image=True)
+            self.image_handler.load_image(self.current_file_path, override_settings=settings)
+            if self.active_label:
+                self.active_label.set_data(self.image_handler.original_image_data)
             self.update_histogram_data(new_image=True)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error applying parameters:\n{e}")
 
     def apply_math_transform(self, expression):
         try:
-            self.display_data = self.image_handler.apply_math_transform(expression)
-            self.colormap_combo.setEnabled(True)
-            self.apply_colormap()
-            self.math_transform_pane.set_error_message("")
+            transformed_data = self.image_handler.apply_math_transform(expression)
+            if self.active_label:
+                self.active_label.set_data(transformed_data)
             self.update_histogram_data(new_image=True)
+            self.math_transform_pane.set_error_message("")
         except Exception as e:
             self.math_transform_pane.set_error_message(f"Error: {e}")
 
@@ -210,62 +310,23 @@ class ImageViewer(QMainWindow):
             self.apply_zoom_settings()
 
     def apply_zoom_settings(self):
-        self.image_label.zoom_speed = self.zoom_settings["zoom_speed"]
-        interp_map = {"Smooth": Qt.TransformationMode.SmoothTransformation,
-                      "Nearest": Qt.TransformationMode.FastTransformation}
-        self.image_label.zoom_in_interp = interp_map[self.zoom_settings["zoom_in_interp"]]
-        self.image_label.zoom_out_interp = interp_map[self.zoom_settings["zoom_out_interp"]]
+        if self.active_label:
+            self.active_label.zoom_speed = self.zoom_settings["zoom_speed"]
+            interp_map = {"Smooth": Qt.TransformationMode.SmoothTransformation,
+                          "Nearest": Qt.TransformationMode.FastTransformation}
+            self.active_label.zoom_in_interp = interp_map[self.zoom_settings["zoom_in_interp"]]
+            self.active_label.zoom_out_interp = interp_map[self.zoom_settings["zoom_out_interp"]]
 
     def set_colormap(self, name):
-        self.current_colormap = name
-        self.apply_colormap()
+        if self.active_label:
+            self.active_label.set_colormap(name)
 
     def set_contrast_limits(self, min_val, max_val):
-        self.contrast_limits = (min_val, max_val)
-        self.apply_colormap()
-
-    def apply_colormap(self, is_new_image=False):
-        if self.display_data is None:
-            return
-
-        data = self.display_data
-
-        if len(data.shape) == 3 and data.shape[2] == 3:  # Color Image
-            if self.contrast_limits:
-                min_val, max_val = self.contrast_limits
-                stretched_channels = []
-                for i in range(3):
-                    channel = data[..., i].astype(np.float32)
-                    stretched = 255 * (channel - min_val) / (max_val - min_val)
-                    stretched_channels.append(np.clip(stretched, 0, 255))
-                processed_data = np.stack(stretched_channels, axis=-1).astype(np.uint8)
-            else:
-                processed_data = data.astype(np.uint8)
-
-            h, w, _ = processed_data.shape
-            q_image = QImage(processed_data.tobytes(), w, h, 3 * w, QImage.Format.Format_RGB888)
-
-        else:  # Grayscale Image
-            processed_data = data.copy()
-            if self.contrast_limits:
-                min_val, max_val = self.contrast_limits
-                processed_data = np.clip(processed_data, min_val, max_val)
-
-            min_val, max_val = np.min(processed_data), np.max(processed_data)
-            if min_val == max_val:
-                norm_data = np.zeros_like(processed_data, dtype=float)
-            else:
-                norm_data = (processed_data - min_val) / (max_val - min_val)
-
-            colored_data = cm.get_cmap(self.current_colormap)(norm_data)
-            image_data_8bit = (colored_data[:, :, :3] * 255).astype(np.uint8)
-            h, w, _ = image_data_8bit.shape
-            q_image = QImage(image_data_8bit.data, w, h, 3 * w, QImage.Format.Format_RGB888)
-
-        if is_new_image:
-            self.image_label.set_pixmap(QPixmap.fromImage(q_image), self.display_data)
-        else:
-            self.image_label.update_pixmap_content(QPixmap.fromImage(q_image))
+        if self.stacked_widget.currentWidget() == self.montage_widget:
+            for label in self.montage_labels:
+                label.set_contrast_limits(min_val, max_val)
+        elif self.active_label:
+            self.active_label.set_contrast_limits(min_val, max_val)
 
     def open_image_dialog(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Open Image", "",
@@ -274,16 +335,15 @@ class ImageViewer(QMainWindow):
             self.open_file(file_path)
 
     def open_file(self, file_path):
+        self.current_file_path = file_path
         try:
             self.image_handler.load_image(file_path)
-            self.display_data = self.image_handler.original_image_data.copy()
 
             self.info_action.setEnabled(self.image_handler.is_raw)
             self.info_pane.set_raw_mode(self.image_handler.is_raw)
             self.math_transform_action.setEnabled(True)
             self.zoom_slider.setEnabled(True)
             self.histogram_action.setEnabled(True)
-            self.colormap_combo.setEnabled(self.image_handler.is_single_channel_image())
 
             if self.image_handler.is_raw:
                 self.info_pane.update_info(self.image_handler.width, self.image_handler.height,
@@ -291,14 +351,14 @@ class ImageViewer(QMainWindow):
             else:
                 self.info_pane.hide()
 
-            self.contrast_limits = None
-            self.apply_colormap(is_new_image=True)
+            self.image_label.set_data(self.image_handler.original_image_data)
+            self._set_active_montage_label(self.image_label)
 
             if self.image_label.current_pixmap:
-                self.stacked_widget.setCurrentIndex(1)
+                self.stacked_widget.setCurrentWidget(self.image_display_container)
                 self.recent_files = settings.add_to_recent_files(self.recent_files, file_path)
                 self._update_recent_files_menu()
-            self.update_histogram_data(new_image=True)
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error opening image:\n{e}")
             self.math_transform_action.setEnabled(False)
@@ -308,17 +368,28 @@ class ImageViewer(QMainWindow):
             self.histogram_action.setEnabled(False)
 
     def save_view(self):
-        if self.image_label.current_pixmap is None:
-            return
-        file_name, _ = QFileDialog.getSaveFileName(self, "Save Image", "", "PNG Image (*.png)")
-        if file_name:
-            self.image_label.current_pixmap.save(file_name, "png")
+        if self.active_label and self.active_label.current_pixmap:
+            file_name, _ = QFileDialog.getSaveFileName(self, "Save Image", "", "PNG Image (*.png)")
+            if file_name:
+                self.active_label.current_pixmap.save(file_name, "png")
 
     def update_status_bar(self, x_coord, y_coord):
-        if self.display_data is not None and y_coord < self.display_data.shape[0] and x_coord < self.display_data.shape[
-            1]:
-            value = self.display_data[y_coord, x_coord]
-            self.status_bar.showMessage(f"({x_coord}, {y_coord}): {value}")
+        if self.sender() is not self.active_label: return
+
+        if self.stacked_widget.currentWidget() == self.montage_widget and self.montage_shared_state.crosshair_pos:
+            pos = self.montage_shared_state.crosshair_pos
+            status_text = []
+            for i, label in enumerate(self.montage_labels):
+                data = label.original_data
+                if pos.y() < data.shape[0] and pos.x() < data.shape[1]:
+                    value = data[pos.y(), pos.x()]
+                    status_text.append(f"Img{i + 1}: ({pos.x()},{pos.y()}) {value}")
+            self.status_bar.showMessage(" | ".join(status_text))
+        elif self.active_label and self.active_label.original_data is not None:
+            data = self.active_label.original_data
+            if y_coord < data.shape[0] and x_coord < data.shape[1]:
+                value = data[y_coord, x_coord]
+                self.status_bar.showMessage(f"({x_coord}, {y_coord}): {value}")
 
     def _update_recent_files_menu(self):
         self.recent_files_menu.clear()
@@ -332,19 +403,47 @@ class ImageViewer(QMainWindow):
             self.recent_files_menu.addAction(action)
 
     def update_histogram_data(self, new_image=False):
+        if not self.active_label:
+            return
         visible_data = self._get_visible_image_data()
-
-        try:
-            self.histogram_window.region_changed.disconnect(self.set_contrast_limits)
-        except TypeError:
-            pass
 
         self.histogram_window.update_histogram(visible_data, new_image)
 
-        self.histogram_window.region_changed.connect(self.set_contrast_limits)
+        if self.active_label.contrast_limits:
+            min_v, max_v = self.active_label.contrast_limits
+            self.histogram_window.min_val_input.setText(f"{min_v:.2f}")
+            self.histogram_window.max_val_input.setText(f"{max_v:.2f}")
+            self.histogram_window.region.setRegion([min_v, max_v])
+        else:
+            if visible_data is not None and visible_data.size > 0:
+                if len(visible_data.shape) == 3:
+                    hist_data = np.dot(visible_data[..., :3], [0.2989, 0.5870, 0.1140])
+                else:
+                    hist_data = visible_data
+                min_v, max_v = np.min(hist_data), np.max(hist_data)
+                self.histogram_window.min_val_input.setText(f"{min_v:.2f}")
+                self.histogram_window.max_val_input.setText(f"{max_v:.2f}")
+                self.histogram_window.region.setRegion([min_v, max_v])
 
     def keyPressEvent(self, event):
-        if self.display_data is not None:
+        if event.key() == Qt.Key.Key_N and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            current_pos = self.pos()
+            new_pos = current_pos + QPoint(30, 30)
+            new_window = ImageViewer(window_list=self.window_list)
+            new_window.move(new_pos)
+            new_window.show()
+            return
+
+        if event.key() == Qt.Key.Key_C:
+            if self.stacked_widget.currentWidget() == self.montage_widget:
+                is_enabled = not self.montage_labels[0].crosshair_enabled
+                for label in self.montage_labels:
+                    label.set_crosshair_enabled(is_enabled)
+            elif self.active_label:
+                self.active_label.set_crosshair_enabled(not self.active_label.crosshair_enabled)
+            return
+
+        if self.active_label and self.active_label.original_data is not None:
             if event.key() == Qt.Key.Key_M:
                 if event.modifiers() == Qt.KeyboardModifier.ShiftModifier:
                     self._apply_histogram_preset(5, 95)
@@ -366,37 +465,15 @@ class ImageViewer(QMainWindow):
             self.histogram_window.region.setRegion([min_val, max_val])
 
     def _get_visible_image_data(self):
-        if self.image_handler.original_image_data is None or not self.image_label.cached_scaled_pixmap:
+        if not self.active_label or self.active_label.original_data is None:
             return None
-
-        data_for_hist = self.image_handler.original_image_data
-
-        visible_rect = self.image_label.rect()
-        pixmap_rect = self.image_label.cached_scaled_pixmap.rect()
-        pixmap_rect.moveCenter(self.image_label.rect().center() + self.image_label.pixmap_offset.toPoint())
-        intersection = visible_rect.intersected(pixmap_rect)
-        if intersection.isEmpty():
-            return None
-        scale_factor = self.image_label.scale_factor
-        if scale_factor <= 0: return None
-        x1 = int((intersection.left() - pixmap_rect.left()) / scale_factor)
-        y1 = int((intersection.top() - pixmap_rect.top()) / scale_factor)
-        x2 = int((intersection.right() - pixmap_rect.left()) / scale_factor)
-        y2 = int((intersection.bottom() - pixmap_rect.top()) / scale_factor)
-        x1 = max(0, x1)
-        y1 = max(0, y1)
-        x2 = min(self.image_handler.width, x2)
-        y2 = min(self.image_handler.height, y2)
-        if x2 <= x1 or y2 <= y1:
-            return None
-        return data_for_hist[y1:y2, x1:x2]
+        return self.active_label.original_data
 
     def restore_image_view(self):
-        self.contrast_limits = None
-        self.display_data = self.image_handler.original_image_data.copy()
-        self.colormap_combo.setEnabled(self.image_handler.is_single_channel_image())
-        self.apply_colormap(is_new_image=True)
-        self.update_histogram_data(new_image=True)
+        if self.active_label:
+            self.active_label.set_data(self.active_label.original_data)
+            self.active_label.restore_view()
+            self._update_active_view()
 
     def eventFilter(self, source, event):
         if event.type() == QEvent.Type.DragEnter:
@@ -416,3 +493,9 @@ class ImageViewer(QMainWindow):
                 self.open_file(file_path)
                 return True
         return super().eventFilter(source, event)
+
+    def closeEvent(self, event):
+        """Remove window from the list when closed."""
+        if self in self.window_list:
+            self.window_list.remove(self)
+        super().closeEvent(event)
