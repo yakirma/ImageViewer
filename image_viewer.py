@@ -220,21 +220,40 @@ class ImageViewer(QMainWindow):
         for file_path in file_paths:
             temp_handler = ImageHandler()
             temp_handler.load_image(file_path)
+            data = temp_handler.original_image_data
 
-            image_label = ZoomableDraggableLabel(shared_state=self.montage_shared_state)
-            self._apply_zoom_settings_to_label(image_label) # Apply settings to new label
-            image_label.set_data(temp_handler.original_image_data)
-            image_label.set_overlay_text(file_path)  # Set overlay text for montage
-            image_label.clicked.connect(lambda label=image_label: self._set_active_montage_label(label))
-            self.montage_labels.append(image_label)
+            if data is not None and data.size > 0:
+                image_label = ZoomableDraggableLabel(shared_state=self.montage_shared_state)
+                image_label.set_data(data)
 
-            self.montage_layout.addWidget(image_label, row, col)
-            image_label.hover_moved.connect(lambda x, y, label=image_label: self._set_active_montage_label(label))
-            col += 1
-            if col % 3 == 0:
-                row += 1
-                col = 0
+                # Check if this file is already open in another window and inherit its state
+                for window in self.window_list:
+                    # Retrieve the path safely, handling potential missing attribute or closed window
+                    try:
+                        win_path = getattr(window, 'current_file_path', None)
+                        if win_path == file_path and window.active_label:
+                            state = window.active_label.get_view_state()
+                            # Only inherit Colormap and Contrast (preserve Montage's layout/zoom)
+                            filtered_state = {
+                                'colormap': state.get('colormap'),
+                                'contrast_limits': state.get('contrast_limits')
+                            }
+                            image_label.set_view_state(filtered_state)
+                            break
+                    except Exception:
+                        pass # Ignore errors accessing other windows
 
+                image_label.set_overlay_text(file_path)
+                image_label.clicked.connect(lambda label=image_label: self._set_active_montage_label(label))
+                self.montage_labels.append(image_label)
+
+                self.montage_layout.addWidget(image_label, row, col)
+                image_label.hover_moved.connect(lambda x, y, label=image_label: self._set_active_montage_label(label))
+                
+                col += 1
+                if col % 3 == 0:
+                    row += 1
+                    col = 0
         if self.montage_labels:
             self._set_active_montage_label(self.montage_labels[0])
 
