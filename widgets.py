@@ -398,9 +398,74 @@ class ZoomableDraggableLabel(QLabel):
     def set_crosshair_enabled(self, enabled):
         self.crosshair_enabled = enabled
         self.setMouseTracking(enabled)
+        if enabled:
+            # Try to set initial position from current mouse location using QCursor
+            # This ensures crosshair appears immediately without needing mouse move
+            from PyQt6.QtGui import QCursor
+            local_pos = self.mapFromGlobal(QCursor.pos())
+            if self.rect().contains(local_pos):
+                # We need to simulate the calculation done in mouseMoveEvent
+                # Reusing the logic would be cleaner, but for now let's duplicate the essential mapping part
+                # or trigger a fake mouse event? No, calculation is safer.
+                
+                if self.original_data is not None and self.current_pixmap is not None:
+                     self._update_crosshair_from_pos(local_pos)
+
         if not enabled:
             self._set_crosshair_norm_pos(None)
+            self.unsetCursor()
+        
         self.update()
+
+    def _update_crosshair_from_pos(self, local_pos):
+        if self.original_data is None or self.current_pixmap is None:
+            return
+
+        scale = self._get_effective_scale_factor()
+        p_w = self.current_pixmap.width()
+        p_h = self.current_pixmap.height()
+        
+        if self._proxy_scale > 0:
+            w = (p_w / self._proxy_scale) * scale
+            h = (p_h / self._proxy_scale) * scale
+        else:
+            w = p_w * scale
+            h = p_h * scale
+
+        target_rect = QRectF(0, 0, w, h)
+        target_rect.moveCenter(QPointF(self.rect().center()) + self._get_effective_offset())
+
+        if target_rect.contains(QPointF(local_pos)):
+            # Calculate coordinate relative to the Display Rect (0 to 1)
+            rel_x = (local_pos.x() - target_rect.left()) / target_rect.width()
+            rel_y = (local_pos.y() - target_rect.top()) / target_rect.height()
+            
+            # Map to Original Image Coordinates
+            if self.original_data is not None:
+                 img_h, img_w = self.original_data.shape[:2]
+                 x = int(rel_x * img_w)
+                 y = int(rel_y * img_h)
+            else:
+                x = 0; y = 0 # Fallback
+
+            if 0 <= x < img_w and 0 <= y < img_h:
+                if self.crosshair_enabled:
+                    # Calculate normalized position
+                    norm_x = x / img_w
+                    norm_y = y / img_h
+                    self._set_crosshair_norm_pos(QPointF(norm_x, norm_y))
+                    # Set cursor to crosshair
+                    self.setCursor(Qt.CursorShape.CrossCursor)
+                else:
+                    self.unsetCursor()
+                # Emit actual data coordinates for status bar
+                self.hover_moved.emit(x, y)
+            else:
+                self.hover_left.emit()
+                self.unsetCursor()
+        else:
+            self.hover_left.emit()
+            self.unsetCursor()
 
     def set_data(self, data):
         self.original_data = data
@@ -717,60 +782,7 @@ class ZoomableDraggableLabel(QLabel):
         if self.original_data is not None and self.current_pixmap is not None:
              # Even if not active/focused, if we are in shared state we should update.
              # We want "seamless" movement.
-            
-            # Use QRectF for precise floating point calculations
-            scale = self._get_effective_scale_factor()
-            
-            # Pixmap dimensions might be downsampled (proxy).
-            # We want the Logical dimensions on screen.
-            # logical_w = pixmap_w / proxy_scale * scale
-            
-            p_w = self.current_pixmap.width()
-            p_h = self.current_pixmap.height()
-            
-            if self._proxy_scale > 0:
-                w = (p_w / self._proxy_scale) * scale
-                h = (p_h / self._proxy_scale) * scale
-            else:
-                w = p_w * scale
-                h = p_h * scale
-
-            target_rect = QRectF(0, 0, w, h)
-            target_rect.moveCenter(QPointF(self.rect().center()) + self._get_effective_offset())
-
-            if target_rect.contains(QPointF(event.pos())):
-                # Calculate coordinate relative to the Display Rect (0 to 1)
-                rel_x = (event.pos().x() - target_rect.left()) / target_rect.width()
-                rel_y = (event.pos().y() - target_rect.top()) / target_rect.height()
-                
-                # Map to Original Image Coordinates
-                if self.original_data is not None:
-                     img_h, img_w = self.original_data.shape[:2]
-                     x = int(rel_x * img_w)
-                     y = int(rel_y * img_h)
-                else:
-                    # Fallback if original data missing (unlikely)
-                    x = int(rel_x * (p_w / self._proxy_scale))
-                    y = int(rel_y * (p_h / self._proxy_scale))
-
-                    if 0 <= x < img_width and 0 <= y < img_height:
-                        if self.crosshair_enabled:
-                            # Calculate normalized position
-                            norm_x = x / img_width
-                            norm_y = y / img_height
-                            self._set_crosshair_norm_pos(QPointF(norm_x, norm_y))
-                            # Set cursor to crosshair
-                            self.setCursor(Qt.CursorShape.CrossCursor)
-                        else:
-                            self.unsetCursor()
-                        # Emit actual data coordinates for status bar
-                        self.hover_moved.emit(x, y)
-                    else:
-                        self.hover_left.emit()
-                        self.unsetCursor()
-            else:
-                self.hover_left.emit()
-                self.unsetCursor()
+             self._update_crosshair_from_pos(event.pos())
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
