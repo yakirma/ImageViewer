@@ -273,6 +273,12 @@ class ImageViewer(QMainWindow):
         self.histogram_window.region_changed.connect(self.set_contrast_limits)
 
         self.colormap_combo.setEnabled(self.active_label.is_single_channel())
+        
+        # Sync the colormap combo box with the active label's current colormap
+        self.colormap_combo.blockSignals(True)
+        self.colormap_combo.setCurrentText(self.active_label.colormap)
+        self.colormap_combo.blockSignals(False)
+
         self.update_histogram_data(new_image=reset_histogram)
 
     def toggle_info_pane(self):
