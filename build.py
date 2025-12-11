@@ -47,9 +47,9 @@ def main():
     # --- Add data and hooks for libraries ---
 
     # Correctly find and add Qt plugins
-    plugins_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)
+    # PyInstaller hooks usually handle PyQt6 plugins automatically.
+    # Manual addition can cause conflicts.
     command.extend([
-        '--add-data', f'{plugins_path}{os.pathsep}PyQt6/plugins',
         '--add-data', 'assets/icons:assets/icons'
     ])
 

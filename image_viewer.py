@@ -26,6 +26,18 @@ from widgets import ZoomableDraggableLabel, InfoPane, MathTransformPane, ZoomSet
     ThumbnailPane, SharedViewState
 from image_handler import ImageHandler
 import settings
+import sys
+
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
 
 
 class ImageViewer(QMainWindow):
@@ -128,12 +140,12 @@ class ImageViewer(QMainWindow):
         settings_action = QAction(QIcon.fromTheme("preferences-system"), "Settings", self)
         settings_action.triggered.connect(self.open_zoom_settings)
         toolbar.addAction(settings_action)
-        restore_action = QAction(QIcon("assets/icons/expand.png"), "Restore View", self)
+        restore_action = QAction(QIcon(resource_path("assets/icons/expand.png")), "Restore View", self)
         restore_action.triggered.connect(self.restore_image_view)
         restore_action.triggered.connect(self.restore_image_view)
         toolbar.addAction(restore_action)
         
-        reset_action = QAction(QIcon.fromTheme("edit-undo"), "Reset Image", self)
+        reset_action = QAction(QIcon(resource_path("assets/icons/redo.png")), "Reset Image", self)
         reset_action.triggered.connect(self.reset_image_full)
         toolbar.addAction(reset_action)
 
@@ -147,7 +159,7 @@ class ImageViewer(QMainWindow):
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
 
-        self.histogram_action = QAction(QIcon("assets/icons/histogram.png"), "Histogram", self)
+        self.histogram_action = QAction(QIcon(resource_path("assets/icons/histogram.png")), "Histogram", self)
         self.histogram_action.triggered.connect(self.toggle_histogram_window)
         self.histogram_action.setEnabled(False)
         toolbar.addAction(self.histogram_action)
@@ -161,7 +173,7 @@ class ImageViewer(QMainWindow):
         self.info_action.setEnabled(False)
         toolbar.addAction(self.info_action)
 
-        thumbnail_action = QAction(QIcon("assets/icons/opened_images.png"), "Opened Images", self)
+        thumbnail_action = QAction(QIcon(resource_path("assets/icons/opened_images.png")), "Opened Images", self)
         thumbnail_action.triggered.connect(self.toggle_thumbnail_pane)
         toolbar.addAction(thumbnail_action)
 
