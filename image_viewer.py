@@ -113,11 +113,6 @@ class ImageViewer(QMainWindow):
         image_display_layout.addWidget(self.image_label)
         image_display_layout.addWidget(self.zoom_slider)
 
-        # Overlay for file path (Toggle with 'v')
-        self.path_overlay_label = QLabel(self.image_display_container)
-        self.path_overlay_label.setStyleSheet("background-color: rgba(0, 0, 0, 150); color: white; padding: 10px; border-radius: 5px; font-size: 14px;")
-        self.path_overlay_label.hide()
-        self.path_overlay_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
         self.stacked_widget.addWidget(self.image_display_container)
         self.apply_zoom_settings()  # Apply default settings immediately
@@ -228,6 +223,7 @@ class ImageViewer(QMainWindow):
             image_label = ZoomableDraggableLabel(shared_state=self.montage_shared_state)
             self._apply_zoom_settings_to_label(image_label) # Apply settings to new label
             image_label.set_data(temp_handler.original_image_data)
+            image_label.set_overlay_text(file_path)  # Set overlay text for montage
             image_label.clicked.connect(lambda label=image_label: self._set_active_montage_label(label))
             self.montage_labels.append(image_label)
 
@@ -420,8 +416,7 @@ class ImageViewer(QMainWindow):
                 self._update_recent_files_menu()
 
                 # Update path overlay
-                self.path_overlay_label.setText(file_path)
-                self._update_overlay_position()
+                self.image_label.set_overlay_text(file_path)
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error opening image:\n{e}")
@@ -541,29 +536,18 @@ class ImageViewer(QMainWindow):
                     self._apply_histogram_preset(0, 100, use_visible_only)
 
         if event.key() == Qt.Key.Key_V:
-            self.path_overlay_label.setVisible(not self.path_overlay_label.isVisible())
-            self._update_overlay_position()
+            if self.stacked_widget.currentWidget() == self.montage_widget:
+                for label in self.montage_labels:
+                    label.toggle_overlay()
+            elif self.active_label:
+                self.active_label.toggle_overlay()
             return
 
         super().keyPressEvent(event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._update_overlay_position()
 
-    def _update_overlay_position(self):
-        if self.path_overlay_label.isVisible() and self.path_overlay_label.text():
-            self.path_overlay_label.adjustSize()
-            # Position at top-center of the image display container
-            # We need to map coordinates if necessary, but simple centering usually works
-            # if the container geometry is updated.
-            container_width = self.image_display_container.width()
-            
-            # Center horizontally, 20px from top
-            x = (container_width - self.path_overlay_label.width()) // 2
-            y = 20
-            self.path_overlay_label.move(x, y)
-            self.path_overlay_label.raise_()
 
     def _apply_histogram_preset(self, min_percent, max_percent, use_visible_only=False):
         visible_data = self._get_visible_image_data(use_visible_only)

@@ -355,9 +355,14 @@ class ZoomableDraggableLabel(QLabel):
         self.colormap = 'gray'
 
         self.zoom_speed = 1.1
-        self.zoom_in_interp = Qt.TransformationMode.SmoothTransformation
         self.zoom_out_interp = Qt.TransformationMode.SmoothTransformation
         self._pinch_start_scale_factor = None
+
+        # Overlay Label
+        self.overlay_label = QLabel(self)
+        self.overlay_label.setStyleSheet("background-color: rgba(0, 0, 0, 150); color: white; padding: 5px; border-radius: 5px; font-size: 14px;")
+        self.overlay_label.hide()
+        self.overlay_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
     def _get_effective_scale_factor(self):
         if self.shared_state:
@@ -543,6 +548,25 @@ class ZoomableDraggableLabel(QLabel):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.update_fit_scale()
+        self._update_overlay_position()
+
+    def set_overlay_text(self, text):
+        self.overlay_label.setText(text)
+        self.overlay_label.adjustSize()
+        self._update_overlay_position()
+
+    def toggle_overlay(self):
+        self.overlay_label.setVisible(not self.overlay_label.isVisible())
+        self._update_overlay_position()
+
+    def _update_overlay_position(self):
+        if self.overlay_label.isVisible() and self.overlay_label.text():
+            self.overlay_label.adjustSize()
+            # Position at top-center
+            x = (self.width() - self.overlay_label.width()) // 2
+            y = 20
+            self.overlay_label.move(x, y)
+            self.overlay_label.raise_()
 
     def update_fit_scale(self):
         if self.current_pixmap and self.size().width() > 0 and self.size().height() > 0:
