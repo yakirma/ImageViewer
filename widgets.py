@@ -364,6 +364,8 @@ class ZoomableDraggableLabel(QLabel):
         self.overlay_label.setStyleSheet("background-color: rgba(0, 0, 0, 150); color: white; padding: 5px; border-radius: 5px; font-size: 14px;")
         self.overlay_label.hide()
         self.overlay_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        
+        self.overlays = [] # List of tuples: (QPixmap, opacity)
 
     def _get_effective_scale_factor(self):
         if self.shared_state:
@@ -859,28 +861,32 @@ class ZoomableDraggableLabel(QLabel):
         if event.button() == Qt.MouseButton.LeftButton:
             self.drag_start_position = QPoint()
 
+    def set_overlays(self, overlays):
+        """Sets the list of overlays to be drawn on top of the main image.
+           overlays: List of (QPixmap, opacity) tuples. 
+           Assumes pixmaps are already resized to match the current_pixmap size.
+        """
+        self.overlays = overlays
+        self.update()
+
     def paintEvent(self, event):
+        super().paintEvent(event)
+        
         if self.current_pixmap is None:
             return
-        
+
         painter = QPainter(self)
         
-        scale = self._get_effective_scale_factor()
+        # Calculate Effective Transform
         offset = self._get_effective_offset()
-        
-        # Setup transformation for drawing the pixmap
+        scale = self._get_effective_scale_factor()
+
         painter.save()
         
-        # Center of the widget + offset
-        center_x = self.width() / 2 + offset.x()
-        center_y = self.height() / 2 + offset.y()
+        # Apply Zoom and Pan (Center-based)
+        painter.translate(self.width() / 2 + offset.x(), self.height() / 2 + offset.y())
         
-        painter.translate(center_x, center_y)
-        
-        # Scale: Users see 'scale' applied to the Original Image.
-        # But we are drawing a Proxy Pixmap which is already scaled by _proxy_scale.
-        # So we need to draw it at: scale / _proxy_scale
-        
+        # Calculate draw_scale accounting for Proxy
         draw_scale = scale
         if self._proxy_scale > 0:
             draw_scale = scale / self._proxy_scale
@@ -896,13 +902,20 @@ class ZoomableDraggableLabel(QLabel):
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.zoom_out_interp == Qt.TransformationMode.SmoothTransformation)
 
         painter.drawPixmap(0, 0, self.current_pixmap)
+
+        # Draw Overlays
+        if self.overlays:
+            for overlay_pixmap, opacity in self.overlays:
+                if overlay_pixmap and not overlay_pixmap.isNull():
+                    painter.setOpacity(opacity)
+                    painter.drawPixmap(0, 0, overlay_pixmap)
+            painter.setOpacity(1.0)
+
         painter.restore()
 
-        # Calculate target rect for overlays (crosshair)
-        # We need this to draw the overlay in the correct screen position
-        w = self.current_pixmap.width() * draw_scale # Width on screen
+        # Calculate target rect for Crosshair (Widget Coordinates)
+        w = self.current_pixmap.width() * draw_scale
         h = self.current_pixmap.height() * draw_scale
-        
         target_rect = QRectF(0, 0, w, h)
         target_rect.moveCenter(QPointF(self.rect().center()) + offset)
 
@@ -971,6 +984,7 @@ class ZoomableDraggableLabel(QLabel):
 
 class ThumbnailItem(QWidget):
     clicked = pyqtSignal(QEvent)
+    overlay_changed = pyqtSignal(float)
 
     def __init__(self, file_path, pixmap, parent=None):
         super().__init__(parent)
@@ -978,8 +992,9 @@ class ThumbnailItem(QWidget):
         self.is_selected = False
         self.is_focused = False
 
-        self.setFixedSize(150, 150)
+        self.setFixedSize(160, 180) # Increased height for slider
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5) # Reduce margins
         self.image_label = QLabel()
         self.image_label.setPixmap(
             pixmap.scaled(128, 128, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
@@ -990,7 +1005,19 @@ class ThumbnailItem(QWidget):
 
         layout.addWidget(self.image_label)
         layout.addWidget(self.filename_label)
+
+        # Overlay Slider
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(0, 100)
+        self.slider.setValue(0)
+        self.slider.setToolTip("Overlay Opacity")
+        self.slider.valueChanged.connect(self._on_slider_changed)
+        layout.addWidget(self.slider)
+
         self.setLayout(layout)
+
+    def _on_slider_changed(self, value):
+        self.overlay_changed.emit(value / 100.0)
 
     def mousePressEvent(self, event: QMouseEvent):
         self.clicked.emit(event)
@@ -1027,11 +1054,13 @@ class ThumbnailItem(QWidget):
 
 class ThumbnailPane(QDockWidget):
     selection_changed = pyqtSignal(list)
+    overlay_changed = pyqtSignal(str, float)
 
     def __init__(self, parent=None):
         super().__init__("Opened Images", parent)
         self.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
         self.setFloating(False)
+        self.setMinimumWidth(240) # Ensure thumbnails (160px) + sliders fit with scrollbar
 
         self.main_widget = QWidget()
         self.main_layout = QVBoxLayout(self.main_widget)
@@ -1092,6 +1121,7 @@ class ThumbnailPane(QDockWidget):
                 file_path = window.current_file_path
                 item = ThumbnailItem(file_path, pixmap)
                 item.clicked.connect(lambda event, i=item: self._on_thumbnail_clicked(i, event))
+                item.overlay_changed.connect(lambda alpha, path=file_path: self.overlay_changed.emit(path, alpha))
                 self.thumbnail_items.append(item)
                 self.thumbnail_layout.addWidget(item)
 
