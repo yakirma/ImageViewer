@@ -687,6 +687,76 @@ class ZoomableDraggableLabel(QLabel):
     def restore_view(self):
         self.fit_to_view()
 
+    def get_view_state(self):
+        """Returns a dictionary containing the current view state (zoom, pan, contrast, colormap)."""
+    def get_view_state(self):
+        """Returns a dictionary containing the current view state (zoom, pan, contrast, colormap)."""
+        # effective_scale is relative to the PIXMAP (which might be a proxy).
+        # We need to Normalize it to be relative to the ORIGINAL IMAGE.
+        # ScaleProxy = ScaleOriginal * ProxyFactor
+        # ScaleOriginal = ScaleProxy / ProxyFactor
+        scale_vs_original = self._get_effective_scale_factor()
+        if self._proxy_scale > 0:
+            scale_vs_original /= self._proxy_scale
+
+        return {
+            'colormap': self.colormap,
+            'contrast_limits': self.contrast_limits,
+            'scale_factor': scale_vs_original,
+            'offset': self._get_effective_offset()
+        }
+
+    def set_view_state(self, state):
+        """Applies a view state dictionary to this label."""
+        if not state:
+            return
+
+        # Apply Colormap (only if target is single channel/grayscale)
+        if 'colormap' in state and self.is_single_channel():
+            self.set_colormap(state['colormap'])
+
+        # Apply Contrast Limits
+        if 'contrast_limits' in state:
+            limits = state['contrast_limits']
+            if limits:
+                self.set_contrast_limits(*limits)
+            else:
+                self.contrast_limits = None
+                self.apply_colormap()
+
+        # Apply Zoom
+        if 'scale_factor' in state:
+            desired_scale_vs_original = state['scale_factor']
+            
+            # Convert back to Scale vs Proxy (which is what effective_scale expects)
+            # ScaleProxy = ScaleOriginal * ProxyFactor
+            desired_effective_scale = desired_scale_vs_original
+            if self._proxy_scale > 0:
+                 desired_effective_scale *= self._proxy_scale
+
+            if self.shared_state:
+                 # Shared state uses a multiplier relative to fit_scale
+                 if self._fit_scale > 0:
+                     internal_factor = desired_effective_scale / self._fit_scale
+                     # Clamp multiplier
+                     internal_factor = max(0.01, min(100.0, internal_factor))
+                     self.shared_state.zoom_multiplier = internal_factor
+            else:
+                 # Single view uses absolute scale factor
+                 self._scale_factor = desired_effective_scale
+                 self.zoom_factor_changed.emit(self._get_effective_scale_factor())
+
+        # Apply Pan (Offset)
+        if 'offset' in state:
+            new_offset = state['offset']
+            if self.shared_state:
+                self.shared_state.offset = new_offset
+            else:
+                self._pixmap_offset = new_offset
+
+        self.view_changed.emit()
+        self.update()
+
 
 
     def _apply_zoom(self, new_effective_scale, mouse_pos=None):

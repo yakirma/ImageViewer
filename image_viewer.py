@@ -41,6 +41,7 @@ def resource_path(relative_path):
 
 
 class ImageViewer(QMainWindow):
+    view_clipboard = None  # Class-level clipboard for cross-window sharing
 
     def __init__(self, window_list):
         super().__init__()
@@ -514,6 +515,25 @@ class ImageViewer(QMainWindow):
                 self.histogram_window.region.blockSignals(False)
 
     def keyPressEvent(self, event):
+        # Universal Copy/Paste: Accept either Control or Meta to handle various OS/Keyboard configs
+        # (e.g., standard Mac Meta, or remapped/VNC Mac Control, or standard Windows Control)
+        is_cmd_or_ctrl = event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier)
+
+        # Copy View State
+        if event.key() == Qt.Key.Key_C and is_cmd_or_ctrl:
+            if self.active_label:
+                ImageViewer.view_clipboard = self.active_label.get_view_state()
+                self.status_bar.showMessage("View Copied", 2000)
+            return
+
+        # Paste View State
+        if event.key() == Qt.Key.Key_V and is_cmd_or_ctrl:
+            if self.active_label and ImageViewer.view_clipboard:
+                self.active_label.set_view_state(ImageViewer.view_clipboard)
+                self._update_active_view(reset_histogram=False) # Update UI to reflect new state
+                self.status_bar.showMessage("View Pasted", 2000)
+            return
+
         if event.key() == Qt.Key.Key_N and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
             current_pos = self.pos()
             new_pos = current_pos + QPoint(30, 30)
@@ -522,7 +542,8 @@ class ImageViewer(QMainWindow):
             new_window.show()
             return
 
-        if event.key() == Qt.Key.Key_C:
+        # Single Key Shortcuts - Strict NoModifier Check
+        if event.key() == Qt.Key.Key_C and event.modifiers() == Qt.KeyboardModifier.NoModifier:
             if self.stacked_widget.currentWidget() == self.montage_widget:
                 is_enabled = not self.montage_labels[0].crosshair_enabled
                 for label in self.montage_labels:
@@ -541,13 +562,13 @@ class ImageViewer(QMainWindow):
                 else:
                     self._apply_histogram_preset(0, 100, use_visible_only)
 
-        if event.key() == Qt.Key.Key_V:
-            if self.stacked_widget.currentWidget() == self.montage_widget:
-                for label in self.montage_labels:
-                    label.toggle_overlay()
-            elif self.active_label:
-                self.active_label.toggle_overlay()
-            return
+            if event.key() == Qt.Key.Key_V and event.modifiers() == Qt.KeyboardModifier.NoModifier:
+                if self.stacked_widget.currentWidget() == self.montage_widget:
+                    for label in self.montage_labels:
+                        label.toggle_overlay()
+                elif self.active_label:
+                    self.active_label.toggle_overlay()
+                return
 
         super().keyPressEvent(event)
 
