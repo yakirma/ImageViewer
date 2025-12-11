@@ -341,13 +341,14 @@ class ZoomableDraggableLabel(QLabel):
         self._pixmap_offset = QPointF()
         self._crosshair_pos = None
         self._fit_scale = 1.0
+        self._proxy_scale = 1.0 # Scale of the display pixmap relative to original data
 
         self.is_active = False
         self.crosshair_enabled = False
         self.drag_start_position = QPoint()
         self.current_pixmap = None
         self.drag_start_position = QPoint()
-        self.current_pixmap = None
+        self.processed_data = None # Store processed numpy array instead of QPixmap
 
         self.original_data = None
         self.contrast_limits = None
@@ -406,7 +407,7 @@ class ZoomableDraggableLabel(QLabel):
 
     def get_visible_sub_image(self):
         """Returns the sub-image data corresponding to the currently visible area."""
-        if self.original_data is None or self.current_pixmap is None:
+        if self.original_data is None:
             return None
 
         scale = self._get_effective_scale_factor()
@@ -417,12 +418,15 @@ class ZoomableDraggableLabel(QLabel):
         
         # Map widget coords to image coords
         # Center of the widget + offset is the center of the image
+        
+        h, w = self.original_data.shape[:2]
+        
         center_x = self.width() / 2 + offset.x()
         center_y = self.height() / 2 + offset.y()
         
         # Calculate top-left of the image in widget coords
-        img_x = center_x - (self.current_pixmap.width() * scale) / 2
-        img_y = center_y - (self.current_pixmap.height() * scale) / 2
+        img_x = center_x - (w * scale) / 2
+        img_y = center_y - (h * scale) / 2
         
         # Calculate visible region relative to image top-left (in screen pixels)
         rel_x1 = visible_rect.left() - img_x
@@ -495,11 +499,38 @@ class ZoomableDraggableLabel(QLabel):
 
             colored_data = cm.get_cmap(self.colormap)(norm_data)
             image_data_8bit = (colored_data[:, :, :3] * 255).astype(np.uint8)
+            processed_data = image_data_8bit # Fix: Update processed_data to hold the 3D RGB array
             h, w, _ = image_data_8bit.shape
             q_image = QImage(image_data_8bit.data, w, h, 3 * w, QImage.Format.Format_RGB888)
 
+        # Proxy Rendering Logic
+        # If image is too large, downsample it for display
+        MAX_DIM = 2048
+        h, w = processed_data.shape[:2]
+        
+        self._proxy_scale = 1.0
+        if max(h, w) > MAX_DIM:
+            # simple integer downsampling for speed and sharpness
+            import math
+            step = max(1, int(math.ceil(max(h, w) / MAX_DIM)))
+            if step > 1:
+                self._proxy_scale = 1.0 / step
+                # Downsample
+                if processed_data.ndim == 3:
+                     processed_data = processed_data[::step, ::step, :]
+                else:
+                     processed_data = processed_data[::step, ::step]
+
+        h, w = processed_data.shape[:2]
+        # Ensure contiguous
+        if not processed_data.flags['C_CONTIGUOUS']:
+            processed_data = np.ascontiguousarray(processed_data)
+            
+        q_image = QImage(processed_data.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
         pixmap = QPixmap.fromImage(q_image)
+        
         if is_new_image:
+            self.processed_data = None # We don't need to store full res processed data in RAM for display anymore
             self.current_pixmap = pixmap
             QTimer.singleShot(0, self.fit_to_view)
         else:
@@ -516,10 +547,25 @@ class ZoomableDraggableLabel(QLabel):
     def update_fit_scale(self):
         if self.current_pixmap and self.size().width() > 0 and self.size().height() > 0:
             label_size = self.size()
-            pixmap_size = self.current_pixmap.size()
+            
+            # Fit calculation needs to account for proxy scaling
+            # effective_image_w = pixmap_w / proxy_scale
+            # But simpler: fit scale is how much we scale the ORIGINAL to fit window.
+            # pixmap is (Original * proxy_scale).
+            
+            # Let's rely on original dimensions if available, or infer from pixmap/proxy
+            if self.original_data is not None:
+                h, w = self.original_data.shape[:2]
+            else:
+                # Infer
+                pix_size = self.current_pixmap.size()
+                w = pix_size.width() / self._proxy_scale
+                h = pix_size.height() / self._proxy_scale
+            
+            if w == 0 or h == 0: return
 
-            scale_w = label_size.width() / pixmap_size.width()
-            scale_h = label_size.height() / pixmap_size.height()
+            scale_w = label_size.width() / w
+            scale_h = label_size.height() / h
 
             self._fit_scale = min(scale_w, scale_h)
 
@@ -594,10 +640,12 @@ class ZoomableDraggableLabel(QLabel):
 
     def wheelEvent(self, event):
         current_effective_scale = self._get_effective_scale_factor()
+        # User requested invert: Up (usually > 0 or natural < 0) -> Zoom In.
+        # Assuming invert needed relative to current behavior.
         if event.angleDelta().y() > 0:
-            new_effective_scale = current_effective_scale * self.zoom_speed
-        else:
             new_effective_scale = current_effective_scale / self.zoom_speed
+        else:
+            new_effective_scale = current_effective_scale * self.zoom_speed
         self._apply_zoom(new_effective_scale, event.position())
 
     def event(self, event):
@@ -615,49 +663,71 @@ class ZoomableDraggableLabel(QLabel):
         return super().event(event)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and self.current_pixmap:
+        if event.button() == Qt.MouseButton.LeftButton and self.current_pixmap is not None:
             self.drag_start_position = event.pos()
             self.clicked.emit()
             self.setFocus()
+        return super().mousePressEvent(event)
 
     def enterEvent(self, event):
         if self.shared_state and self.crosshair_enabled:
             # When we enter a widget in shared mode, we want to ensure we track mouse
             # but we don't necessarily need to "click" to activate if we just want to see values.
-            # However, for scroll/zoom to work on this widget, it might need focus or we handle it globally.
             # For now, let's just ensure we update the shared crosshair position.
             pass
         super().enterEvent(event)
 
     def mouseMoveEvent(self, event):
-        if not self.drag_start_position.isNull() and self.current_pixmap:
+        if not self.drag_start_position.isNull() and self.current_pixmap is not None:
             delta = event.pos() - self.drag_start_position
             if self.shared_state:
-                self.shared_state.offset += QPointF(delta)
+                # Use explicit addition/assignment to ensure property setter is triggered correctly
+                # avoiding potential in-place modification issues with += on QPointF properties
+                self.shared_state.offset = self.shared_state.offset + QPointF(delta)
             else:
                 self._pixmap_offset += QPointF(delta)
                 self.update()
             self.drag_start_position = event.pos()
             self.view_changed.emit()
 
-        if self.original_data is not None and self.current_pixmap:
+        if self.original_data is not None and self.current_pixmap is not None:
              # Even if not active/focused, if we are in shared state we should update.
              # We want "seamless" movement.
             
             # Use QRectF for precise floating point calculations
             scale = self._get_effective_scale_factor()
-            w = self.current_pixmap.width() * scale
-            h = self.current_pixmap.height() * scale
+            
+            # Pixmap dimensions might be downsampled (proxy).
+            # We want the Logical dimensions on screen.
+            # logical_w = pixmap_w / proxy_scale * scale
+            
+            p_w = self.current_pixmap.width()
+            p_h = self.current_pixmap.height()
+            
+            if self._proxy_scale > 0:
+                w = (p_w / self._proxy_scale) * scale
+                h = (p_h / self._proxy_scale) * scale
+            else:
+                w = p_w * scale
+                h = p_h * scale
+
             target_rect = QRectF(0, 0, w, h)
             target_rect.moveCenter(QPointF(self.rect().center()) + self._get_effective_offset())
 
             if target_rect.contains(QPointF(event.pos())):
-                pixmap_coords = QPointF(event.pos()) - target_rect.topLeft()
-                img_height, img_width = self.original_data.shape[0], self.original_data.shape[1]
-
-                if target_rect.width() > 0 and target_rect.height() > 0:
-                    x = int(pixmap_coords.x() / scale)
-                    y = int(pixmap_coords.y() / scale)
+                # Calculate coordinate relative to the Display Rect (0 to 1)
+                rel_x = (event.pos().x() - target_rect.left()) / target_rect.width()
+                rel_y = (event.pos().y() - target_rect.top()) / target_rect.height()
+                
+                # Map to Original Image Coordinates
+                if self.original_data is not None:
+                     img_h, img_w = self.original_data.shape[:2]
+                     x = int(rel_x * img_w)
+                     y = int(rel_y * img_h)
+                else:
+                    # Fallback if original data missing (unlikely)
+                    x = int(rel_x * (p_w / self._proxy_scale))
+                    y = int(rel_y * (p_h / self._proxy_scale))
 
                     if 0 <= x < img_width and 0 <= y < img_height:
                         if self.crosshair_enabled:
@@ -683,7 +753,6 @@ class ZoomableDraggableLabel(QLabel):
             self.drag_start_position = QPoint()
 
     def paintEvent(self, event):
-        # super().paintEvent(event) # Do not call super paintEvent to avoid drawing default label content if any
         if self.current_pixmap is None:
             return
         
@@ -700,8 +769,18 @@ class ZoomableDraggableLabel(QLabel):
         center_y = self.height() / 2 + offset.y()
         
         painter.translate(center_x, center_y)
-        painter.scale(scale, scale)
-        # Move back by half the image size so the image center is at (0,0) (which is now translated to center_x, center_y)
+        
+        # Scale: Users see 'scale' applied to the Original Image.
+        # But we are drawing a Proxy Pixmap which is already scaled by _proxy_scale.
+        # So we need to draw it at: scale / _proxy_scale
+        
+        draw_scale = scale
+        if self._proxy_scale > 0:
+            draw_scale = scale / self._proxy_scale
+            
+        painter.scale(draw_scale, draw_scale)
+        
+        # Move back by half the PIXMAP size (center it)
         painter.translate(-self.current_pixmap.width() / 2, -self.current_pixmap.height() / 2)
         
         if scale > 1.0:
@@ -714,8 +793,9 @@ class ZoomableDraggableLabel(QLabel):
 
         # Calculate target rect for overlays (crosshair)
         # We need this to draw the overlay in the correct screen position
-        w = self.current_pixmap.width() * scale
-        h = self.current_pixmap.height() * scale
+        w = self.current_pixmap.width() * draw_scale # Width on screen
+        h = self.current_pixmap.height() * draw_scale
+        
         target_rect = QRectF(0, 0, w, h)
         target_rect.moveCenter(QPointF(self.rect().center()) + offset)
 
