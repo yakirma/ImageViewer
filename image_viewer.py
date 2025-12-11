@@ -590,6 +590,10 @@ class ImageViewer(QMainWindow):
                 file_path = urls[0].toLocalFile()
                 self.open_file(file_path)
                 return True
+        elif event.type() == QEvent.Type.FileOpen:
+            # MacOS specific event for opening files (e.g. from Finder)
+            self.open_file(event.file())
+            return True
         return super().eventFilter(source, event)
 
     def closeEvent(self, event):
