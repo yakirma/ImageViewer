@@ -52,12 +52,14 @@ class ImageViewer(QMainWindow):
         self.stacked_widget = QStackedWidget()
         self.setCentralWidget(self.stacked_widget)
 
+        self.current_colormap = "gray"
+        self.zoom_settings = {"zoom_speed": 1.1, "zoom_in_interp": "Nearest", "zoom_out_interp": "Smooth"}
+
         self._create_welcome_screen()
         self._create_image_display()
         self._create_montage_view()
 
-        self.current_colormap = "gray"
-        self.zoom_settings = {"zoom_speed": 1.1, "zoom_in_interp": "Nearest", "zoom_out_interp": "Smooth"}
+
 
         self._create_menus_and_toolbar()
         self._create_info_pane()
@@ -98,7 +100,9 @@ class ImageViewer(QMainWindow):
         image_display_layout = QVBoxLayout(self.image_display_container)
         image_display_layout.addWidget(self.image_label)
         image_display_layout.addWidget(self.zoom_slider)
+
         self.stacked_widget.addWidget(self.image_display_container)
+        self.apply_zoom_settings()  # Apply default settings immediately
 
     def _create_montage_view(self):
         self.montage_widget = QWidget()
@@ -124,9 +128,15 @@ class ImageViewer(QMainWindow):
         settings_action = QAction(QIcon.fromTheme("preferences-system"), "Settings", self)
         settings_action.triggered.connect(self.open_zoom_settings)
         toolbar.addAction(settings_action)
-        restore_action = QAction(QIcon.fromTheme("zoom-original"), "Restore View", self)
+        restore_action = QAction(QIcon("assets/icons/expand.png"), "Restore View", self)
+        restore_action.triggered.connect(self.restore_image_view)
         restore_action.triggered.connect(self.restore_image_view)
         toolbar.addAction(restore_action)
+        
+        reset_action = QAction(QIcon.fromTheme("edit-undo"), "Reset Image", self)
+        reset_action.triggered.connect(self.reset_image_full)
+        toolbar.addAction(reset_action)
+
         self.colormap_combo = QComboBox(self)
         self.colormap_combo.addItems(["gray", "turbo", "viridis"])
         self.colormap_combo.setCurrentText(self.current_colormap)
@@ -137,10 +147,11 @@ class ImageViewer(QMainWindow):
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
 
-        self.histogram_action = QAction(QIcon.fromTheme("chart-bar"), "Histogram", self)
+        self.histogram_action = QAction(QIcon("assets/icons/histogram.png"), "Histogram", self)
         self.histogram_action.triggered.connect(self.toggle_histogram_window)
         self.histogram_action.setEnabled(False)
         toolbar.addAction(self.histogram_action)
+
         self.math_transform_action = QAction(QIcon.fromTheme("accessories-calculator"), "Math Transform", self)
         self.math_transform_action.triggered.connect(self.toggle_math_transform_pane)
         self.math_transform_action.setEnabled(False)
@@ -150,7 +161,7 @@ class ImageViewer(QMainWindow):
         self.info_action.setEnabled(False)
         toolbar.addAction(self.info_action)
 
-        thumbnail_action = QAction(QIcon.fromTheme("view-grid"), "Thumbnails", self)
+        thumbnail_action = QAction(QIcon("assets/icons/opened_images.png"), "Opened Images", self)
         thumbnail_action.triggered.connect(self.toggle_thumbnail_pane)
         toolbar.addAction(thumbnail_action)
 
@@ -169,6 +180,7 @@ class ImageViewer(QMainWindow):
     def _create_histogram_window(self):
         self.histogram_window = HistogramWidget()
         self.histogram_window.hide()
+        self.histogram_window.use_visible_checkbox.toggled.connect(lambda: self.update_histogram_data(new_image=False))
 
     def _create_thumbnail_pane(self):
         self.thumbnail_pane = ThumbnailPane(self)
@@ -196,11 +208,13 @@ class ImageViewer(QMainWindow):
             temp_handler.load_image(file_path)
 
             image_label = ZoomableDraggableLabel(shared_state=self.montage_shared_state)
+            self._apply_zoom_settings_to_label(image_label) # Apply settings to new label
             image_label.set_data(temp_handler.original_image_data)
             image_label.clicked.connect(lambda label=image_label: self._set_active_montage_label(label))
             self.montage_labels.append(image_label)
 
             self.montage_layout.addWidget(image_label, row, col)
+            image_label.hover_moved.connect(lambda x, y, label=image_label: self._set_active_montage_label(label))
             col += 1
             if col % 3 == 0:
                 row += 1
@@ -219,7 +233,7 @@ class ImageViewer(QMainWindow):
             self.active_label.set_active(True)
         self._update_active_view()
 
-    def _update_active_view(self):
+    def _update_active_view(self, reset_histogram=True):
         if not self.active_label:
             return
 
@@ -245,7 +259,7 @@ class ImageViewer(QMainWindow):
         self.histogram_window.region_changed.connect(self.set_contrast_limits)
 
         self.colormap_combo.setEnabled(self.active_label.is_single_channel())
-        self.update_histogram_data(new_image=True)
+        self.update_histogram_data(new_image=reset_histogram)
 
     def toggle_info_pane(self):
         self.info_pane.setVisible(not self.info_pane.isVisible())
@@ -257,8 +271,26 @@ class ImageViewer(QMainWindow):
         if self.histogram_window.isVisible():
             self.histogram_window.hide()
         else:
+            self.update_histogram_data(new_image=True)
             self.histogram_window.show()
-            self.update_histogram_data()
+            
+            # Position to the right of the main window
+            frame_geo = self.frameGeometry()
+            screen_width = self.screen().geometry().width()
+            
+            # Default small size
+            hist_width = 400
+            hist_height = 300
+            self.histogram_window.resize(hist_width, hist_height)
+            
+            x = frame_geo.right() + 10
+            y = frame_geo.top()
+            
+            # If off-screen, clamp or move
+            if x + hist_width > screen_width:
+                x = screen_width - hist_width - 10
+            
+            self.histogram_window.move(x, y)
 
     def toggle_thumbnail_pane(self):
         if self.thumbnail_pane.isVisible():
@@ -310,22 +342,28 @@ class ImageViewer(QMainWindow):
             self.apply_zoom_settings()
 
     def apply_zoom_settings(self):
-        if self.active_label:
-            self.active_label.zoom_speed = self.zoom_settings["zoom_speed"]
-            interp_map = {"Smooth": Qt.TransformationMode.SmoothTransformation,
-                          "Nearest": Qt.TransformationMode.FastTransformation}
-            self.active_label.zoom_in_interp = interp_map[self.zoom_settings["zoom_in_interp"]]
-            self.active_label.zoom_out_interp = interp_map[self.zoom_settings["zoom_out_interp"]]
+        # Apply to main image label
+        if hasattr(self, 'image_label'):
+             self._apply_zoom_settings_to_label(self.image_label)
+        
+        # Apply to all montage labels
+        for label in self.montage_labels:
+             self._apply_zoom_settings_to_label(label)
+
+    def _apply_zoom_settings_to_label(self, label):
+        label.zoom_speed = self.zoom_settings["zoom_speed"]
+        interp_map = {"Smooth": Qt.TransformationMode.SmoothTransformation,
+                      "Nearest": Qt.TransformationMode.FastTransformation}
+        label.zoom_in_interp = interp_map[self.zoom_settings["zoom_in_interp"]]
+        label.zoom_out_interp = interp_map[self.zoom_settings["zoom_out_interp"]]
 
     def set_colormap(self, name):
         if self.active_label:
             self.active_label.set_colormap(name)
 
     def set_contrast_limits(self, min_val, max_val):
-        if self.stacked_widget.currentWidget() == self.montage_widget:
-            for label in self.montage_labels:
-                label.set_contrast_limits(min_val, max_val)
-        elif self.active_label:
+        # Apply only to the active label, ensuring independence in montage view
+        if self.active_label:
             self.active_label.set_contrast_limits(min_val, max_val)
 
     def open_image_dialog(self):
@@ -353,6 +391,9 @@ class ImageViewer(QMainWindow):
 
             self.image_label.set_data(self.image_handler.original_image_data)
             self._set_active_montage_label(self.image_label)
+            
+            # Apply default Min-Max contrast stretch for new image
+            self._apply_histogram_preset(0, 100)
 
             if self.image_label.current_pixmap:
                 self.stacked_widget.setCurrentWidget(self.image_display_container)
@@ -376,14 +417,22 @@ class ImageViewer(QMainWindow):
     def update_status_bar(self, x_coord, y_coord):
         if self.sender() is not self.active_label: return
 
-        if self.stacked_widget.currentWidget() == self.montage_widget and self.montage_shared_state.crosshair_pos:
-            pos = self.montage_shared_state.crosshair_pos
+        if self.stacked_widget.currentWidget() == self.montage_widget and self.montage_shared_state.crosshair_norm_pos:
+            norm_pos = self.montage_shared_state.crosshair_norm_pos
             status_text = []
             for i, label in enumerate(self.montage_labels):
                 data = label.original_data
-                if pos.y() < data.shape[0] and pos.x() < data.shape[1]:
-                    value = data[pos.y(), pos.x()]
-                    status_text.append(f"Img{i + 1}: ({pos.x()},{pos.y()}) {value}")
+                if data is not None:
+                     img_h, img_w = data.shape[0], data.shape[1]
+                     img_x = int(norm_pos.x() * img_w)
+                     img_y = int(norm_pos.y() * img_h)
+                     
+                     if 0 <= img_x < img_w and 0 <= img_y < img_h:
+                        value = data[img_y, img_x]
+                        status_text.append(f"Img{i + 1}: ({img_x},{img_y}) {value}")
+                     else:
+                        status_text.append(f"Img{i + 1}: Out of bounds")
+
             self.status_bar.showMessage(" | ".join(status_text))
         elif self.active_label and self.active_label.original_data is not None:
             data = self.active_label.original_data
@@ -405,15 +454,26 @@ class ImageViewer(QMainWindow):
     def update_histogram_data(self, new_image=False):
         if not self.active_label:
             return
-        visible_data = self._get_visible_image_data()
+            
+        use_visible_only = self.histogram_window.use_visible_checkbox.isChecked()
+        visible_data = self._get_visible_image_data(use_visible_only=use_visible_only)
+ 
+        # Only allow the histogram widget to reset the region if we don't have custom limits
+        # AND we are being told this is a new image context.
+        has_custom_limits = self.active_label.contrast_limits is not None
+        should_reset_region = new_image and not has_custom_limits
 
-        self.histogram_window.update_histogram(visible_data, new_image)
+        self.histogram_window.update_histogram(visible_data, should_reset_region)
 
-        if self.active_label.contrast_limits:
+        if has_custom_limits:
             min_v, max_v = self.active_label.contrast_limits
             self.histogram_window.min_val_input.setText(f"{min_v:.2f}")
             self.histogram_window.max_val_input.setText(f"{max_v:.2f}")
+            
+            # Block signals to prevent re-triggering set_contrast_limits
+            self.histogram_window.region.blockSignals(True)
             self.histogram_window.region.setRegion([min_v, max_v])
+            self.histogram_window.region.blockSignals(False)
         else:
             if visible_data is not None and visible_data.size > 0:
                 if len(visible_data.shape) == 3:
@@ -423,7 +483,11 @@ class ImageViewer(QMainWindow):
                 min_v, max_v = np.min(hist_data), np.max(hist_data)
                 self.histogram_window.min_val_input.setText(f"{min_v:.2f}")
                 self.histogram_window.max_val_input.setText(f"{max_v:.2f}")
+                
+                # Block signals here too just in case
+                self.histogram_window.region.blockSignals(True)
                 self.histogram_window.region.setRegion([min_v, max_v])
+                self.histogram_window.region.blockSignals(False)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_N and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
@@ -445,14 +509,17 @@ class ImageViewer(QMainWindow):
 
         if self.active_label and self.active_label.original_data is not None:
             if event.key() == Qt.Key.Key_M:
-                if event.modifiers() == Qt.KeyboardModifier.ShiftModifier:
-                    self._apply_histogram_preset(5, 95)
+                modifiers = event.modifiers()
+                use_visible_only = bool(modifiers & Qt.KeyboardModifier.AltModifier)
+                
+                if modifiers & Qt.KeyboardModifier.ShiftModifier:
+                    self._apply_histogram_preset(5, 95, use_visible_only)
                 else:
-                    self._apply_histogram_preset(0, 100)
+                    self._apply_histogram_preset(0, 100, use_visible_only)
         super().keyPressEvent(event)
 
-    def _apply_histogram_preset(self, min_percent, max_percent):
-        visible_data = self._get_visible_image_data()
+    def _apply_histogram_preset(self, min_percent, max_percent, use_visible_only=False):
+        visible_data = self._get_visible_image_data(use_visible_only)
         if visible_data is not None and visible_data.size > 0:
             if len(visible_data.shape) == 3:
                 hist_data = np.dot(visible_data[..., :3], [0.2989, 0.5870, 0.1140])
@@ -464,16 +531,35 @@ class ImageViewer(QMainWindow):
             self.set_contrast_limits(min_val, max_val)
             self.histogram_window.region.setRegion([min_val, max_val])
 
-    def _get_visible_image_data(self):
+    def _get_visible_image_data(self, use_visible_only=False):
         if not self.active_label or self.active_label.original_data is None:
             return None
+        if use_visible_only:
+             return self.active_label.get_visible_sub_image()
         return self.active_label.original_data
 
     def restore_image_view(self):
         if self.active_label:
-            self.active_label.set_data(self.active_label.original_data)
+            # Do not reset data, just the view (zoom/pan)
+            # self.active_label.set_data(self.active_label.original_data)
             self.active_label.restore_view()
-            self._update_active_view()
+            self._update_active_view(reset_histogram=False)
+
+    def reset_image_full(self):
+        """Completely reset the image to its original state (zoom, pan, contrast, colormap)."""
+        if self.active_label and self.active_label.original_data is not None:
+             # Reset data which clears contrast limits
+             self.active_label.set_data(self.active_label.original_data)
+             # Reset View
+             self.active_label.restore_view()
+             # Reset Colormap
+             self.set_colormap("gray")
+             self.colormap_combo.setCurrentText("gray")
+             # Reset Histogram/UI
+             self._update_active_view(reset_histogram=True)
+             
+             # Apply default Min-Max contrast again to ensure it's not raw/black
+             self._apply_histogram_preset(0, 100, use_visible_only=False)
 
     def eventFilter(self, source, event):
         if event.type() == QEvent.Type.DragEnter:
