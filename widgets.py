@@ -355,6 +355,7 @@ class ZoomableDraggableLabel(QLabel):
         self.colormap = 'gray'
 
         self.zoom_speed = 1.1
+        self.zoom_in_interp = Qt.TransformationMode.FastTransformation
         self.zoom_out_interp = Qt.TransformationMode.SmoothTransformation
         self._pinch_start_scale_factor = None
 
