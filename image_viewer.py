@@ -82,6 +82,9 @@ class ImageViewer(QMainWindow):
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+        
+        self.zoom_status_label = QLabel("Zoom: 100%")
+        self.status_bar.addPermanentWidget(self.zoom_status_label)
 
     def _create_welcome_screen(self):
         welcome_widget = QWidget()
@@ -105,7 +108,7 @@ class ImageViewer(QMainWindow):
     def _create_image_display(self):
         self.image_label = ZoomableDraggableLabel()
         self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
-        self.zoom_slider.setRange(0, 4000)
+        self.zoom_slider.setRange(0, 5000)
         self.zoom_slider.setValue(2000)
         self.zoom_slider.setTickInterval(1000)
         self.zoom_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
@@ -187,9 +190,10 @@ class ImageViewer(QMainWindow):
 
     def _create_math_transform_pane(self):
         self.math_transform_pane = MathTransformPane(self)
+        self.math_transform_pane.transform_requested.connect(self.apply_math_transform)
+        self.math_transform_pane.restore_original_requested.connect(self.restore_original_image)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.math_transform_pane)
         self.math_transform_pane.hide()
-        self.math_transform_pane.transform_requested.connect(self.apply_math_transform)
 
     def _create_histogram_window(self):
         self.histogram_window = HistogramWidget()
@@ -220,6 +224,7 @@ class ImageViewer(QMainWindow):
 
 
         self.montage_shared_state = SharedViewState()
+        max_montage_zoom = 100.0
 
         row, col = 0, 0
         for file_path in file_paths:
@@ -228,8 +233,13 @@ class ImageViewer(QMainWindow):
             data = temp_handler.original_image_data
 
             if data is not None and data.size > 0:
+                # Update Max Zoom Limit
+                dims = max(temp_handler.width, temp_handler.height)
+                if dims > max_montage_zoom: max_montage_zoom = float(dims)
+
                 image_label = ZoomableDraggableLabel(shared_state=self.montage_shared_state)
-                image_label.set_data(data)
+                image_label.set_data(data, is_pristine=True)
+                image_label.file_path = file_path # Store for overlay restoration
 
                 # Check if this file is already open in another window and inherit its state
                 for window in self.window_list:
@@ -264,6 +274,7 @@ class ImageViewer(QMainWindow):
                     row += 1
                     col = 0
         if self.montage_labels:
+            self.montage_shared_state.max_zoom_limit = max_montage_zoom
             self._set_active_montage_label(self.montage_labels[0])
 
         self.stacked_widget.setCurrentWidget(self.montage_widget)
@@ -314,7 +325,32 @@ class ImageViewer(QMainWindow):
         self.info_pane.setVisible(not self.info_pane.isVisible())
 
     def toggle_math_transform_pane(self):
-        self.math_transform_pane.setVisible(not self.math_transform_pane.isVisible())
+        visible = not self.math_transform_pane.isVisible()
+        self.math_transform_pane.setVisible(visible)
+        
+        # Update Overlays for ID identification
+        is_montage = self.stacked_widget.currentWidget() == self.montage_widget
+        
+        if is_montage:
+             for i, label in enumerate(self.montage_labels):
+                 if visible:
+                     label.set_overlay_text(f"x{i+1}")
+                     label.overlay_label.show()
+                 elif hasattr(label, 'file_path'):
+                     label.set_overlay_text(label.file_path)
+                     # Keep visible or revert to default? Assuming filenames usually hidden or explicitly shown.
+                     # If we forced show, maybe we should respect prior state?
+                     # For now, let's assume they want filenames if they close the pane?
+                     # Or just hide if it wasn't typical. 
+                     # Code check: display_montage sets text but doesn't show. So default is Hidden.
+                     label.overlay_label.hide()
+        else:
+             if self.active_label:
+                 if visible:
+                     self.active_label.set_overlay_text("x")
+                     self.active_label.overlay_label.show()
+                 else:
+                     self.active_label.overlay_label.hide()
 
     def toggle_histogram_window(self):
         if self.histogram_window.isVisible():
@@ -363,6 +399,8 @@ class ImageViewer(QMainWindow):
             self.zoom_slider.blockSignals(True)
             self.zoom_slider.setValue(slider_value)
             self.zoom_slider.blockSignals(False)
+            
+            self.zoom_status_label.setText(f"Zoom: {int(scale_factor * 100)}%")
 
     def reapply_raw_parameters(self, settings):
         try:
@@ -375,13 +413,31 @@ class ImageViewer(QMainWindow):
 
     def apply_math_transform(self, expression):
         try:
-            transformed_data = self.image_handler.apply_math_transform(expression)
+            context = {}
+            if self.stacked_widget.currentWidget() == self.montage_widget:
+                for i, label in enumerate(self.montage_labels):
+                    if label.pristine_data is not None:
+                        context[f"x{i+1}"] = label.pristine_data.astype(np.float64)
+            elif self.active_label and self.active_label.pristine_data is not None:
+                context["x"] = self.active_label.pristine_data.astype(np.float64)
+
+            transformed_data = self.image_handler.apply_math_transform(expression, context_dict=context)
             if self.active_label:
-                self.active_label.set_data(transformed_data)
+                self.active_label.set_data(transformed_data, reset_view=False)
             self.update_histogram_data(new_image=True)
             self.math_transform_pane.set_error_message("")
         except Exception as e:
-            self.math_transform_pane.set_error_message(f"Error: {e}")
+            self.math_transform_pane.set_error_message(str(e))
+
+    def restore_original_image(self):
+        if self.active_label and self.active_label.pristine_data is not None:
+            self.active_label.set_data(self.active_label.pristine_data, reset_view=False)
+            self.update_histogram_data(new_image=True)
+        # The instruction had a try-except block here, but it's not needed as the `if` condition handles the main case.
+        # If `active_label` or `pristine_data` is None, it simply won't execute the `if` block.
+        # If an error occurs within `set_data` or `update_histogram_data`, it should be handled there or propagate.
+        # Adding a generic `except Exception` here without specific error handling might hide issues.
+        # Keeping it as per the original structure of similar methods.
 
     def open_zoom_settings(self):
         dialog = ZoomSettingsDialog(self)
@@ -437,8 +493,9 @@ class ImageViewer(QMainWindow):
                                            self.image_handler.dtype, self.image_handler.dtype_map)
             else:
                 self.info_pane.hide()
-
-            self.image_label.set_data(self.image_handler.original_image_data)
+            
+            # Load Data (triggers render with set attributes)
+            self.image_label.set_data(self.image_handler.original_image_data, is_pristine=True)
             self._set_active_montage_label(self.image_label)
             
             # Apply default Min-Max contrast stretch for new image

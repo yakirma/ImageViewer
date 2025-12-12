@@ -1,5 +1,5 @@
 import numpy as np
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QPointF, QEvent, QObject, QTimer, QRectF
+from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QPointF, QEvent, QObject, QTimer, QRectF, QSettings
 from PyQt6.QtGui import QPixmap, QPainter, QNativeGestureEvent, QDoubleValidator, QKeyEvent, QImage, QMouseEvent, QColor
 from PyQt6.QtWidgets import (
     QApplication,
@@ -36,7 +36,28 @@ class SharedViewState(QObject):
         super().__init__()
         self._zoom_multiplier = 1.0
         self._offset = QPointF()
+        self._zoom_multiplier = 1.0
+        self._offset = QPointF()
         self._crosshair_pos = None
+        self.max_zoom_limit = 1000.0
+        
+        # Interaction State for Performance Optimization
+        self._is_interacting = False
+        self._interaction_timer = QTimer()
+        self._interaction_timer.setInterval(200) # 200ms debounce
+        self._interaction_timer.setSingleShot(True)
+        self._interaction_timer.timeout.connect(self._end_interaction)
+
+    def begin_interaction(self):
+        if not self._is_interacting:
+            self._is_interacting = True
+            # We don't need to force update here, the action itself (zoom/pan) will trigger it
+        
+        self._interaction_timer.start()
+
+    def _end_interaction(self):
+        self._is_interacting = False
+        self.view_changed.emit() # Trigger final update for high quality
 
     @property
     def zoom_multiplier(self):
@@ -201,6 +222,7 @@ class HistogramWidget(QWidget):
 
 class MathTransformPane(QDockWidget):
     transform_requested = pyqtSignal(str)
+    restore_original_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__("Math Transform", parent)
@@ -209,9 +231,26 @@ class MathTransformPane(QDockWidget):
         self.content_widget = QWidget()
         self.layout = QVBoxLayout(self.content_widget)
 
-        self.expression_input = QLineEdit()
-        self.expression_input.setPlaceholderText("Enter math expression (e.g., x+1, np.log(x))")
-        self.expression_input.returnPressed.connect(self._on_apply)
+        self.expression_input = QComboBox()
+        self.expression_input.setEditable(True)
+        self.expression_input.lineEdit().setPlaceholderText("Enter math expression (e.g., x+1, np.log(x))")
+        self.expression_input.lineEdit().returnPressed.connect(self._on_apply)
+        self.expression_input.lineEdit().setClearButtonEnabled(True)
+        # Deferred connection of editTextChanged is handled at end of __init__ or after error_label creation
+        
+        # Load History
+        settings = QSettings()
+        history = settings.value("math_transform_history", [])
+        # Ensure it's a list (QSettings might return None or type wrapper)
+        if not history:
+             history = ["x * 2", "x / 2", "255 - x", "np.log(x + 1)", "np.sqrt(x)"]
+        else:
+             # Ensure types are strings
+             history = [str(x) for x in history]
+
+        self.expression_input.addItems(history)
+        self.expression_input.setCurrentIndex(-1) # Start blank
+        
         self.layout.addWidget(self.expression_input)
 
         self.apply_button = QPushButton("Apply Transform")
@@ -221,16 +260,41 @@ class MathTransformPane(QDockWidget):
         self.error_label = QLabel("")
         self.error_label.setStyleSheet("color: red;")
         self.layout.addWidget(self.error_label)
+        
+        # Connect signal after all widgets are initialized
+        self.expression_input.editTextChanged.connect(self._on_text_changed)
 
         self.setWidget(self.content_widget)
 
     def _on_apply(self):
-        expression = self.expression_input.text()
+        expression = self.expression_input.currentText()
         if expression:
             self.error_label.clear()
+            
+            # Manage History: Move to top or Add
+            index = self.expression_input.findText(expression)
+            if index != -1:
+                self.expression_input.removeItem(index)
+            self.expression_input.insertItem(0, expression)
+            self.expression_input.setCurrentIndex(0)
+            
+            # Limit Widget Count to 30 (FIFO eviction from bottom)
+            while self.expression_input.count() > 30:
+                self.expression_input.removeItem(30)
+            
+            # Save History
+            settings = QSettings()
+            history = [self.expression_input.itemText(i) for i in range(self.expression_input.count())]
+            settings.setValue("math_transform_history", history)
+            
             self.transform_requested.emit(expression)
         else:
             self.error_label.setText("Expression cannot be empty.")
+
+    def _on_text_changed(self, text):
+        if not text.strip():
+            self.error_label.clear()
+            self.restore_original_requested.emit()
 
     def set_error_message(self, message):
         self.error_label.setText(message)
@@ -350,7 +414,8 @@ class ZoomableDraggableLabel(QLabel):
         self.drag_start_position = QPoint()
         self.processed_data = None # Store processed numpy array instead of QPixmap
 
-        self.original_data = None
+        self.overlays = [] # List of (QPixmap, opacity)
+        self.pristine_data = None # Original loaded data (preserved across transforms)
         self.contrast_limits = None
         self.colormap = 'gray'
 
@@ -470,10 +535,12 @@ class ZoomableDraggableLabel(QLabel):
             self.hover_left.emit()
             self.unsetCursor()
 
-    def set_data(self, data):
+    def set_data(self, data, reset_view=True, is_pristine=False):
         self.original_data = data
+        if is_pristine:
+            self.pristine_data = data
         self.contrast_limits = None
-        self.apply_colormap(is_new_image=True)
+        self.apply_colormap(is_new_image=reset_view)
 
     def is_single_channel(self):
         return self.original_data is not None and self.original_data.ndim == 2
@@ -769,7 +836,14 @@ class ZoomableDraggableLabel(QLabel):
         if self.shared_state:
             old_zoom_multiplier = self.shared_state.zoom_multiplier
             new_zoom_multiplier = new_effective_scale / self._fit_scale
-            new_zoom_multiplier = max(0.01 / self._fit_scale, min(100.0 / self._fit_scale, new_zoom_multiplier))
+            
+            # Dynamic Limits for Shared State
+            # Max Limit: Defined globally by the image with the largest Max Zoom Requirement
+            max_mult = self.shared_state.max_zoom_limit
+            # Min Limit: 10% effective scale for the current image
+            min_mult = 0.1 / self._fit_scale
+            
+            new_zoom_multiplier = max(min_mult, min(max_mult, new_zoom_multiplier))
 
             if abs(new_zoom_multiplier - old_zoom_multiplier) < 1e-9:
                 return
@@ -784,7 +858,11 @@ class ZoomableDraggableLabel(QLabel):
             self.shared_state.zoom_multiplier = new_zoom_multiplier
         else:
             old_scale_factor = self._scale_factor
-            new_scale_factor = max(0.01, min(100.0, new_effective_scale))
+            
+            # Dynamic Limit for Single View: 1 pixel takes the whole view
+            max_limit = max(self.width(), self.height())
+            new_scale_factor = max(0.1, min(float(max_limit), new_effective_scale))
+            
             if abs(new_scale_factor - old_scale_factor) < 1e-9:
                 return
             zoom_ratio = new_scale_factor / old_scale_factor
@@ -802,12 +880,13 @@ class ZoomableDraggableLabel(QLabel):
 
     def wheelEvent(self, event):
         current_effective_scale = self._get_effective_scale_factor()
-        # User requested invert: Up (usually > 0 or natural < 0) -> Zoom In.
-        # Assuming invert needed relative to current behavior.
+        if self.shared_state:
+             self.shared_state.begin_interaction()
+        
         if event.angleDelta().y() > 0:
-            new_effective_scale = current_effective_scale / self.zoom_speed
-        else:
             new_effective_scale = current_effective_scale * self.zoom_speed
+        else:
+            new_effective_scale = current_effective_scale / self.zoom_speed
         self._apply_zoom(new_effective_scale, event.position())
 
     def event(self, event):
@@ -896,10 +975,20 @@ class ZoomableDraggableLabel(QLabel):
         # Move back by half the PIXMAP size (center it)
         painter.translate(-self.current_pixmap.width() / 2, -self.current_pixmap.height() / 2)
         
-        if scale > 1.0:
+        # Determine if we should use Smooth Transformation
+        # Use Fast if interacting (scrolling/dragging) to improve performance, especially in Montage
+        use_smooth = True
+        if self.shared_state and self.shared_state._is_interacting:
+            use_smooth = False
+        
+        scale_factor_for_hint = self._get_effective_scale_factor()
+        
+        if scale_factor_for_hint < 1.0 and use_smooth:
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        elif scale_factor_for_hint > 1.0:
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.zoom_in_interp == Qt.TransformationMode.SmoothTransformation)
-        else:
-            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.zoom_out_interp == Qt.TransformationMode.SmoothTransformation)
+        else: # scale == 1.0 or not use_smooth for zoom out
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.zoom_out_interp == Qt.TransformationMode.SmoothTransformation and use_smooth)
 
         painter.drawPixmap(0, 0, self.current_pixmap)
 

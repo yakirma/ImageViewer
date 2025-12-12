@@ -65,18 +65,21 @@ class ImageHandler:
         _, ext = os.path.splitext(file_name)
         return width, height, self.dtype_map.get(ext.lower(), np.uint8)
 
-    def apply_math_transform(self, expression):
-        if self.original_image_data is None:
+    def apply_math_transform(self, expression, context_dict=None):
+        if self.original_image_data is None and context_dict is None:
             raise ValueError("No image loaded to transform.")
 
         safe_dict = {
-            'x': self.original_image_data,
+            'x': self.original_image_data.astype(np.float64) if self.original_image_data is not None else None,
             'np': np,
             'log': np.log, 'log10': np.log10, 'exp': np.exp,
             'sin': np.sin, 'cos': np.cos, 'tan': np.tan,
             'sqrt': np.sqrt, 'abs': np.abs,
         }
-
+        
+        if context_dict:
+            safe_dict.update(context_dict)
+            
         transformed_data = eval(expression, {"__builtins__": {}}, safe_dict)
 
         if not isinstance(transformed_data, np.ndarray):
