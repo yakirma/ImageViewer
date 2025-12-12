@@ -675,7 +675,11 @@ class ImageViewer(QMainWindow):
             min_val = np.percentile(hist_data, min_percent)
             max_val = np.percentile(hist_data, max_percent)
             self.set_contrast_limits(min_val, max_val)
+            
+            # Block signals to prevent redundant set_contrast_limits call via region_changed
+            self.histogram_window.region.blockSignals(True)
             self.histogram_window.region.setRegion([min_val, max_val])
+            self.histogram_window.region.blockSignals(False)
 
     def _get_visible_image_data(self, use_visible_only=False):
         if not self.active_label or self.active_label.original_data is None:
