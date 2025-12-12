@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QCheckBox
 )
+from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 import pyqtgraph as pg
 import os
 import matplotlib.cm as cm
@@ -382,8 +383,8 @@ class ZoomSettingsDialog(QDialog):
         self.zoom_out_interp_combo.setCurrentText(settings["zoom_out_interp"])
 
 
-class ZoomableDraggableLabel(QLabel):
-    hover_moved = pyqtSignal(int, int)
+class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU acceleration
+    hover_moved = pyqtSignal(int, int) # Signals mouse position in image coordinates
     hover_left = pyqtSignal()
     zoom_factor_changed = pyqtSignal(float)
     view_changed = pyqtSignal()
@@ -391,7 +392,6 @@ class ZoomableDraggableLabel(QLabel):
 
     def __init__(self, parent=None, shared_state=None):
         super().__init__(parent)
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.grabGesture(Qt.GestureType.PinchGesture)
@@ -416,6 +416,7 @@ class ZoomableDraggableLabel(QLabel):
 
         self.overlays = [] # List of (QPixmap, opacity)
         self.pristine_data = None # Original loaded data (preserved across transforms)
+        self.thumbnail_pixmap = None # Cached thumbnail for optimized rendering
         self.contrast_limits = None
         self.colormap = 'gray'
 
@@ -678,6 +679,11 @@ class ZoomableDraggableLabel(QLabel):
 
     def update_pixmap_content(self, pixmap):
         self.current_pixmap = pixmap
+        # Generate Thumbnail for Montage Optimization (if large)
+        if pixmap and max(pixmap.width(), pixmap.height()) > 800:
+             self.thumbnail_pixmap = pixmap.scaled(800, 800, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        else:
+             self.thumbnail_pixmap = None
         self.update()
 
     def resizeEvent(self, event):
@@ -990,9 +996,26 @@ class ZoomableDraggableLabel(QLabel):
         else: # scale == 1.0 or not use_smooth for zoom out
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.zoom_out_interp == Qt.TransformationMode.SmoothTransformation and use_smooth)
 
-        painter.drawPixmap(0, 0, self.current_pixmap)
+        # Draw Image (Thumbnail Optimized)
+        drawn = False
+        if self.thumbnail_pixmap and scale < 0.5: # Only use thumb if significantly zoomed out
+             target_width = self.current_pixmap.width() * scale
+             # If target on screen is smaller than thumbnail, use thumbnail
+             if target_width < self.thumbnail_pixmap.width():
+                 painter.save()
+                 # Adjust scale: We are in "Original Image Space".
+                 # Thumbnail is smaller. We need to scale UP the drawing context to make the thumbnail fill the Original space.
+                 # Ratio > 1.0
+                 width_ratio = self.current_pixmap.width() / self.thumbnail_pixmap.width()
+                 painter.scale(width_ratio, width_ratio)
+                 painter.drawPixmap(0, 0, self.thumbnail_pixmap)
+                 painter.restore()
+                 drawn = True
+        
+        if not drawn:
+            painter.drawPixmap(0, 0, self.current_pixmap)
 
-        # Draw Overlays
+        # Draw Overlays (in Original Image Space)
         if self.overlays:
             for overlay_pixmap, opacity in self.overlays:
                 if overlay_pixmap and not overlay_pixmap.isNull():
@@ -1001,6 +1024,8 @@ class ZoomableDraggableLabel(QLabel):
             painter.setOpacity(1.0)
 
         painter.restore()
+        
+        # Crosshair drawing continues below...
 
         # Calculate target rect for Crosshair (Widget Coordinates)
         w = self.current_pixmap.width() * draw_scale
