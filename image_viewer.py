@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QVBoxLayout,
     QWidget,
+    QFrame,
     QFileDialog,
     QStatusBar,
     QPushButton,
@@ -267,8 +268,26 @@ class ImageViewer(QMainWindow):
                 image_label.clicked.connect(lambda label=image_label: self._set_active_montage_label(label))
                 self.montage_labels.append(image_label)
 
-                self.montage_layout.addWidget(image_label, row, col)
-                image_label.hover_moved.connect(lambda x, y, label=image_label: self._set_active_montage_label(label))
+                # Container for Image + Active Indicator Line
+                container = QWidget()
+                container_layout = QVBoxLayout(container)
+                container_layout.setContentsMargins(0, 0, 0, 0)
+                container_layout.setSpacing(0)
+                
+                container_layout.addWidget(image_label)
+                
+                # Active Indicator Line
+                line = QFrame()
+                line.setFixedHeight(4)
+                line.setStyleSheet("background-color: transparent;")
+                container_layout.addWidget(line)
+                
+                # Attach line to label for easy access
+                image_label.indicator_line = line
+
+                self.montage_layout.addWidget(container, row, col)
+                # Removed hover_moved connection for activation (Click only)
+                image_label.hover_moved.connect(self.update_status_bar) # Just update status bar, don't activate
                 
                 col += 1
                 if col % 3 == 0:
@@ -283,9 +302,14 @@ class ImageViewer(QMainWindow):
     def _set_active_montage_label(self, label):
         if self.active_label:
             self.active_label.set_active(False)
+            if hasattr(self.active_label, 'indicator_line'):
+                 self.active_label.indicator_line.setStyleSheet("background-color: transparent;")
+
         self.active_label = label
         if self.active_label:
             self.active_label.set_active(True)
+            if hasattr(self.active_label, 'indicator_line'):
+                 self.active_label.indicator_line.setStyleSheet("background-color: #007AFF;") # Active Blue
         self._update_active_view()
 
     def _update_active_view(self, reset_histogram=True):
