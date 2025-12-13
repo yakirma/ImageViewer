@@ -389,7 +389,7 @@ class ImageViewer(QMainWindow):
         if self.sender() is not self.zoom_slider: return
         if self.active_label:
             zoom_factor = 10 ** ((value / 1000.0) - 2.0)
-            if abs(self.active_label._get_scale_factor() - zoom_factor) > 1e-5:
+            if abs(self.active_label._get_effective_scale_factor() - zoom_factor) > 1e-5:
                 self.active_label._apply_zoom(zoom_factor)
 
     def _on_image_label_zoom_changed(self, scale_factor):
@@ -449,7 +449,7 @@ class ImageViewer(QMainWindow):
     def apply_zoom_settings(self):
         # Apply to main image label
         if hasattr(self, 'image_label'):
-             self._apply_zoom_settings_to_label(self.image_label)
+             self._apply_zoom_settings_to_label(self.   image_label)
         
         # Apply to all montage labels
         for label in self.montage_labels:
@@ -569,6 +569,16 @@ class ImageViewer(QMainWindow):
             return
             
         use_visible_only = self.histogram_window.use_visible_checkbox.isChecked()
+        
+        # Optimization: If not using visible only (meaning full image), and we didn't just load a new image, 
+        # then the histogram data (full image) hasn't changed, so skip update.
+        if not use_visible_only and not new_image:
+             # We might check if we actually have data in the histogram first?
+             # Assuming if not new_image, we already populated it once.
+             # However, let's be safe: if histogram is empty, we should run.
+             if self.histogram_window.data is not None:
+                 return
+
         visible_data = self._get_visible_image_data(use_visible_only=use_visible_only)
  
         # Only allow the histogram widget to reset the region if we don't have custom limits

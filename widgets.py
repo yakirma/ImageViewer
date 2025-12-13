@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QPointF, QEvent, QObject, QTimer, QRectF, QSettings
 from PyQt6.QtGui import QPixmap, QPainter, QNativeGestureEvent, QDoubleValidator, QKeyEvent, QImage, QMouseEvent, QColor
@@ -431,7 +433,14 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self.overlay_label.hide()
         self.overlay_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         
+        
         self.overlays = [] # List of tuples: (QPixmap, opacity)
+
+        # Debounce Timer for View Changed Signal (Histogram updates)
+        self._view_update_timer = QTimer()
+        self._view_update_timer.setSingleShot(True)
+        self._view_update_timer.setInterval(200) # 200ms debounce
+        self._view_update_timer.timeout.connect(self.view_changed.emit)
 
     def _get_effective_scale_factor(self):
         if self.shared_state:
@@ -882,13 +891,15 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             self.update()
 
         self.zoom_factor_changed.emit(self._get_effective_scale_factor())
-        self.view_changed.emit()
+        
+        # Debounce the expensive view changed signal (histogram update)
+        self._view_update_timer.start()
 
     def wheelEvent(self, event):
         current_effective_scale = self._get_effective_scale_factor()
         if self.shared_state:
              self.shared_state.begin_interaction()
-        
+
         if event.angleDelta().y() > 0:
             new_effective_scale = current_effective_scale * self.zoom_speed
         else:
@@ -935,7 +946,8 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                 self._pixmap_offset += QPointF(delta)
                 self.update()
             self.drag_start_position = event.pos()
-            self.view_changed.emit()
+            self.drag_start_position = event.pos()
+            # self.view_changed.emit() # Removed for performance, moved to release
 
         if self.original_data is not None and self.current_pixmap is not None:
              # Even if not active/focused, if we are in shared state we should update.
@@ -945,6 +957,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.drag_start_position = QPoint()
+            self.view_changed.emit() # Update histogram on release
 
     def set_overlays(self, overlays):
         """Sets the list of overlays to be drawn on top of the main image.
