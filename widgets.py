@@ -138,6 +138,12 @@ class HistogramWidget(QWidget):
         self.min_max_btn = QPushButton("Min-Max")
         self.p5_95_btn = QPushButton("5%-95%")
         self.p1_99_btn = QPushButton("1%-99%")
+        
+        # Debounce timer for histogram region updates
+        self._region_update_timer = QTimer()
+        self._region_update_timer.setSingleShot(True)
+        self._region_update_timer.setInterval(200) # 200 ms
+        self._region_update_timer.timeout.connect(self._emit_delayed_region_changed)
         presets_layout.addWidget(self.min_max_btn)
         presets_layout.addWidget(self.p5_95_btn)
         presets_layout.addWidget(self.p1_99_btn)
@@ -201,6 +207,11 @@ class HistogramWidget(QWidget):
         min_val, max_val = region_item.getRegion()
         self.min_val_input.setText(f"{min_val:.2f}")
         self.max_val_input.setText(f"{max_val:.2f}")
+        # Debounce the expensive image update
+        self._region_update_timer.start()
+
+    def _emit_delayed_region_changed(self):
+        min_val, max_val = self.region.getRegion()
         self.region_changed.emit(min_val, max_val)
 
     def set_region_to_percentile(self, min_percent, max_percent):

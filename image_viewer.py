@@ -1,4 +1,5 @@
 import os
+import time
 
 import numpy as np
 from PyQt6.QtCore import Qt, QEvent, QPoint
