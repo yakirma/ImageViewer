@@ -2,7 +2,7 @@ import time
 
 import numpy as np
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QPointF, QEvent, QObject, QTimer, QRectF, QSettings
-from PyQt6.QtGui import QPixmap, QPainter, QNativeGestureEvent, QDoubleValidator, QKeyEvent, QImage, QMouseEvent, QColor
+from PyQt6.QtGui import QPixmap, QPainter, QNativeGestureEvent, QDoubleValidator, QKeyEvent, QImage, QMouseEvent, QColor, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QLabel,
@@ -22,7 +22,8 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QScrollArea,
     QSizePolicy,
-    QCheckBox
+    QCheckBox,
+    QStyle
 )
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 import pyqtgraph as pg
@@ -315,7 +316,8 @@ class MathTransformPane(QDockWidget):
 
 
 class InfoPane(QDockWidget):
-    apply_clicked = pyqtSignal(dict)
+    # Signal now emits on change
+    settings_changed = pyqtSignal(dict)
 
     def __init__(self, parent=None):
         super().__init__("Image Info", parent)
@@ -324,40 +326,192 @@ class InfoPane(QDockWidget):
         self.content_widget = QWidget()
         self.layout = QFormLayout(self.content_widget)
 
+        self.file_size = 0 # Bytes
+
         self.dtype_combo = QComboBox()
+        self.dtype_combo.setEditable(True)  
+        self.dtype_combo.currentTextChanged.connect(self._on_parameter_change)
+
         self.width_spinbox = QSpinBox()
-        self.width_spinbox.setRange(1, 16384)
+        self.width_spinbox.setRange(1, 100000)
+        self.width_spinbox.setValue(1280) # Default to reasonable value
+        self.width_spinbox.valueChanged.connect(self._on_width_changed)
+        
         self.height_spinbox = QSpinBox()
-        self.height_spinbox.setRange(1, 16384)
-        self.apply_button = QPushButton("Apply")
-        self.apply_button.clicked.connect(self.on_apply)
+        self.height_spinbox.setRange(1, 100000)
+        self.height_spinbox.setValue(720) # Default to reasonable value
+        self.height_spinbox.valueChanged.connect(self._on_parameter_change)
 
         self.layout.addRow("Data Type:", self.dtype_combo)
         self.layout.addRow("Width:", self.width_spinbox)
         self.layout.addRow("Height:", self.height_spinbox)
-        self.layout.addWidget(self.apply_button)
+
+        self.color_format_combo = QComboBox()
+        self.color_format_combo.addItems(["Grayscale", "Bayer GRBG", "Bayer RGGB", "Bayer BGGR", "Bayer GBRG", 
+                                          "YUV NV12", "YUV NV21", "YUV YUYV", "YUV UYVY", "YUV I420"])
+        self.color_format_combo = QComboBox()
+        self.color_format_combo.addItems(["Grayscale", "Bayer GRBG", "Bayer RGGB", "Bayer BGGR", "Bayer GBRG", 
+                                          "YUV NV12", "YUV NV21", "YUV YUYV", "YUV UYVY", "YUV I420"])
+        self.color_format_combo.currentTextChanged.connect(self._on_parameter_change)
+        self.layout.addRow("Format:", self.color_format_combo)
+
+        self.reset_button = QPushButton()
+        self.reset_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        self.reset_button.setToolTip("Reset Parameters")
+        self.reset_button.setFixedWidth(30) # Small square-ish button
+        self.reset_button.clicked.connect(self._on_reset)
+        
+        # Add to a row with spacers or specific alignment? 
+        # Actually, maybe just a row with label "Reset:" or empty label?
+        # Or put it next to something?
+        # Existing code: self.layout.addWidget(self.reset_button) which puts it in a new row spanning width.
+        # Let's align it right or make it less intrusive.
+        
+        reset_layout = QHBoxLayout()
+        reset_layout.addStretch()
+        reset_layout.addWidget(self.reset_button)
+        self.layout.addRow("", reset_layout) # improved layout
+        
+        self.defaults = {}
+
+        self._change_timer = QTimer()
+        self._change_timer.setSingleShot(True)
+        self._change_timer.setInterval(200)
+        self._change_timer.timeout.connect(self._emit_settings)
 
         self.setWidget(self.content_widget)
 
-    def on_apply(self):
+    def _on_width_changed(self):
+        self._recalculate_height()
+        self._on_parameter_change()
+
+    def _on_parameter_change(self):
+        # Trigger recalculation if needed (e.g. if type/format changes, height might need update?)
+        # User request: "when swutching the image type/format, try finding the closet appropriate resolution."
+        # This implies changing type/format ALSO affects resolution if we want to respect file size.
+        sender = self.sender()
+        if sender == self.dtype_combo or sender == self.color_format_combo:
+             self._recalculate_height()
+        
+        self._change_timer.start()
+
+    def _recalculate_height(self):
+        if self.file_size <= 0: return
+
+        width = self.width_spinbox.value()
+        if width <= 0: return
+        
+        # Determine BPP
+        dtype_str = self.dtype_combo.currentText()
+        fmt = self.color_format_combo.currentText()
+        
+        # Parse bits from dtype string
+        itemsize = 1
+        if "float64" in dtype_str: itemsize = 8
+        elif "float32" in dtype_str: itemsize = 4
+        elif "float16" in dtype_str: itemsize = 2
+        else:
+             import re
+             match = re.search(r'\d+', dtype_str)
+             bits = int(match.group(0)) if match else 8
+             # Container size logic (should match image_handler)
+             if bits <= 8: itemsize = 1
+             elif bits <= 16: itemsize = 2
+             elif bits <= 32: itemsize = 4
+             else: itemsize = 8
+             
+        bpp = float(itemsize)
+        
+        # Format Factors
+        if "NV12" in fmt or "NV21" in fmt or "I420" in fmt:
+            bpp *= 1.5
+        elif "YUYV" in fmt or "UYVY" in fmt:
+            bpp *= 2.0
+        
+        # Calculate Height
+        # Size = W * H * BPP
+        # H = Size / (W * BPP)
+        
+        if bpp > 0:
+            new_height = int(self.file_size / (width * bpp))
+            if new_height < 1: new_height = 1
+            
+            self.height_spinbox.blockSignals(True)
+            self.height_spinbox.setValue(new_height)
+            self.height_spinbox.blockSignals(False)
+
+    def _emit_settings(self):
         settings = {
             'width': self.width_spinbox.value(),
             'height': self.height_spinbox.value(),
-            'dtype': self.dtype_combo.currentData(),
+            'dtype': self.dtype_combo.currentText(),
+            'color_format': self.color_format_combo.currentText(),
         }
-        self.apply_clicked.emit(settings)
+        self.settings_changed.emit(settings) # Renamed signal
 
-    def update_info(self, width, height, dtype, dtype_map):
-        if self.dtype_combo.count() == 0:
-            for ext, dt in dtype_map.items():
-                self.dtype_combo.addItem(f"{ext} ({np.dtype(dt).name})", dt)
+    def _on_reset(self):
+        if not self.defaults: return
+        
+        self.blockSignals(True)
+        self.width_spinbox.setValue(self.defaults.get('width', 1920))
+        self.height_spinbox.setValue(self.defaults.get('height', 1080))
+        self.dtype_combo.setCurrentText(self.defaults.get('dtype', 'uint8'))
+        self.color_format_combo.setCurrentText(self.defaults.get('color_format', 'Grayscale'))
+        self.blockSignals(False)
+        self._emit_settings()
 
+    def update_info(self, width, height, dtype, dtype_map, file_size=0):
+        self.file_size = file_size
+        
+        # Store defaults
+        self.defaults = {
+            'width': width,
+            'height': height,
+            'dtype': str(dtype) if not isinstance(dtype, type) else np.dtype(dtype).name,
+            'color_format': self.color_format_combo.currentText() # Preserve current format or reset to Gray? 
+            # Usually update_info is called with detected params. 
+            # If detected was just "Raw", format is default Grayscale, so getting currentText is risky if user changed it?
+            # Ideally update_info should take format. But image_handler only guesses Grayscale usually.
+            # Let's assume Grayscale default for new loads.
+        }
+        # If we want to allow override_settings loopback, we might need to handle format better.
+        # For now, default to 'Grayscale' in defaults if not passed, BUT wait,
+        # update_info is called from open_file. open_file doesn't pass format.
+        self.defaults['color_format'] = "Grayscale"
+
+        self.width_spinbox.blockSignals(True)
+        self.height_spinbox.blockSignals(True)
+        self.dtype_combo.blockSignals(True)
+        self.color_format_combo.blockSignals(True)
         self.width_spinbox.setValue(width)
         self.height_spinbox.setValue(height)
+        # Populate Standard Types + float64
+        if self.dtype_combo.count() == 0: # Only populate once or check better
+             # Actually we might want to ensure items exist
+             pass
 
-        index = self.dtype_combo.findData(dtype)
+        if self.dtype_combo.findText("float64") == -1:
+             self.dtype_combo.addItem("float64")
+        
+        # Add basic uint/int types if missing
+        # Standard + Common Raw Bit Depths
+        common_bits = [8, 10, 12, 14, 16, 32, 64]
+        for i in common_bits:
+             if self.dtype_combo.findText(f"uint{i}") == -1: self.dtype_combo.addItem(f"uint{i}")
+             if self.dtype_combo.findText(f"int{i}") == -1: self.dtype_combo.addItem(f"int{i}")
+
+        index = self.dtype_combo.findText(str(dtype) if not isinstance(dtype, type) else np.dtype(dtype).name)
+        # If not found, set text
         if index != -1:
             self.dtype_combo.setCurrentIndex(index)
+        else:
+             self.dtype_combo.setCurrentText(str(dtype) if not isinstance(dtype, type) else np.dtype(dtype).name)
+             
+        self.width_spinbox.blockSignals(False)
+        self.height_spinbox.blockSignals(False)
+        self.dtype_combo.blockSignals(False)
+        self.color_format_combo.blockSignals(False)
+
 
     def set_raw_mode(self, is_raw):
         self.setEnabled(is_raw)

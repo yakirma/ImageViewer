@@ -188,7 +188,7 @@ class ImageViewer(QMainWindow):
         self.info_pane = InfoPane(self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.info_pane)
         self.info_pane.hide()
-        self.info_pane.apply_clicked.connect(self.reapply_raw_parameters)
+        self.info_pane.settings_changed.connect(self.reapply_raw_parameters)
 
     def _create_math_transform_pane(self):
         self.math_transform_pane = MathTransformPane(self)
@@ -497,14 +497,25 @@ class ImageViewer(QMainWindow):
             self.active_label.set_contrast_limits(min_val, max_val)
 
     def open_image_dialog(self):
+        extensions = self.image_handler.raw_extensions + ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']
+        # Create unique list
+        extensions = list(set(extensions))
+        ext_str = " ".join(['*' + ext for ext in extensions])
+        
         file_path, _ = QFileDialog.getOpenFileName(self, "Open Image", "",
-                                                   f"Image Files (*.png *.jpg *.jpeg *.bmp *.tiff {' '.join(['*' + ext for ext in self.image_handler.raw_extensions])})")
+                                                   f"Image Files ({ext_str})")
         if file_path:
             self.open_file(file_path)
 
     def open_file(self, file_path):
         self.current_file_path = file_path
         try:
+             # Get File Size
+            if os.path.exists(file_path):
+                 file_size = os.path.getsize(file_path)
+            else:
+                 file_size = 0
+                 
             self.image_handler.load_image(file_path)
 
             self.info_action.setEnabled(self.image_handler.is_raw)
@@ -515,7 +526,8 @@ class ImageViewer(QMainWindow):
 
             if self.image_handler.is_raw:
                 self.info_pane.update_info(self.image_handler.width, self.image_handler.height,
-                                           self.image_handler.dtype, self.image_handler.dtype_map)
+                                           self.image_handler.dtype, self.image_handler.dtype_map,
+                                           file_size=file_size)
             else:
                 self.info_pane.hide()
             
@@ -526,7 +538,7 @@ class ImageViewer(QMainWindow):
             # Apply default Min-Max contrast stretch for new image
             self._apply_histogram_preset(0, 100)
             
-            # Clear overlay cache as dimensions/proxy might have changed
+            # Clear overlay cache
             self.overlay_cache.clear()
             self._update_overlays() 
     
@@ -534,17 +546,50 @@ class ImageViewer(QMainWindow):
                 self.stacked_widget.setCurrentWidget(self.image_display_container)
                 self.recent_files = settings.add_to_recent_files(self.recent_files, file_path)
                 self._update_recent_files_menu()
-
-                # Update path overlay
                 self.image_label.set_overlay_text(file_path)
 
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error opening image:\n{e}")
-            self.math_transform_action.setEnabled(False)
-            self.info_action.setEnabled(False)
-            self.info_pane.set_raw_mode(False)
-            self.zoom_slider.setEnabled(False)
-            self.histogram_action.setEnabled(False)
+            # Check if this is a raw file loading error (e.g. resolution missing)
+            # We try to enable the Raw Info pane so user can fix it
+            _, ext = os.path.splitext(file_path)
+            if ext.lower() in self.image_handler.raw_extensions or self.image_handler.is_raw:
+                # Enable controls
+                self.info_action.setEnabled(True)
+                self.info_pane.set_raw_mode(True)
+                self.stacked_widget.setCurrentWidget(self.image_display_container) # Show empty/previous?
+                
+                # Guess Parameters using 4:3 Aspect Ratio
+                # W * H = Size / BPP
+                # Assume W/H = 4/3 => H = 0.75 W
+                # W * 0.75 * W = Size => W^2 = Size / 0.75 = Size * 1.333
+                
+                guess_bpp = 1.0 # default to 1 byte per pixel
+                
+                if file_size > 0:
+                    guess_width = int(np.sqrt((file_size / guess_bpp) * (4.0/3.0)))
+                    # Align to 16 just in case
+                    guess_width = (guess_width // 16) * 16
+                    if guess_width < 1: guess_width = 1280
+                else:
+                    guess_width = 1280
+
+                width = guess_width
+                height = int(file_size / (width * guess_bpp))
+                if height < 1: height = 1
+                
+                self.info_pane.update_info(width, height, np.uint8, self.image_handler.dtype_map, file_size=file_size)
+                self.info_pane.show()
+                self.toggle_info_pane() # Ensure visible
+                
+                self.status_bar.showMessage(f"Raw load failed: {str(e)}. Please set parameters manually.", 10000)
+                QMessageBox.information(self, "Raw Parameters Required", "Could not automatically determine image parameters.\nPlease set Width, Height, and Type in the Info Pane.")
+            else:
+                QMessageBox.critical(self, "Error", f"Error opening image:\n{e}")
+                self.math_transform_action.setEnabled(False)
+                self.info_action.setEnabled(False)
+                self.info_pane.set_raw_mode(False)
+                self.zoom_slider.setEnabled(False)
+                self.histogram_action.setEnabled(False)
 
     def save_view(self):
         if self.active_label and self.active_label.current_pixmap:
