@@ -427,12 +427,19 @@ class ImageViewer(QMainWindow):
             
             self.zoom_status_label.setText(f"Zoom: {int(scale_factor * 100)}%")
 
-    def reapply_raw_parameters(self, settings):
+    def reapply_raw_parameters(self, raw_settings):
+        # Renamed argument to raw_settings to avoid shadowing global settings module if imported
         try:
-            self.image_handler.load_image(self.current_file_path, override_settings=settings)
+            self.image_handler.load_image(self.current_file_path, override_settings=raw_settings)
             if self.active_label:
                 self.active_label.set_data(self.image_handler.original_image_data)
             self.update_histogram_data(new_image=True)
+            
+            # Save to history if this file lacks explicit resolution
+            width, height, _ = self.image_handler.parse_resolution(self.current_file_path)
+            if width == 0 or height == 0:
+                 settings.update_raw_history(self.current_file_path, raw_settings)
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error applying parameters:\n{e}")
 
@@ -509,13 +516,110 @@ class ImageViewer(QMainWindow):
 
     def open_file(self, file_path):
         self.current_file_path = file_path
-        try:
-             # Get File Size
-            if os.path.exists(file_path):
-                 file_size = os.path.getsize(file_path)
-            else:
-                 file_size = 0
+        
+        # Determine if it's a raw file
+        _, ext = os.path.splitext(file_path)
+        is_raw = ext.lower() in self.image_handler.raw_extensions
+
+        # Get File Size
+        if os.path.exists(file_path):
+             file_size = os.path.getsize(file_path)
+        else:
+             file_size = 0
+
+        # Check resolution for raw files BEFORE attempting load
+        if is_raw:
+             # This uses the new method which returns (0,0) instead of raising
+             width, height, dtype_raw = self.image_handler.parse_resolution(file_path)
+             
+             if width == 0 or height == 0:
+                 # Logic for missing resolution (formerly in except block)
+                 self.info_action.setEnabled(True)
+                 self.info_pane.set_raw_mode(True)
+                 self.stacked_widget.setCurrentWidget(self.image_display_container)
                  
+                 # Infer dtype from extension
+                 dtype = self.image_handler.dtype_map.get(ext.lower(), np.uint8)
+                 
+                 # Determine BPP from dtype
+                 try:
+                     if isinstance(dtype, str):
+                          container, _, _, _ = self.image_handler._parse_dtype_string(dtype)
+                          guess_bpp = float(np.dtype(container).itemsize)
+                     else:
+                          guess_bpp = float(np.dtype(dtype).itemsize)
+                 except:
+                     guess_bpp = 1.0
+
+                 # Guess Parameters using 4:3 Aspect Ratio
+                 guess_width = int(np.sqrt((file_size / guess_bpp) * (4.0/3.0)))
+                 # Align to 16
+                 guess_width = (guess_width // 16) * 16
+                 if guess_width < 1: guess_width = 1280
+
+                 width = guess_width
+                 height = int(file_size / (width * guess_bpp))
+                 if height < 1: height = 1
+                 
+                 self.info_pane.update_info(width, height, dtype, self.image_handler.dtype_map, file_size=file_size)
+                 self.info_pane.show()
+                 self.toggle_info_pane() # Ensure visible
+                 
+                 self.status_bar.showMessage("Resolution missing from filename. Using estimated parameters.", 10000)
+                 
+                 # Check history for explicit settings
+                 history = settings.load_raw_history()
+                 params = history.get(file_path)
+                 
+                 if params:
+                      guess_settings = params
+                      # Update Info Pane with historical params to prevent mismatch if user opens pane
+                      self.info_pane.update_info(params['width'], params['height'], params['dtype'], 
+                                                 self.image_handler.dtype_map, file_size=file_size)
+                      # Note: We can't easily set color_format in info_pane here without exposing more API, 
+                      # but it will sync when settings_changed is emitted or we could add a method.
+                      # For now, update_info handles W/H/Dtype. Format might default to Grayscale.
+                 else:
+                      # Auto-load with guessed parameters
+                      guess_settings = {
+                             'width': width,
+                             'height': height,
+                             'dtype': dtype, 
+                             'color_format': 'Grayscale'
+                      }
+
+                 try:
+                     self.image_handler.load_image(file_path, override_settings=guess_settings)
+                     
+                     # Success - enable UI controls
+                     self.info_action.setEnabled(True)
+                     self.info_pane.set_raw_mode(True)
+                     self.math_transform_action.setEnabled(True)
+                     self.zoom_slider.setEnabled(True)
+                     self.histogram_action.setEnabled(True)
+                     
+                     self.image_label.set_data(self.image_handler.original_image_data, is_pristine=True)
+                     self._set_active_montage_label(self.image_label)
+                     self._apply_histogram_preset(0, 100)
+                     self.overlay_cache.clear()
+                     self._update_overlays() 
+                     
+                     if self.image_label.current_pixmap:
+                        self.stacked_widget.setCurrentWidget(self.image_display_container)
+                        self.recent_files = settings.add_to_recent_files(self.recent_files, file_path)
+                        self._update_recent_files_menu()
+                        self.image_label.set_overlay_text(file_path)
+                        
+                        # Save successful load to history
+                        settings.update_raw_history(file_path, guess_settings)
+                        
+                 except Exception as e:
+                     QMessageBox.critical(self, "Error", f"Error auto-loading estimated image:\n{e}")
+                     
+                 return # Stop here, as we've handled the load attempt manually
+
+        # Proceed to load image (Standard or Raw with Resolution)
+        try:     
             self.image_handler.load_image(file_path)
 
             self.info_action.setEnabled(self.image_handler.is_raw)
@@ -549,47 +653,12 @@ class ImageViewer(QMainWindow):
                 self.image_label.set_overlay_text(file_path)
 
         except Exception as e:
-            # Check if this is a raw file loading error (e.g. resolution missing)
-            # We try to enable the Raw Info pane so user can fix it
-            _, ext = os.path.splitext(file_path)
-            if ext.lower() in self.image_handler.raw_extensions or self.image_handler.is_raw:
-                # Enable controls
-                self.info_action.setEnabled(True)
-                self.info_pane.set_raw_mode(True)
-                self.stacked_widget.setCurrentWidget(self.image_display_container) # Show empty/previous?
-                
-                # Guess Parameters using 4:3 Aspect Ratio
-                # W * H = Size / BPP
-                # Assume W/H = 4/3 => H = 0.75 W
-                # W * 0.75 * W = Size => W^2 = Size / 0.75 = Size * 1.333
-                
-                guess_bpp = 1.0 # default to 1 byte per pixel
-                
-                if file_size > 0:
-                    guess_width = int(np.sqrt((file_size / guess_bpp) * (4.0/3.0)))
-                    # Align to 16 just in case
-                    guess_width = (guess_width // 16) * 16
-                    if guess_width < 1: guess_width = 1280
-                else:
-                    guess_width = 1280
-
-                width = guess_width
-                height = int(file_size / (width * guess_bpp))
-                if height < 1: height = 1
-                
-                self.info_pane.update_info(width, height, np.uint8, self.image_handler.dtype_map, file_size=file_size)
-                self.info_pane.show()
-                self.toggle_info_pane() # Ensure visible
-                
-                self.status_bar.showMessage(f"Raw load failed: {str(e)}. Please set parameters manually.", 10000)
-                QMessageBox.information(self, "Raw Parameters Required", "Could not automatically determine image parameters.\nPlease set Width, Height, and Type in the Info Pane.")
-            else:
-                QMessageBox.critical(self, "Error", f"Error opening image:\n{e}")
-                self.math_transform_action.setEnabled(False)
-                self.info_action.setEnabled(False)
-                self.info_pane.set_raw_mode(False)
-                self.zoom_slider.setEnabled(False)
-                self.histogram_action.setEnabled(False)
+            QMessageBox.critical(self, "Error", f"Error opening image:\n{e}")
+            self.math_transform_action.setEnabled(False)
+            self.info_action.setEnabled(False)
+            self.info_pane.set_raw_mode(False)
+            self.zoom_slider.setEnabled(False)
+            self.histogram_action.setEnabled(False)
 
     def save_view(self):
         if self.active_label and self.active_label.current_pixmap:

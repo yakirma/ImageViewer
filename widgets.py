@@ -582,6 +582,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self.processed_data = None # Store processed numpy array instead of QPixmap
 
         self.overlays = [] # List of (QPixmap, opacity)
+        self.original_data = None # Raw data before processing
         self.pristine_data = None # Original loaded data (preserved across transforms)
         self.thumbnail_pixmap = None # Cached thumbnail for optimized rendering
         self.contrast_limits = None

@@ -27,4 +27,4 @@ if __name__ == "__main__":
              # Delay slightly to ensure UI is ready
              QTimer.singleShot(100, lambda: viewer.open_file(file_path))
 
-    sys.exit(app.exec())
+    sys.exit(app.exec())    

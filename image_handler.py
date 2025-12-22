@@ -26,7 +26,7 @@ class ImageHandler:
             ".uint8": np.uint8, ".u8": np.uint8, ".raw": np.uint8, ".yuv": np.uint8, ".nv12": np.uint8, ".nv21": np.uint8, ".y": np.uint8,
              ".yuyv": np.uint8, ".uyvy": np.uint8,
             ".uint16": np.uint16, ".u16": np.uint16,
-            ".u10": np.uint16, ".u12": np.uint16, ".u14": np.uint16, # Often stored in 16-bit
+            ".u10": "uint10", ".u12": "uint12", ".u14": "uint14", # Often stored in 16-bit
             ".rgb": np.uint8, ".rgba": np.uint8, ".bgr": np.uint8, ".bgra": np.uint8
         }
 
@@ -67,26 +67,38 @@ class ImageHandler:
             dtype_str = override_settings['dtype']
             color_format = override_settings.get('color_format', "Grayscale")
             
-            # Allow pure numeric dtype from legacy settings or map
             if isinstance(dtype_str, type) or isinstance(dtype_str, np.dtype):
-                dtype = np.dtype(dtype_str)
-                bits = dtype.itemsize * 8
-                is_signed = dtype.kind == 'i'
-                is_float = dtype.kind == 'f'
+                dtype_val = np.dtype(dtype_str)
+                bits = dtype_val.itemsize * 8
+                is_signed = dtype_val.kind == 'i'
+                is_float = dtype_val.kind == 'f'
+                dtype = dtype_val # Logical and container are same
+                container = dtype_val
             else:
-                dtype, bits, is_signed, is_float = self._parse_dtype_string(str(dtype_str))
+                container, bits, is_signed, is_float = self._parse_dtype_string(str(dtype_str))
+                dtype = str(dtype_str) # logical dtype is string
         else:
-            width, height, dtype = self._parse_raw_filename(file_name)
-            bits = np.dtype(dtype).itemsize * 8
-            is_signed = np.dtype(dtype).kind == 'i'
-            is_float = np.dtype(dtype).kind == 'f'
+            width, height, dtype_raw = self.parse_resolution(file_name)
+            
+            if width == 0 or height == 0:
+                 raise ValueError("Resolution (_WxH) not found in filename.")
+
+            if isinstance(dtype_raw, str):
+                 container, bits, is_signed, is_float = self._parse_dtype_string(dtype_raw)
+                 dtype = dtype_raw # Keep logical name
+            else:
+                 container = dtype_raw
+                 dtype = dtype_raw
+                 bits = np.dtype(container).itemsize * 8
+                 is_signed = np.dtype(container).kind == 'i'
+                 is_float = np.dtype(container).kind == 'f'
 
         self.width = width
         self.height = height
         self.dtype = dtype
 
         # raw file reading
-        raw_data = np.fromfile(file_name, dtype=dtype)
+        raw_data = np.fromfile(file_name, dtype=container)
         
         # Determine expected size based on format
         expected_size = width * height
@@ -116,7 +128,7 @@ class ImageHandler:
 
         # Post-Processing: Masking for non-standard bits
         if not is_float and not "YUV" in color_format:
-             container_bits = np.dtype(dtype).itemsize * 8
+             container_bits = np.dtype(container).itemsize * 8
              if bits < container_bits:
                  mask = (1 << bits) - 1
                  raw_data = raw_data & mask
@@ -137,12 +149,15 @@ class ImageHandler:
     def _parse_dtype_string(self, type_str):
         type_str = type_str.lower().strip()
         
-        if "float" in type_str:
+        # Handle "uintN" or "intN"
+        is_signed = type_str.startswith("int")
+        is_float = "float" in type_str
+        
+        if is_float:
             if "64" in type_str: return np.float64, 64, True, True
             if "16" in type_str: return np.float16, 16, True, True
             return np.float32, 32, True, True
             
-        is_signed = type_str.startswith("int")
         match = re.search(r'\d+', type_str)
         if match:
             bits = int(match.group(0))
@@ -156,7 +171,7 @@ class ImageHandler:
         
         return container, bits, is_signed, False
 
-    def _parse_raw_filename(self, file_name):
+    def parse_resolution(self, file_name):
         basename = os.path.basename(file_name)
         match = re.search(r"_(\d+)x(\d+)", basename)
         width, height = (int(match.group(1)), int(match.group(2))) if match else (0, 0)
@@ -167,8 +182,9 @@ class ImageHandler:
              if side * side == size:
                  width, height = side, side
         
-        if width == 0:
-             raise ValueError("Resolution (_WxH) not found in filename.")
+        # Return 0,0 if not found instead of raising
+        # if width == 0:
+        #      raise ValueError("Resolution (_WxH) not found in filename.")
 
         _, ext = os.path.splitext(file_name)
         dtype = self.dtype_map.get(ext.lower(), np.uint8)
