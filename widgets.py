@@ -2,7 +2,7 @@ import time
 
 import numpy as np
 import re
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QPointF, QEvent, QObject, QTimer, QRectF, QSettings, QSortFilterProxyModel, QDir, QRegularExpression, QItemSelectionModel
+from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QPointF, QEvent, QObject, QTimer, QRectF, QSettings, QSortFilterProxyModel, QDir, QRegularExpression, QItemSelectionModel, QSize
 from PyQt6.QtGui import QPixmap, QPainter, QNativeGestureEvent, QDoubleValidator, QKeyEvent, QImage, QMouseEvent, QColor, QIcon, QFileSystemModel
 from PyQt6.QtWidgets import (
     QApplication,
@@ -248,15 +248,18 @@ class MathTransformPane(QDockWidget):
     restore_original_requested = pyqtSignal()
 
     def __init__(self, parent=None):
-        super().__init__("Math Transform", parent)
+        super().__init__("Math", parent)
+        self.setMinimumWidth(100)
         self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
 
         self.content_widget = QWidget()
+        self.content_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         self.layout = QVBoxLayout(self.content_widget)
 
         self.expression_input = QComboBox()
         self.expression_input.setEditable(True)
         self.expression_input.lineEdit().setPlaceholderText("Enter math expression (e.g., x+1, np.log(x))")
+        self.expression_input.setMinimumWidth(50)
         self.expression_input.lineEdit().returnPressed.connect(self._on_apply)
         self.expression_input.lineEdit().setClearButtonEnabled(True)
         # Deferred connection of editTextChanged is handled at end of __init__ or after error_label creation
@@ -328,16 +331,19 @@ class InfoPane(QDockWidget):
     settings_changed = pyqtSignal(dict)
 
     def __init__(self, parent=None):
-        super().__init__("Image Info", parent)
+        super().__init__("Info", parent)
         self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        self.setMinimumWidth(100)
 
         self.content_widget = QWidget()
+        self.content_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         self.layout = QFormLayout(self.content_widget)
 
         self.file_size = 0 # Bytes
 
         self.dtype_combo = QComboBox()
         self.dtype_combo.setEditable(True)  
+        self.dtype_combo.setMinimumWidth(50)
         self.dtype_combo.currentTextChanged.connect(self._on_parameter_change)
 
         self.width_spinbox = QSpinBox()
@@ -1415,12 +1421,13 @@ class ThumbnailPane(QDockWidget):
     overlay_changed = pyqtSignal(str, float)
 
     def __init__(self, parent=None):
-        super().__init__("Opened Images", parent)
+        super().__init__("Images", parent)
         self.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
         self.setFloating(False)
-        self.setMinimumWidth(240) # Ensure thumbnails (160px) + sliders fit with scrollbar
+        self.setMinimumWidth(120) # Lowered from 240
 
         self.main_widget = QWidget()
+        self.main_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         self.main_layout = QVBoxLayout(self.main_widget)
 
         self.scroll_area = QScrollArea()
@@ -1585,7 +1592,8 @@ class BreadcrumbBar(QWidget):
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(0)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setMinimumWidth(0)
         self.setFixedHeight(28) # Reasonable height
 
     def mousePressEvent(self, event):
@@ -1713,6 +1721,7 @@ class SmartAddressBar(QWidget):
         self.layout = QStackedLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMinimumWidth(0)
         
         # Breadcrumb View
         self.breadcrumbs = BreadcrumbBar()
@@ -1729,6 +1738,7 @@ class SmartAddressBar(QWidget):
         self.combo = QComboBox()
         self.combo.setEditable(True)
         self.combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.combo.setMinimumWidth(50)
         self.combo.lineEdit().returnPressed.connect(self._on_combo_entered)
         self.combo.activated.connect(self._on_combo_activated)
         self.combo.installEventFilter(self)
@@ -1834,10 +1844,15 @@ class SmartAddressBar(QWidget):
 class FileExplorerPane(QDockWidget):
     files_selected = pyqtSignal(list)
 
+    def sizeHint(self):
+        # Suggest a wider initial size (450px)
+        return QSize(450, 600)
+
     def __init__(self, parent=None):
-        super().__init__("File Explorer", parent)
+        super().__init__("Explorer", parent)
         self.setObjectName("FileExplorerPane")
         self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.setMinimumWidth(300)
         self.target_selection_path = None
 
         # Initialize Models FIRST to prevent AttributeError on widget signal triggers
@@ -1857,6 +1872,7 @@ class FileExplorerPane(QDockWidget):
         self.model.directoryLoaded.connect(lambda p: self._select_first_item())
 
         self.content_widget = QWidget()
+        self.content_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         self.layout = QVBoxLayout(self.content_widget)
 
         # Navigation Bar (Up Button + Path Input)
@@ -1904,7 +1920,11 @@ class FileExplorerPane(QDockWidget):
         self.tree_view.setHeaderHidden(False)
         self.tree_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.tree_view.setColumnWidth(0, 400)
+        self.tree_view.setColumnWidth(0, 450)
+        for i in range(1, self.model.columnCount()):
+            self.tree_view.setColumnHidden(i, True)
+        self.tree_view.header().setStretchLastSection(True)
+        self.tree_view.setMinimumWidth(300)
         
         self.tree_view.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.tree_view.activated.connect(self._on_item_activated) # Double click or enter

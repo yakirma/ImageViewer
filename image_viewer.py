@@ -67,13 +67,20 @@ class ImageViewer(QMainWindow):
         self.move(screen_geometry.center() - self.rect().center())
 
         self.stacked_widget = QStackedWidget()
+        # MinimumExpanding + Stretch 0 makes it very rigid against automatic shrinking
+        policy = QSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Expanding)
+        policy.setHorizontalStretch(0)
+        self.stacked_widget.setSizePolicy(policy)
         self.setCentralWidget(self.stacked_widget)
-        
+        self._last_center_width = 0
         # Ensure Left Dock takes precedence on the left side
         self.setCorner(Qt.Corner.TopLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
         self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
         self.setCorner(Qt.Corner.TopRightCorner, Qt.DockWidgetArea.RightDockWidgetArea)
         self.setCorner(Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.RightDockWidgetArea)
+        
+        # Optimize Layout Behavior
+        self.setDockOptions(self.dockOptions() | QMainWindow.DockOption.AnimatedDocks | QMainWindow.DockOption.AllowNestedDocks)
 
         self.current_colormap = "gray"
         self.zoom_settings = {"zoom_speed": 1.1, "zoom_in_interp": "Nearest", "zoom_out_interp": "Smooth"}
@@ -90,6 +97,9 @@ class ImageViewer(QMainWindow):
         self._create_math_transform_pane()
         self._create_histogram_window()
         self._create_thumbnail_pane()
+
+        # Force initial docking ratio if possible
+        self.resizeDocks([self.file_explorer_pane], [450], Qt.Orientation.Horizontal)
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -176,9 +186,13 @@ class ImageViewer(QMainWindow):
         self.zoom_slider.setTickInterval(1000)
         self.zoom_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.image_display_container = QWidget()
+        policy = QSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Expanding)
+        policy.setHorizontalStretch(100)
+        self.image_display_container.setSizePolicy(policy)
         image_display_layout = QVBoxLayout(self.image_display_container)
         image_display_layout.addWidget(self.image_label)
         image_display_layout.addWidget(self.zoom_slider)
+        self.image_label.setSizePolicy(policy) # Also on the label itself
 
 
         self.stacked_widget.addWidget(self.image_display_container)
@@ -186,6 +200,9 @@ class ImageViewer(QMainWindow):
 
     def _create_montage_view(self):
         self.montage_widget = QWidget()
+        policy = QSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Expanding)
+        policy.setHorizontalStretch(100)
+        self.montage_widget.setSizePolicy(policy)
         self.montage_layout = QGridLayout(self.montage_widget)
         self.stacked_widget.addWidget(self.montage_widget)
 
@@ -253,12 +270,14 @@ class ImageViewer(QMainWindow):
 
     def _create_info_pane(self):
         self.info_pane = InfoPane(self)
+        self.info_pane.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.info_pane)
         self.info_pane.hide()
         self.info_pane.settings_changed.connect(self.reapply_raw_parameters)
 
     def _create_math_transform_pane(self):
         self.math_transform_pane = MathTransformPane(self)
+        self.math_transform_pane.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         self.math_transform_pane.transform_requested.connect(self.apply_math_transform)
         self.math_transform_pane.restore_original_requested.connect(self.restore_original_image)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.math_transform_pane)
@@ -271,13 +290,15 @@ class ImageViewer(QMainWindow):
 
     def _create_thumbnail_pane(self):
         self.thumbnail_pane = ThumbnailPane(self)
+        self.thumbnail_pane.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.thumbnail_pane)
         self.thumbnail_pane.hide()
-        self.thumbnail_pane.selection_changed.connect(self.display_montage)
+        self.thumbnail_pane.selection_changed.connect(self._on_thumbnail_selection_changed)
         self.thumbnail_pane.overlay_changed.connect(self._on_overlay_changed)
 
     def _create_file_explorer_pane(self):
         self.file_explorer_pane = FileExplorerPane(self)
+        self.file_explorer_pane.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.file_explorer_pane)
         self.file_explorer_pane.hide()
         self.file_explorer_pane.files_selected.connect(self._on_explorer_files_selected)
@@ -293,6 +314,9 @@ class ImageViewer(QMainWindow):
         self.overlay_cache = {}  # path -> QPixmap (resized to match current active view)
 
     def display_montage(self, file_paths):
+        # Reset active_label BEFORE clearing layout to prevent accessing deleted objects
+        self.active_label = None
+        
         for i in reversed(range(self.montage_layout.count())):
             widget = self.montage_layout.itemAt(i).widget()
             if widget:
@@ -387,18 +411,29 @@ class ImageViewer(QMainWindow):
         self.stacked_widget.setCurrentWidget(self.montage_widget)
         # Synchronous update
         self.montage_widget.repaint()
+        
+        # Update thumbnail pane with the montage labels
+        self._update_thumbnail_pane_from_montage()
 
     def _set_active_montage_label(self, label):
         if self.active_label:
-            self.active_label.set_active(False)
-            if hasattr(self.active_label, 'indicator_line'):
-                 self.active_label.indicator_line.setStyleSheet("background-color: transparent;")
+            try:
+                self.active_label.set_active(False)
+                if hasattr(self.active_label, 'indicator_line'):
+                     self.active_label.indicator_line.setStyleSheet("background-color: transparent;")
+            except RuntimeError:
+                # Widget was deleted, ignore
+                pass
 
         self.active_label = label
         if self.active_label:
-            self.active_label.set_active(True)
-            if hasattr(self.active_label, 'indicator_line'):
-                 self.active_label.indicator_line.setStyleSheet("background-color: #007AFF;") # Active Blue
+            try:
+                self.active_label.set_active(True)
+                if hasattr(self.active_label, 'indicator_line'):
+                     self.active_label.indicator_line.setStyleSheet("background-color: #007AFF;") # Active Blue
+            except RuntimeError:
+                # Widget was deleted, ignore
+                pass
         self._update_active_view()
 
     def _update_active_view(self, reset_histogram=True):
@@ -436,7 +471,8 @@ class ImageViewer(QMainWindow):
         self.update_histogram_data(new_image=reset_histogram)
 
     def toggle_info_pane(self):
-        self.info_pane.setVisible(not self.info_pane.isVisible())
+        visible = not self.info_pane.isVisible()
+        self._set_dock_visibility_preserving_window(self.info_pane, visible)
 
     def toggle_math_transform_pane(self):
         visible = not self.math_transform_pane.isVisible()
@@ -454,7 +490,6 @@ class ImageViewer(QMainWindow):
                      label.set_overlay_text(label.file_path)
                      # Keep visible or revert to default? Assuming filenames usually hidden or explicitly shown.
                      # If we forced show, maybe we should respect prior state?
-                     # For now, let's assume they want filenames if they close the pane?
                      # Or just hide if it wasn't typical. 
                      # Code check: display_montage sets text but doesn't show. So default is Hidden.
                      label.overlay_label.hide()
@@ -467,6 +502,14 @@ class ImageViewer(QMainWindow):
                      self.active_label.overlay_label.hide()
 
     def toggle_histogram_window(self):
+        # Histogram is a tool window, but let's see if we want to preserve window size here too.
+        # User said "file explorer... math... opened images", didn't explicitly mention histogram,
+        # but it's cleaner to be consistent. 
+        # Actually histogram window is a QDialog/Tool in current impl?
+        # Let's check.
+        # Assuming HistogramWidget is a QWidget with Qt.WindowType.Tool flag, not a QDockWidget.
+        # The _set_dock_visibility_preserving_window is designed for QDockWidgets.
+        # So, we keep the existing logic for the histogram window.
         if self.histogram_window.isVisible():
             self.histogram_window.hide()
         else:
@@ -514,11 +557,22 @@ class ImageViewer(QMainWindow):
         current_width = self.width()
         
         # Determine dock width
-        target_dock_width = dock.width()
-        if target_dock_width < 50: 
-            target_dock_width = dock.sizeHint().width()
-        if target_dock_width < 200: 
-            target_dock_width = 250 # Default fallback
+        if visible:
+            # When showing, use the dock's intended width. 
+            # If it was hidden (width 0), use the size hint.
+            target_dock_width = dock.width()
+            if target_dock_width <= 0:
+                target_dock_width = dock.sizeHint().width()
+        else:
+            # When hiding, use the actual current width
+            target_dock_width = dock.width()
+        
+        # Guard against zero or tiny values
+        if target_dock_width < 50:
+            if isinstance(dock, FileExplorerPane):
+                target_dock_width = 450 # Default for file explorer
+            else:
+                target_dock_width = 300 # Sane default for other docks
         
         if visible:
             new_width = current_width + target_dock_width
@@ -539,6 +593,14 @@ class ImageViewer(QMainWindow):
              new_x = screen_geo.left()
         if new_x + new_width > screen_geo.right():
              new_x = screen_geo.right() - new_width
+
+        # LOCK the central widget width before resizing the window
+        # to ensure the entire expansion/shrinkage is taken by the dock area
+        center = self.centralWidget()
+        current_center_w = center.width()
+        center.setMinimumWidth(current_center_w)
+        center.setMaximumWidth(current_center_w)
+        QTimer.singleShot(0, self._reset_center_constraints)
 
         self.move(new_x, self.y())
         self.resize(new_width, self.height())
@@ -936,6 +998,9 @@ class ImageViewer(QMainWindow):
                 
                 # Synchronous update
                 self.image_label.repaint()
+                
+                # Update thumbnail pane with single image
+                self._update_thumbnail_pane_for_single_image()
                 if self.histogram_action.isChecked():
                     self.histogram_window.repaint()
 
@@ -1101,8 +1166,109 @@ class ImageViewer(QMainWindow):
 
         super().keyPressEvent(event)
 
+
     def resizeEvent(self, event):
+        old_size = event.oldSize()
+        new_size = event.size()
+        center = self.centralWidget()
+
+        if hasattr(self, '_last_center_width') and self._last_center_width > 0:
+            if old_size.isValid() and new_size.width() < old_size.width():
+                # Window is shrinking
+                delta = old_size.width() - new_size.width()
+                
+                # Check how much the docks can shrink
+                docks = [self.file_explorer_pane, self.info_pane, 
+                         self.math_transform_pane, self.thumbnail_pane]
+                visible_docks = [d for d in docks if d.isVisible() and not d.isFloating()]
+                
+                shrink_capacity = sum(max(0, d.width() - d.minimumWidth()) for d in visible_docks)
+                
+                if delta <= shrink_capacity:
+                    # Docks can handle all the shrinkage
+                    target_w = self._last_center_width
+                else:
+                    # Docks handle as much as they can, center takes the rest
+                    target_w = self._last_center_width - (delta - shrink_capacity)
+                
+                # Apply lock to force Qt's hand
+                target_w = max(100, int(target_w))
+                center.setMinimumWidth(target_w)
+                center.setMaximumWidth(target_w)
+                QTimer.singleShot(0, self._reset_center_constraints)
+        
         super().resizeEvent(event)
+        
+        # Capture truth for next frame
+        self._last_center_width = center.width()
+
+    def _update_thumbnail_pane_from_montage(self):
+        """Populate the thumbnail pane with current montage labels"""
+        if not self.thumbnail_pane or not self.montage_labels:
+            return
+        
+        # Clear existing thumbnails
+        for item in self.thumbnail_pane.thumbnail_items:
+            self.thumbnail_pane.thumbnail_layout.removeWidget(item)
+            item.deleteLater()
+        self.thumbnail_pane.thumbnail_items.clear()
+        
+        # Add thumbnails for each montage label
+        from widgets import ThumbnailItem
+        for label in self.montage_labels:
+            if label.current_pixmap and hasattr(label, 'file_path'):
+                item = ThumbnailItem(label.file_path, label.current_pixmap)
+                item.clicked.connect(lambda event, i=item: self.thumbnail_pane._on_thumbnail_clicked(i, event))
+                item.overlay_changed.connect(lambda alpha, path=label.file_path: self.thumbnail_pane.overlay_changed.emit(path, alpha))
+                self.thumbnail_pane.thumbnail_items.append(item)
+                self.thumbnail_pane.thumbnail_layout.addWidget(item)
+        
+        # Set first item as focused and selected
+        if self.thumbnail_pane.thumbnail_items:
+            self.thumbnail_pane._set_focused_item(0)
+            self.thumbnail_pane._select_single(0)
+
+    def _on_thumbnail_selection_changed(self, selected_files):
+        """Handle thumbnail selection by activating the corresponding montage label"""
+        if not selected_files or not self.montage_labels:
+            return
+        
+        # Find the montage label corresponding to the first selected file
+        selected_path = selected_files[0]
+        for label in self.montage_labels:
+            if hasattr(label, 'file_path') and label.file_path == selected_path:
+                self._set_active_montage_label(label)
+                break
+
+    def _update_thumbnail_pane_for_single_image(self):
+        """Populate the thumbnail pane with the current single image"""
+        if not self.thumbnail_pane or not self.image_label.current_pixmap:
+            return
+        
+        # Clear existing thumbnails
+        for item in self.thumbnail_pane.thumbnail_items:
+            self.thumbnail_pane.thumbnail_layout.removeWidget(item)
+            item.deleteLater()
+        self.thumbnail_pane.thumbnail_items.clear()
+        
+        # Add thumbnail for the current image
+        from widgets import ThumbnailItem
+        if self.current_file_path:
+            item = ThumbnailItem(self.current_file_path, self.image_label.current_pixmap)
+            item.clicked.connect(lambda event, i=item: self.thumbnail_pane._on_thumbnail_clicked(i, event))
+            item.overlay_changed.connect(lambda alpha, path=self.current_file_path: self.thumbnail_pane.overlay_changed.emit(path, alpha))
+            self.thumbnail_pane.thumbnail_items.append(item)
+            self.thumbnail_pane.thumbnail_layout.addWidget(item)
+            
+            # Set as focused and selected
+            self.thumbnail_pane._set_focused_item(0)
+            self.thumbnail_pane._select_single(0)
+
+    def _reset_center_constraints(self):
+        center = self.centralWidget()
+        if center:
+            center.setMinimumWidth(100)
+            center.setMaximumWidth(16777215)
 
 
     def _apply_histogram_preset(self, min_percent, max_percent, use_visible_only=False):
