@@ -1400,12 +1400,21 @@ class ThumbnailItem(QWidget):
     def paintEvent(self, event):
         super().paintEvent(event)
         painter = QPainter(self)
-        if self.is_selected:
+        
+        # Determine border color and width based on state
+        if self.is_selected and self.is_focused:
+            # Both selected and focused - use orange/gold to show both states
+            pen_color = QColor(255, 140, 0)  # Orange
+            pen_width = 4
+            adjustment = 0  # Extend further out
+        elif self.is_selected:
             pen_color = Qt.GlobalColor.blue
             pen_width = 3
+            adjustment = 1
         elif self.is_focused:
-            pen_color = Qt.GlobalColor.darkGray
-            pen_width = 2
+            pen_color = Qt.GlobalColor.yellow
+            pen_width = 4
+            adjustment = -1  # Negative adjustment makes rectangle larger (extends beyond edges)
         else:
             return
 
@@ -1413,7 +1422,7 @@ class ThumbnailItem(QWidget):
         pen.setColor(pen_color)
         pen.setWidth(pen_width)
         painter.setPen(pen)
-        painter.drawRect(self.rect().adjusted(1, 1, -1, -1))
+        painter.drawRect(self.rect().adjusted(adjustment, adjustment, -adjustment, -adjustment))
 
 
 class ThumbnailPane(QDockWidget):
@@ -1424,11 +1433,17 @@ class ThumbnailPane(QDockWidget):
         super().__init__("Images", parent)
         self.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
         self.setFloating(False)
-        self.setMinimumWidth(120) # Lowered from 240
+        self.setMinimumWidth(200)  # Increased to show full thumbnail width
 
         self.main_widget = QWidget()
         self.main_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         self.main_layout = QVBoxLayout(self.main_widget)
+        
+        # Add Select All checkbox
+        self.select_all_cb = QCheckBox("Select All")
+        self.select_all_cb.setTristate(True)  # Allow indeterminate state
+        self.select_all_cb.stateChanged.connect(self._on_select_all_changed)
+        self.main_layout.addWidget(self.select_all_cb)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -1446,6 +1461,13 @@ class ThumbnailPane(QDockWidget):
         self.focused_index = -1
         self.last_selection_anchor = -1
 
+    def showEvent(self, event):
+        """Refresh thumbnail pane contents when shown"""
+        super().showEvent(event)
+        # Trigger a refresh from the parent ImageViewer
+        if self.parent() and hasattr(self.parent(), '_refresh_thumbnail_pane'):
+            self.parent()._refresh_thumbnail_pane()
+
     def eventFilter(self, source, event):
         if source == self.scroll_area and event.type() == QEvent.Type.KeyPress:
             key = event.key()
@@ -1456,23 +1478,32 @@ class ThumbnailPane(QDockWidget):
 
     def keyPressEvent(self, event: QKeyEvent):
         if not self.thumbnail_items:
+            super().keyPressEvent(event)
             return
 
         key = event.key()
-        modifiers = event.modifiers()
-
         current_index = self.focused_index if self.focused_index != -1 else 0
 
-        new_index = current_index
-        if key == Qt.Key.Key_Down:
-            new_index = min(current_index + 1, len(self.thumbnail_items) - 1)
-        elif key == Qt.Key.Key_Up:
-            new_index = max(current_index - 1, 0)
+        # Only handle specific navigation and selection keys
+        if key in (Qt.Key.Key_Down, Qt.Key.Key_Up, Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            new_index = current_index
+            
+            # Arrow keys: just move focus, don't change selection
+            if key == Qt.Key.Key_Down:
+                new_index = min(current_index + 1, len(self.thumbnail_items) - 1)
+            elif key == Qt.Key.Key_Up:
+                new_index = max(current_index - 1, 0)
 
-        if new_index != current_index:
-            self._handle_selection(new_index, modifiers)
-        elif key == Qt.Key.Key_Space:
-            self._handle_selection(current_index, modifiers | Qt.KeyboardModifier.ControlModifier)
+            # Move focus without changing selection
+            if new_index != current_index:
+                self._set_focused_item(new_index)
+            # Enter/Return/Space: toggle selection of focused item
+            elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+                self._toggle_selection(current_index)
+                self._emit_selection_change()
+        else:
+            # Pass all other keys to parent (ImageViewer) for global shortcuts
+            super().keyPressEvent(event)
 
     def populate(self, windows):
         for item in self.thumbnail_items:
@@ -1506,11 +1537,9 @@ class ThumbnailPane(QDockWidget):
         if is_shift:
             anchor = self.last_selection_anchor if self.last_selection_anchor != -1 else index
             self._select_range(anchor, index)
-        elif is_ctrl:
-            self._toggle_selection(index)
-            self.last_selection_anchor = index
         else:
-            self._select_single(index)
+            # Default behavior: toggle selection (like Ctrl+Click)
+            self._toggle_selection(index)
             self.last_selection_anchor = index
 
         self._emit_selection_change()
@@ -1530,14 +1559,60 @@ class ThumbnailPane(QDockWidget):
     def _emit_selection_change(self):
         selected_files = [item.file_path for item in self.thumbnail_items if item.is_selected]
         self.selection_changed.emit(selected_files)
+        
+        # Update Select All checkbox state
+        if not self.thumbnail_items:
+            self.select_all_cb.setCheckState(Qt.CheckState.Unchecked)
+        else:
+            selected_count = len(selected_files)
+            total_count = len(self.thumbnail_items)
+            if selected_count == 0:
+                self.select_all_cb.setCheckState(Qt.CheckState.Unchecked)
+            elif selected_count == total_count:
+                self.select_all_cb.setCheckState(Qt.CheckState.Checked)
+            else:
+                self.select_all_cb.setCheckState(Qt.CheckState.PartiallyChecked)
+    
+    def _on_select_all_changed(self, state):
+        """Handle Select All checkbox changes"""
+        if not self.thumbnail_items:
+            return
+        
+        # Check current selection state to determine action
+        currently_selected = sum(1 for item in self.thumbnail_items if item.is_selected)
+        
+        # Block signals to prevent recursion
+        self.select_all_cb.blockSignals(True)
+        
+        # If nothing or partial selected, select all. If all selected, deselect all.
+        if currently_selected < len(self.thumbnail_items):
+            # Select all
+            for item in self.thumbnail_items:
+                item.set_selected(True)
+            self.select_all_cb.setCheckState(Qt.CheckState.Checked)
+        else:
+            # Deselect all
+            for item in self.thumbnail_items:
+                item.set_selected(False)
+            self.select_all_cb.setCheckState(Qt.CheckState.Unchecked)
+        
+        self.select_all_cb.blockSignals(False)
+        self._emit_selection_change()
 
     def _set_focused_item(self, index):
-        if self.focused_index != -1:
+        if not self.thumbnail_items:
+            return
+        
+        # Bounds check
+        if index < 0 or index >= len(self.thumbnail_items):
+            return
+        
+        if self.focused_index != -1 and self.focused_index < len(self.thumbnail_items):
             self.thumbnail_items[self.focused_index].set_focused(False)
 
         self.focused_index = index
 
-        if self.focused_index != -1:
+        if self.focused_index != -1 and self.focused_index < len(self.thumbnail_items):
             self.thumbnail_items[self.focused_index].set_focused(True)
             self.scroll_area.ensureWidgetVisible(self.thumbnail_items[self.focused_index])
 

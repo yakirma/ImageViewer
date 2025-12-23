@@ -28,10 +28,16 @@ ImageViewer is a powerful, cross-platform desktop application for viewing and an
 - **Colormaps:** Instantly apply standard colormaps like `viridis` or `turbo` to single-channel or multi-channel data.
 
 ### 4. Comparison View (Montage)
-- **Thumbnail Pane:** Dockable pane showing all open images for quick selection.
+- **Thumbnail Pane:** Dockable pane showing all open images across all windows with selection controls.
+  - **Master Image List:** View all images from all application windows in one place.
+  - **Visual Selection State:** Selected images (blue border) appear in montage; unselected images remain in the list.
+  - **Toggle Selection:** Click thumbnails to select/deselect; use "Select All" checkbox for bulk operations.
+  - **Keyboard Navigation:** Arrow keys to browse, Enter/Space to toggle selection.
+  - **Focus Indicator:** Yellow/orange border shows current keyboard focus position.
 - **Montage Layout:** Compare multiple images side-by-side in a synchronized grid.
 - **Synchronized Viewport:** Zooms and pans are instantly reflected across all images in the montage.
 - **Synchronized Crosshair:** Press `c` to toggle crosshairs and see per-image pixel values in the status bar.
+- **Smart Overlays:** Overlay images preserve all modifications (colormap, contrast, math transforms) from source windows.
 
 ---
 

@@ -73,6 +73,7 @@ class ImageViewer(QMainWindow):
         self.stacked_widget.setSizePolicy(policy)
         self.setCentralWidget(self.stacked_widget)
         self._last_center_width = 0
+        self._updating_from_thumbnail = False  # Flag to prevent circular refresh
         # Ensure Left Dock takes precedence on the left side
         self.setCorner(Qt.Corner.TopLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
         self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
@@ -322,6 +323,15 @@ class ImageViewer(QMainWindow):
             if widget:
                 widget.setParent(None)
         self.montage_labels.clear()
+        
+        # Clear overlays for files not in the new selection
+        if file_paths:
+            file_paths_set = set(file_paths)
+            overlays_to_remove = [path for path in self.overlay_alphas.keys() if path not in file_paths_set]
+            for path in overlays_to_remove:
+                del self.overlay_alphas[path]
+                if path in self.overlay_cache:
+                    del self.overlay_cache[path]
 
         if not file_paths:
             if self.current_file_path:
@@ -412,8 +422,8 @@ class ImageViewer(QMainWindow):
         # Synchronous update
         self.montage_widget.repaint()
         
-        # Update thumbnail pane with the montage labels
-        self._update_thumbnail_pane_from_montage()
+        # Update thumbnail selection states to reflect current montage
+        self._update_thumbnail_selection_states()
 
     def _set_active_montage_label(self, label):
         if self.active_label:
@@ -796,6 +806,13 @@ class ImageViewer(QMainWindow):
     def open_file(self, file_path, override_settings=None, maintain_view_state=None):
         self.current_file_path = file_path
         
+        # Clear overlays for files other than the current one
+        overlays_to_remove = [path for path in self.overlay_alphas.keys() if path != file_path]
+        for path in overlays_to_remove:
+            del self.overlay_alphas[path]
+            if path in self.overlay_cache:
+                del self.overlay_cache[path]
+        
         # Update File Explorer Path
         if self.file_explorer_pane.isVisible():
              self.file_explorer_pane.set_root_path(file_path)
@@ -999,8 +1016,8 @@ class ImageViewer(QMainWindow):
                 # Synchronous update
                 self.image_label.repaint()
                 
-                # Update thumbnail pane with single image
-                self._update_thumbnail_pane_for_single_image()
+                # Update thumbnail selection states to reflect current image
+                self._update_thumbnail_selection_states()
                 if self.histogram_action.isChecked():
                     self.histogram_window.repaint()
 
@@ -1128,7 +1145,7 @@ class ImageViewer(QMainWindow):
                 self.status_bar.showMessage("View Pasted", 2000)
             return
 
-        if event.key() == Qt.Key.Key_N and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+        if event.key() == Qt.Key.Key_N and is_cmd_or_ctrl:
             current_pos = self.pos()
             new_pos = current_pos + QPoint(30, 30)
             new_window = ImageViewer(window_list=self.window_list)
@@ -1229,16 +1246,23 @@ class ImageViewer(QMainWindow):
             self.thumbnail_pane._select_single(0)
 
     def _on_thumbnail_selection_changed(self, selected_files):
-        """Handle thumbnail selection by activating the corresponding montage label"""
-        if not selected_files or not self.montage_labels:
+        """Handle thumbnail selection by updating montage with selected images"""
+        # If no files selected, clear the montage view
+        if not selected_files:
+            # Clear montage
+            for i in reversed(range(self.montage_layout.count())):
+                widget = self.montage_layout.itemAt(i).widget()
+                if widget:
+                    widget.setParent(None)
+            self.montage_labels.clear()
+            self.active_label = None
             return
         
-        # Find the montage label corresponding to the first selected file
-        selected_path = selected_files[0]
-        for label in self.montage_labels:
-            if hasattr(label, 'file_path') and label.file_path == selected_path:
-                self._set_active_montage_label(label)
-                break
+        # Rebuild montage with selected files
+        if len(selected_files) == 1:
+            self.open_file(selected_files[0])
+        else:
+            self.display_montage(selected_files)
 
     def _update_thumbnail_pane_for_single_image(self):
         """Populate the thumbnail pane with the current single image"""
@@ -1263,6 +1287,109 @@ class ImageViewer(QMainWindow):
             # Set as focused and selected
             self.thumbnail_pane._set_focused_item(0)
             self.thumbnail_pane._select_single(0)
+
+    def _refresh_thumbnail_pane(self):
+        """Refresh thumbnail pane with all open images across windows"""
+        if not self.thumbnail_pane:
+            return
+        
+        # Clear existing thumbnails
+        for item in self.thumbnail_pane.thumbnail_items:
+            self.thumbnail_pane.thumbnail_layout.removeWidget(item)
+            item.deleteLater()
+        self.thumbnail_pane.thumbnail_items.clear()
+        
+        # Get current window's viewed files
+        current_files = set()
+        if self.stacked_widget.currentWidget() == self.montage_widget:
+            current_files = {label.file_path for label in self.montage_labels if hasattr(label, 'file_path')}
+        elif self.current_file_path:
+            current_files = {self.current_file_path}
+        
+        # Track files we've already added to avoid duplicates
+        added_files = set()
+        
+        # Add thumbnails from all windows
+        from widgets import ThumbnailItem
+        for window in self.window_list:
+            # Collect all images from this window (both single view and montage)
+            window_images = []
+            
+            # If window is in montage mode, get all montage images
+            if hasattr(window, 'montage_labels') and window.montage_labels:
+                for label in window.montage_labels:
+                    if hasattr(label, 'file_path') and label.current_pixmap:
+                        window_images.append((label.file_path, label.current_pixmap))
+            # Otherwise get the single image
+            elif window.image_label.current_pixmap and window.current_file_path:
+                window_images.append((window.current_file_path, window.image_label.current_pixmap))
+            
+            # Add each image as a thumbnail
+            for file_path, pixmap in window_images:
+                # Skip duplicates
+                if file_path in added_files:
+                    continue
+                
+                item = ThumbnailItem(file_path, pixmap)
+                item.clicked.connect(lambda event, i=item: self.thumbnail_pane._on_thumbnail_clicked(i, event))
+                item.overlay_changed.connect(lambda alpha, path=file_path: self.thumbnail_pane.overlay_changed.emit(path, alpha))
+                
+                # Set selected if from current window's view
+                is_selected = file_path in current_files
+                item.set_selected(is_selected)
+                
+                self.thumbnail_pane.thumbnail_items.append(item)
+                self.thumbnail_pane.thumbnail_layout.addWidget(item)
+                added_files.add(file_path)
+        
+        # Set first selected item as focused
+        selected_items = [item for item in self.thumbnail_pane.thumbnail_items if item.is_selected]
+        if selected_items:
+            idx = self.thumbnail_pane.thumbnail_items.index(selected_items[0])
+            self.thumbnail_pane._set_focused_item(idx)
+        
+        # Update Select All checkbox state
+        selected_count = len(selected_items)
+        total_count = len(self.thumbnail_pane.thumbnail_items)
+        
+        self.thumbnail_pane.select_all_cb.blockSignals(True)
+        if selected_count == 0:
+            self.thumbnail_pane.select_all_cb.setCheckState(Qt.CheckState.Unchecked)
+        elif selected_count == total_count:
+            self.thumbnail_pane.select_all_cb.setCheckState(Qt.CheckState.Checked)
+        else:
+            self.thumbnail_pane.select_all_cb.setCheckState(Qt.CheckState.PartiallyChecked)
+        self.thumbnail_pane.select_all_cb.blockSignals(False)
+    
+    def _update_thumbnail_selection_states(self):
+        """Update selection states of existing thumbnails based on current montage"""
+        if not self.thumbnail_pane or not self.thumbnail_pane.thumbnail_items:
+            return
+        
+        # Get current window's viewed files
+        current_files = set()
+        if self.stacked_widget.currentWidget() == self.montage_widget:
+            current_files = {label.file_path for label in self.montage_labels if hasattr(label, 'file_path')}
+        elif self.current_file_path:
+            current_files = {self.current_file_path}
+        
+        # Update selection state for each thumbnail (visual only, no signal emission)
+        for item in self.thumbnail_pane.thumbnail_items:
+            is_selected = item.file_path in current_files
+            item.set_selected(is_selected)
+        
+        # Update Select All checkbox state manually without triggering signals
+        selected_count = sum(1 for item in self.thumbnail_pane.thumbnail_items if item.is_selected)
+        total_count = len(self.thumbnail_pane.thumbnail_items)
+        
+        self.thumbnail_pane.select_all_cb.blockSignals(True)
+        if selected_count == 0:
+            self.thumbnail_pane.select_all_cb.setCheckState(Qt.CheckState.Unchecked)
+        elif selected_count == total_count:
+            self.thumbnail_pane.select_all_cb.setCheckState(Qt.CheckState.Checked)
+        else:
+            self.thumbnail_pane.select_all_cb.setCheckState(Qt.CheckState.PartiallyChecked)
+        self.thumbnail_pane.select_all_cb.blockSignals(False)
 
     def _reset_center_constraints(self):
         center = self.centralWidget()
@@ -1387,20 +1514,41 @@ class ImageViewer(QMainWindow):
         for path, alpha in self.overlay_alphas.items():
             if alpha > 0:
                 if path not in self.overlay_cache:
-                    # Load and resize logic
-                    try:
-                        handler = ImageHandler()
-                        handler.load_image(path)
-                        if handler.original_image_data is not None:
-                            # Create Pixmap from original data
-                            # Note: We need to resize to target_size (which might be a Proxy)
-                            # QImage construction
-                            height, width = handler.original_image_data.shape[:2]
-                            data = handler.original_image_data
+                    # Find the source window with this image and use its current_pixmap (includes all modifications)
+                    source_pixmap = None
+                    for win in self.window_list:
+                        try:
+                            # Check if this window has the overlay image loaded in single view
+                            if getattr(win, 'current_file_path', None) == path and win.image_label and win.image_label.current_pixmap:
+                                source_pixmap = win.image_label.current_pixmap
+                                break
+                            # Also check montage labels
+                            if hasattr(win, 'montage_labels'):
+                                for label in win.montage_labels:
+                                    if hasattr(label, 'file_path') and label.file_path == path and label.current_pixmap:
+                                        source_pixmap = label.current_pixmap
+                                        break
+                                if source_pixmap:
+                                    break
+                        except:
+                            pass
+                    
+                    if source_pixmap:
+                        # Use the already-processed pixmap from the source window
+                        scaled_pixmap = source_pixmap.scaled(target_size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                        self.overlay_cache[path] = scaled_pixmap
+                    else:
+                        # Fallback: load raw image if no source window found
+                        try:
+                            handler = ImageHandler()
+                            handler.load_image(path)
+                            if handler.original_image_data is not None:
+                                height, width = handler.original_image_data.shape[:2]
+                                data = handler.original_image_data
                             
-                            # Retrieve state from source window
-                            target_cmap = 'gray'
-                            target_limits = None
+                                # Retrieve state from source window
+                                target_cmap = 'gray'
+                                target_limits = None
                             for win in self.window_list:
                                 try:
                                     # Skip windows in Montage Mode as their current_file_path might be stale/ambiguous
@@ -1491,9 +1639,9 @@ class ImageViewer(QMainWindow):
                             # Explicit copy to QPixmap to detach from numpy buffer
                             scaled_pixmap = QPixmap.fromImage(q_img).scaled(target_size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
                             self.overlay_cache[path] = scaled_pixmap
-                    except Exception as e:
-                        print(f"Error loading overlay {path}: {e}")
-                        continue
+                        except Exception as e:
+                            print(f"Error loading overlay {path}: {e}")
+                            continue
 
                 if path in self.overlay_cache:
                     overlays_to_draw.append((self.overlay_cache[path], alpha))
