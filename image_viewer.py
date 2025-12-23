@@ -1,8 +1,9 @@
 import os
 import time
+import re
 
 import numpy as np
-from PyQt6.QtCore import Qt, QEvent, QPoint
+from PyQt6.QtCore import Qt, QEvent, QPoint, QPointF, QTimer
 from PyQt6.QtGui import QAction, QPixmap, QImage, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
@@ -25,7 +26,7 @@ from PyQt6.QtWidgets import (
 import matplotlib.cm as cm
 
 from widgets import ZoomableDraggableLabel, InfoPane, MathTransformPane, ZoomSettingsDialog, HistogramWidget, \
-    ThumbnailPane, SharedViewState
+    ThumbnailPane, SharedViewState, FileExplorerPane
 from image_handler import ImageHandler
 import settings
 import sys
@@ -55,6 +56,7 @@ class ImageViewer(QMainWindow):
 
         self.image_handler = ImageHandler()
         self.recent_files = settings.load_recent_files()
+        self.last_raw_settings = None
         self.current_file_path = None
         self.montage_shared_state = None
         self.montage_labels = []
@@ -66,6 +68,12 @@ class ImageViewer(QMainWindow):
 
         self.stacked_widget = QStackedWidget()
         self.setCentralWidget(self.stacked_widget)
+        
+        # Ensure Left Dock takes precedence on the left side
+        self.setCorner(Qt.Corner.TopLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.setCorner(Qt.Corner.TopRightCorner, Qt.DockWidgetArea.RightDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.RightDockWidgetArea)
 
         self.current_colormap = "gray"
         self.zoom_settings = {"zoom_speed": 1.1, "zoom_in_interp": "Nearest", "zoom_out_interp": "Smooth"}
@@ -77,6 +85,7 @@ class ImageViewer(QMainWindow):
 
 
         self._create_menus_and_toolbar()
+        self._create_file_explorer_pane()
         self._create_info_pane()
         self._create_math_transform_pane()
         self._create_histogram_window()
@@ -87,6 +96,58 @@ class ImageViewer(QMainWindow):
         
         self.zoom_status_label = QLabel("Zoom: 100%")
         self.status_bar.addPermanentWidget(self.zoom_status_label)
+
+
+    def _get_percentiles_from_limits(self, data, limits):
+        if data is None or limits is None:
+            return (0.0, 100.0)
+        
+        # Use a flattened view for percentile calculation
+        flat_data = data.ravel()
+        
+        # Use full data for precise min/max detection to preserve "Min-Max" intent
+        img_min = flat_data.min()
+        img_max = flat_data.max()
+        
+        # Handle anchors for perfect Min-Max inheritance
+        if limits[0] <= img_min:
+            p_min = 0.0
+        elif limits[0] >= img_max:
+            p_min = 100.0
+        else:
+            # Sampling for performance on very large images in the middle range
+            sample = np.random.choice(flat_data, 1_000_000, replace=False) if flat_data.size > 1_000_000 else flat_data
+            # Using < for the lower end matches np.percentile logic (percent strictly below)
+            p_min = np.mean(sample < limits[0]) * 100.0
+
+        if limits[1] >= img_max:
+            p_max = 100.0
+        elif limits[1] <= img_min:
+            p_max = 0.0
+        else:
+            sample = np.random.choice(flat_data, 1_000_000, replace=False) if flat_data.size > 1_000_000 else flat_data
+            # Using <= for the upper end matches np.percentile logic (percent below or at)
+            p_max = np.mean(sample <= limits[1]) * 100.0
+            
+        return (p_min, p_max)
+
+    def _get_limits_from_percentiles(self, data, percentiles):
+        if data is None or percentiles is None:
+            return (0.0, 1.0)
+            
+        flat_data = data.ravel()
+        
+        # Sampling for performance on very large images
+        if flat_data.size > 1_000_000:
+            sample = np.random.choice(flat_data, 1_000_000, replace=False)
+        else:
+            sample = flat_data
+            
+        try:
+            limits = np.nanpercentile(sample, percentiles)
+            return (float(limits[0]), float(limits[1]))
+        except:
+            return (0.0, 1.0)
 
     def _create_welcome_screen(self):
         welcome_widget = QWidget()
@@ -143,7 +204,13 @@ class ImageViewer(QMainWindow):
 
         toolbar = QToolBar("Main Toolbar")
         self.addToolBar(toolbar)
+        
+        self.explorer_action = QAction(QIcon.fromTheme("folder"), "File Explorer", self)
+        self.explorer_action.triggered.connect(self.toggle_file_explorer_pane)
+        toolbar.addAction(self.explorer_action)
+        
         toolbar.addAction(open_action)
+        
         settings_action = QAction(QIcon.fromTheme("preferences-system"), "Settings", self)
         settings_action.triggered.connect(self.open_zoom_settings)
         toolbar.addAction(settings_action)
@@ -209,6 +276,19 @@ class ImageViewer(QMainWindow):
         self.thumbnail_pane.selection_changed.connect(self.display_montage)
         self.thumbnail_pane.overlay_changed.connect(self._on_overlay_changed)
 
+    def _create_file_explorer_pane(self):
+        self.file_explorer_pane = FileExplorerPane(self)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.file_explorer_pane)
+        self.file_explorer_pane.hide()
+        self.file_explorer_pane.files_selected.connect(self._on_explorer_files_selected)
+        
+        # Configure supported extensions for filtering
+        extensions = self.image_handler.raw_extensions + ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']
+        # Create unique list
+        extensions = list(set(extensions))
+        ext_filters = ['*' + ext for ext in extensions]
+        self.file_explorer_pane.set_supported_extensions(ext_filters)
+
         self.overlay_alphas = {} # path -> alpha
         self.overlay_cache = {}  # path -> QPixmap (resized to match current active view)
 
@@ -229,9 +309,16 @@ class ImageViewer(QMainWindow):
         max_montage_zoom = 100.0
 
         row, col = 0, 0
+        override_settings = getattr(self, '_temp_montage_override', None)
+        
         for file_path in file_paths:
             temp_handler = ImageHandler()
-            temp_handler.load_image(file_path)
+            try:
+                temp_handler.load_image(file_path, override_settings=override_settings)
+            except:
+                # Fallback if load fails (e.g. missing resolution and no override)
+                continue
+                
             data = temp_handler.original_image_data
 
             if data is not None and data.size > 0:
@@ -298,6 +385,8 @@ class ImageViewer(QMainWindow):
             self._set_active_montage_label(self.montage_labels[0])
 
         self.stacked_widget.setCurrentWidget(self.montage_widget)
+        # Synchronous update
+        self.montage_widget.repaint()
 
     def _set_active_montage_label(self, label):
         if self.active_label:
@@ -337,7 +426,7 @@ class ImageViewer(QMainWindow):
         self.active_label.view_changed.connect(self.update_histogram_data)
         self.histogram_window.region_changed.connect(self.set_contrast_limits)
 
-        self.colormap_combo.setEnabled(self.active_label.is_single_channel())
+        self.colormap_combo.setEnabled(True)
         
         # Sync the colormap combo box with the active label's current colormap
         self.colormap_combo.blockSignals(True)
@@ -351,7 +440,7 @@ class ImageViewer(QMainWindow):
 
     def toggle_math_transform_pane(self):
         visible = not self.math_transform_pane.isVisible()
-        self.math_transform_pane.setVisible(visible)
+        self._set_dock_visibility_preserving_window(self.math_transform_pane, visible)
         
         # Update Overlays for ID identification
         is_montage = self.stacked_widget.currentWidget() == self.montage_widget
@@ -403,12 +492,61 @@ class ImageViewer(QMainWindow):
             self.histogram_window.move(x, y)
 
     def toggle_thumbnail_pane(self):
-        if self.thumbnail_pane.isVisible():
-            self.thumbnail_pane.hide()
-        else:
+        visible = not self.thumbnail_pane.isVisible()
+        if visible:
             self.thumbnail_pane.populate(self.window_list)
-            self.thumbnail_pane.show()
+            
+        self._set_dock_visibility_preserving_window(self.thumbnail_pane, visible)
+
+        if visible:
             self.thumbnail_pane.setFocus()
+            
+    def _set_dock_visibility_preserving_window(self, dock, visible):
+        if dock.isVisible() == visible:
+            return
+
+        # Check if maximized
+        if self.isMaximized():
+             dock.setVisible(visible)
+             return
+
+        screen_geo = self.screen().availableGeometry()
+        current_width = self.width()
+        
+        # Determine dock width
+        target_dock_width = dock.width()
+        if target_dock_width < 50: 
+            target_dock_width = dock.sizeHint().width()
+        if target_dock_width < 200: 
+            target_dock_width = 250 # Default fallback
+        
+        if visible:
+            new_width = current_width + target_dock_width
+            # Limit to screen width
+            if new_width > screen_geo.width():
+                new_width = screen_geo.width()
+        else:
+            new_width = current_width - target_dock_width
+            if new_width < self.minimumWidth():
+                new_width = self.minimumWidth()
+            
+        # Adjust position to keep center fixed
+        current_x = self.x()
+        new_x = current_x + (current_width - new_width) // 2
+        
+        # Ensure stays within screen bounds (roughly)
+        if new_x < screen_geo.left():
+             new_x = screen_geo.left()
+        if new_x + new_width > screen_geo.right():
+             new_x = screen_geo.right() - new_width
+
+        self.move(new_x, self.y())
+        self.resize(new_width, self.height())
+        
+        if visible:
+            dock.show()
+        else:
+            dock.hide()
 
     def _on_zoom_slider_changed(self, value):
         if self.sender() is not self.zoom_slider: return
@@ -438,7 +576,10 @@ class ImageViewer(QMainWindow):
             # Save to history if this file lacks explicit resolution
             width, height, _ = self.image_handler.parse_resolution(self.current_file_path)
             if width == 0 or height == 0:
-                 settings.update_raw_history(self.current_file_path, raw_settings)
+                settings.update_raw_history(self.current_file_path, raw_settings)
+            
+            if self.active_label:
+                self.active_label.repaint()
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error applying parameters:\n{e}")
@@ -456,6 +597,7 @@ class ImageViewer(QMainWindow):
             transformed_data = self.image_handler.apply_math_transform(expression, context_dict=context)
             if self.active_label:
                 self.active_label.set_data(transformed_data, reset_view=False)
+                self.active_label.repaint()
             self.update_histogram_data(new_image=True)
             self.math_transform_pane.set_error_message("")
         except Exception as e:
@@ -503,6 +645,81 @@ class ImageViewer(QMainWindow):
         if self.active_label:
             self.active_label.set_contrast_limits(min_val, max_val)
 
+    def toggle_file_explorer_pane(self):
+        visible = not self.file_explorer_pane.isVisible()
+        # If showing, set root path to current file's directory if available
+        if visible:
+            self.file_explorer_pane.set_root_path(self.current_file_path)
+            
+        self._set_dock_visibility_preserving_window(self.file_explorer_pane, visible)
+
+    def _on_explorer_files_selected(self, file_paths):
+        if not file_paths:
+            return
+
+        # Capture View State and Raw Settings from ACTIVE image
+        view_state = None
+        raw_settings = None
+        
+        if self.active_label and self.active_label.current_pixmap:
+             data = self.active_label.original_data
+             limits = self.active_label.contrast_limits
+             percentiles = self._get_percentiles_from_limits(data, limits)
+             
+             view_state = {
+                'zoom_scale': self.active_label.zoom_scale,
+                'pan_pos': self.active_label.pan_pos, # QPointF
+                'colormap': self.active_label.colormap, # Use active_label's colormap
+                'contrast_percentiles': percentiles
+             }
+        
+        # Capture Raw Settings if current file was loaded with them (explicit or implicit)
+        # We can construct them from image_handler state
+        if self.image_handler.is_raw:
+             self.last_raw_settings = {
+                'width': self.image_handler.width,
+                'height': self.image_handler.height,
+                'dtype': self.image_handler.dtype,
+                'color_format': self.image_handler.color_format
+             }
+        
+        raw_settings = self.last_raw_settings
+
+        if len(file_paths) == 1:
+            target_path = file_paths[0]
+            _, ext = os.path.splitext(target_path)
+            target_is_raw = ext.lower() in self.image_handler.raw_extensions
+            
+            # Only inherit raw settings (resolution/dtype) if target is also raw
+            effective_raw = raw_settings if target_is_raw else None
+            self.open_file(target_path, override_settings=effective_raw, maintain_view_state=view_state)
+        else:
+            # For Montage, check if the first file is raw as a representative
+            _, ext = os.path.splitext(file_paths[0])
+            target_is_raw = ext.lower() in self.image_handler.raw_extensions
+            
+            self._temp_montage_override = raw_settings if target_is_raw else None
+            self.display_montage(file_paths)
+            self._temp_montage_override = None # Clear
+            
+            # Apply View State to montage (approximate)
+            if view_state and self.montage_shared_state:
+                # Apply Colormap
+                self.set_colormap(view_state['colormap'])
+                
+                # Apply Contrast Percentiles to all labels in montage
+                percentiles = view_state.get('contrast_percentiles')
+                if percentiles:
+                    for label in self.montage_labels:
+                        if label.original_data is not None:
+                             new_limits = self._get_limits_from_percentiles(label.original_data, percentiles)
+                             label.set_contrast_limits(*new_limits)
+                # Apply Zoom (if possible) - Montage controls its own zoom initially to fit. 
+                # Maintaining zoom from single view to montage is ambiguous (zoom level relative to what?).
+                # But requirement says "using its all current modifications".
+                # We can try to set zoom on the shared state.
+                pass 
+
     def open_image_dialog(self):
         extensions = self.image_handler.raw_extensions + ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']
         # Create unique list
@@ -514,21 +731,38 @@ class ImageViewer(QMainWindow):
         if file_path:
             self.open_file(file_path)
 
-    def open_file(self, file_path):
+    def open_file(self, file_path, override_settings=None, maintain_view_state=None):
         self.current_file_path = file_path
         
+        # Update File Explorer Path
+        if self.file_explorer_pane.isVisible():
+             self.file_explorer_pane.set_root_path(file_path)
+
         # Determine if it's a raw file
         _, ext = os.path.splitext(file_path)
         is_raw = ext.lower() in self.image_handler.raw_extensions
-
+        
         # Get File Size
         if os.path.exists(file_path):
              file_size = os.path.getsize(file_path)
         else:
              file_size = 0
 
+        # [REFINEMENT] Inherit settings only if target file has no explicit settings (filename or history)
+        if is_raw and override_settings:
+            basename = os.path.basename(file_path)
+            has_explicit = bool(re.search(r"_(\d+)x(\d+)", basename))
+            if not has_explicit:
+                history = settings.load_raw_history()
+                if file_path in history:
+                    has_explicit = True
+            
+            if has_explicit:
+                # Target has its own explicit/historical settings, ignore inherited override
+                override_settings = None
+
         # Check resolution for raw files BEFORE attempting load
-        if is_raw:
+        if is_raw and not override_settings: # Only guess/check history if no explicit override_settings provided
              # This uses the new method which returns (0,0) instead of raising
              width, height, dtype_raw = self.image_handler.parse_resolution(file_path)
              
@@ -587,6 +821,9 @@ class ImageViewer(QMainWindow):
                              'dtype': dtype, 
                              'color_format': 'Grayscale'
                       }
+                 
+                 # Use the guessed settings as override
+                 override_settings = guess_settings
 
                  try:
                      self.image_handler.load_image(file_path, override_settings=guess_settings)
@@ -613,14 +850,20 @@ class ImageViewer(QMainWindow):
                         # Save successful load to history
                         settings.update_raw_history(file_path, guess_settings)
                         
+                        # Synchronous update
+                        self.image_label.repaint()
+                        if self.histogram_action.isChecked():
+                            self.histogram_window.repaint()
+                        
                  except Exception as e:
-                     QMessageBox.critical(self, "Error", f"Error auto-loading estimated image:\n{e}")
+                     pass
                      
                  return # Stop here, as we've handled the load attempt manually
 
-        # Proceed to load image (Standard or Raw with Resolution)
+        # Proceed to load image (Standard or Raw with Resolution or Override)
         try:     
-            self.image_handler.load_image(file_path)
+            # If override_settings is passed (from History, Guess, or Explorer Inheritance), use it.
+            self.image_handler.load_image(file_path, override_settings=override_settings)
 
             self.info_action.setEnabled(self.image_handler.is_raw)
             self.info_pane.set_raw_mode(self.image_handler.is_raw)
@@ -639,8 +882,28 @@ class ImageViewer(QMainWindow):
             self.image_label.set_data(self.image_handler.original_image_data, is_pristine=True)
             self._set_active_montage_label(self.image_label)
             
-            # Apply default Min-Max contrast stretch for new image
-            self._apply_histogram_preset(0, 100)
+            # Apply State (View / Contrast)
+            if maintain_view_state:
+                 # Restore View State
+                 self.image_label.zoom_scale = maintain_view_state.get('zoom_scale', 1.0)
+                 self.image_label.pan_pos = maintain_view_state.get('pan_pos', QPointF(0,0))
+                 self.image_label.update_transform()
+                 
+                 # Contrast
+                 percentiles = maintain_view_state.get('contrast_percentiles')
+                 if percentiles:
+                      new_limits = self._get_limits_from_percentiles(self.image_handler.original_image_data, percentiles)
+                      self.image_label.set_contrast_limits(*new_limits)
+                      
+                 # Colormap
+                 cmap = maintain_view_state.get('colormap')
+                 if cmap:
+                      self.set_colormap(cmap)
+                      self.colormap_combo.setCurrentText(cmap)
+
+            else:
+                # Default Apply Min-Max contrast stretch for new image
+                self._apply_histogram_preset(0, 100)
             
             # Clear overlay cache
             self.overlay_cache.clear()
@@ -651,8 +914,37 @@ class ImageViewer(QMainWindow):
                 self.recent_files = settings.add_to_recent_files(self.recent_files, file_path)
                 self._update_recent_files_menu()
                 self.image_label.set_overlay_text(file_path)
+                
+                # Save override to history if successful (and if it was a missing resolution file)
+                # Logic: If we used override_settings, we should save it? 
+                # If explicit resolution exists, self.image_handler.parse_resolution returns values.
+                # If we passed override settings, we don't necessarily update history unless it was "missing".
+                # But implementation plan says "update history on success".
+                # Let's check:
+                w, h, _ = self.image_handler.parse_resolution(file_path)
+                if (w == 0 or h == 0) and override_settings:
+                      settings.update_raw_history(file_path, override_settings)
+
+                # Update sticky settings if it's a raw file
+                if self.image_handler.is_raw:
+                    self.last_raw_settings = {
+                        'width': self.image_handler.width,
+                        'height': self.image_handler.height,
+                        'dtype': self.image_handler.dtype,
+                        'color_format': self.image_handler.color_format
+                    }
+                
+                # Synchronous update
+                self.image_label.repaint()
+                if self.histogram_action.isChecked():
+                    self.histogram_window.repaint()
 
         except Exception as e:
+            if is_raw and override_settings:
+                # Transform/Inheritance caused a mismatch? Fallback to guessing.
+                self.open_file(file_path, override_settings=None, maintain_view_state=maintain_view_state)
+                return
+            
             QMessageBox.critical(self, "Error", f"Error opening image:\n{e}")
             self.math_transform_action.setEnabled(False)
             self.info_action.setEnabled(False)
@@ -704,7 +996,7 @@ class ImageViewer(QMainWindow):
             self.recent_files_menu.addAction(action)
 
     def update_histogram_data(self, new_image=False):
-        if not self.active_label:
+        if not self.active_label or not self.histogram_window.isVisible():
             return
             
         use_visible_only = self.histogram_window.use_visible_checkbox.isChecked()
@@ -847,17 +1139,26 @@ class ImageViewer(QMainWindow):
     def reset_image_full(self):
         """Completely reset the image to its original state (zoom, pan, contrast, colormap)."""
         if self.active_label and self.active_label.original_data is not None:
+             # Explicitly reset state variables
+             self.active_label.contrast_limits = None
+             
              # Reset data which clears contrast limits
-             self.active_label.set_data(self.active_label.original_data)
+             self.active_label.set_data(self.active_label.original_data, reset_view=True)
+             
              # Reset View
              self.active_label.restore_view()
+             
              # Reset Colormap
              self.set_colormap("gray")
+             self.colormap_combo.blockSignals(True)
              self.colormap_combo.setCurrentText("gray")
+             self.colormap_combo.blockSignals(False)
+             
              # Reset Histogram/UI
              self._update_active_view(reset_histogram=True)
              
              # Apply default Min-Max contrast again to ensure it's not raw/black
+             # Use full range (0-100%) to reset any inherited contrast narrowing
              self._apply_histogram_preset(0, 100, use_visible_only=False)
 
     def eventFilter(self, source, event):
@@ -1031,10 +1332,23 @@ class ImageViewer(QMainWindow):
                 if path in self.overlay_cache:
                     overlays_to_draw.append((self.overlay_cache[path], alpha))
 
-        self.active_label.set_overlays(overlays_to_draw)
+        if self.active_label:
+            self.active_label.set_overlays(overlays_to_draw)
 
     def closeEvent(self, event):
         """Remove window from the list when closed."""
-        if self in self.window_list:
-            self.window_list.remove(self)
+        try:
+            QApplication.instance().removeEventFilter(self)
+        except:
+            pass
+            
+        # Call super first to let C++ handle its closure
         super().closeEvent(event)
+        
+        # Defer removal from global list to ensure Python object stays alive 
+        # until the C++ event handling is completely finished.
+        QTimer.singleShot(0, self._cleanup_window_list)
+
+    def _cleanup_window_list(self):
+        if hasattr(self, 'window_list') and self in self.window_list:
+            self.window_list.remove(self)

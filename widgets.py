@@ -1,8 +1,9 @@
 import time
 
 import numpy as np
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QPointF, QEvent, QObject, QTimer, QRectF, QSettings
-from PyQt6.QtGui import QPixmap, QPainter, QNativeGestureEvent, QDoubleValidator, QKeyEvent, QImage, QMouseEvent, QColor, QIcon
+import re
+from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QPointF, QEvent, QObject, QTimer, QRectF, QSettings, QSortFilterProxyModel, QDir, QRegularExpression, QItemSelectionModel
+from PyQt6.QtGui import QPixmap, QPainter, QNativeGestureEvent, QDoubleValidator, QKeyEvent, QImage, QMouseEvent, QColor, QIcon, QFileSystemModel
 from PyQt6.QtWidgets import (
     QApplication,
     QLabel,
@@ -23,12 +24,19 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QCheckBox,
-    QStyle
+    QStyle,
+    QTreeView,
+    QHeaderView,
+    QAbstractItemView,
+    QToolButton,
+    QStackedLayout,
+    QFrame
 )
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 import pyqtgraph as pg
 import os
 import matplotlib.cm as cm
+from settings import load_folder_history, save_folder_history, load_filter_history, save_filter_history
 
 
 class SharedViewState(QObject):
@@ -349,9 +357,6 @@ class InfoPane(QDockWidget):
         self.color_format_combo = QComboBox()
         self.color_format_combo.addItems(["Grayscale", "Bayer GRBG", "Bayer RGGB", "Bayer BGGR", "Bayer GBRG", 
                                           "YUV NV12", "YUV NV21", "YUV YUYV", "YUV UYVY", "YUV I420"])
-        self.color_format_combo = QComboBox()
-        self.color_format_combo.addItems(["Grayscale", "Bayer GRBG", "Bayer RGGB", "Bayer BGGR", "Bayer GBRG", 
-                                          "YUV NV12", "YUV NV21", "YUV YUYV", "YUV UYVY", "YUV I420"])
         self.color_format_combo.currentTextChanged.connect(self._on_parameter_change)
         self.layout.addRow("Format:", self.color_format_combo)
 
@@ -374,11 +379,6 @@ class InfoPane(QDockWidget):
         
         self.defaults = {}
 
-        self._change_timer = QTimer()
-        self._change_timer.setSingleShot(True)
-        self._change_timer.setInterval(200)
-        self._change_timer.timeout.connect(self._emit_settings)
-
         self.setWidget(self.content_widget)
 
     def _on_width_changed(self):
@@ -393,7 +393,7 @@ class InfoPane(QDockWidget):
         if sender == self.dtype_combo or sender == self.color_format_combo:
              self._recalculate_height()
         
-        self._change_timer.start()
+        self._emit_settings()
 
     def _recalculate_height(self):
         if self.file_size <= 0: return
@@ -411,7 +411,6 @@ class InfoPane(QDockWidget):
         elif "float32" in dtype_str: itemsize = 4
         elif "float16" in dtype_str: itemsize = 2
         else:
-             import re
              match = re.search(r'\d+', dtype_str)
              bits = int(match.group(0)) if match else 8
              # Container size logic (should match image_handler)
@@ -593,6 +592,11 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self.zoom_out_interp = Qt.TransformationMode.SmoothTransformation
         self._pinch_start_scale_factor = None
 
+        # Active Indicator Line
+        self.indicator_line = QFrame(self)
+        self.indicator_line.setFixedHeight(3)
+        self.indicator_line.setStyleSheet("background-color: transparent;")
+
         # Overlay Label
         self.overlay_label = QLabel(self)
         self.overlay_label.setStyleSheet("background-color: rgba(0, 0, 0, 150); color: white; padding: 5px; border-radius: 5px; font-size: 14px;")
@@ -607,6 +611,36 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self._view_update_timer.setSingleShot(True)
         self._view_update_timer.setInterval(200) # 200ms debounce
         self._view_update_timer.timeout.connect(self.view_changed.emit)
+
+    @property
+    def zoom_scale(self):
+        return self._get_effective_scale_factor()
+
+    @zoom_scale.setter
+    def zoom_scale(self, value):
+        if self.shared_state:
+             # Prevent division by zero
+             if self._fit_scale > 1e-6:
+                 internal_factor = value / self._fit_scale
+                 # Clamp multiplier
+                 internal_factor = max(0.01, min(100.0, internal_factor))
+                 self.shared_state.zoom_multiplier = internal_factor
+        else:
+             self._scale_factor = value
+             self.zoom_factor_changed.emit(value)
+        self.view_changed.emit()
+
+    @property
+    def pan_pos(self):
+        return self._get_effective_offset()
+        
+    @pan_pos.setter
+    def pan_pos(self, value):
+        if self.shared_state:
+            self.shared_state.offset = value
+        else:
+            self._pixmap_offset = value
+        self.view_changed.emit()
 
     def _get_effective_scale_factor(self):
         if self.shared_state:
@@ -638,6 +672,26 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         if self.is_active != active:
             self.is_active = active
             self.update()
+            
+    def update_transform(self):
+        """Force a repaint/update of the transformation."""
+        self.update()
+
+    def is_single_channel(self):
+        """Check if current image is single channel."""
+        if self.original_data is not None:
+            # Check shape: (H, W) or (H, W, 1) is single channel
+            if self.original_data.ndim == 2:
+                return True
+            if self.original_data.ndim == 3 and self.original_data.shape[2] == 1:
+                return True
+        return False
+        
+    def get_visible_sub_image(self):
+        """Return the currently visible portion of the image data."""
+        # TODO: Implement true cropping based on view. 
+        # For now, returning full image prevents crash and provides data.
+        return self.original_data
 
     def set_crosshair_enabled(self, enabled):
         self.crosshair_enabled = enabled
@@ -783,7 +837,13 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
 
         data = self.original_data
 
-        if len(data.shape) == 3 and data.shape[2] == 3:  # Color Image
+        # Determine mode: standard RGB or Colormapped (single channel)
+        # If RGB and map is 'gray', show as RGB.
+        # If RGB and map is NOT 'gray', extract Ch0 and map it.
+        is_rgb = (data.ndim == 3 and data.shape[2] == 3)
+        treat_as_rgb = is_rgb and (self.colormap == 'gray')
+
+        if treat_as_rgb:  # Color Image
             if self.contrast_limits:
                 min_val, max_val = self.contrast_limits
                 if max_val > min_val:
@@ -801,7 +861,10 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             h, w, _ = processed_data.shape
             q_image = QImage(processed_data.tobytes(), w, h, 3 * w, QImage.Format.Format_RGB888)
 
-        else:  # Grayscale Image
+        else:  # Grayscale / Colormapped
+            if is_rgb:
+                 data = data[:, :, 0] # Use Channel 0 for colormapping
+
             processed_data = data.copy()
             if self.contrast_limits:
                 min_val, max_val = self.contrast_limits
@@ -848,7 +911,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         if is_new_image:
             self.processed_data = None # We don't need to store full res processed data in RAM for display anymore
             self.current_pixmap = pixmap
-            QTimer.singleShot(0, self.fit_to_view)
+            self.fit_to_view()
         else:
             self.update_pixmap_content(pixmap)
 
@@ -865,6 +928,8 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         super().resizeEvent(event)
         self.update_fit_scale()
         self._update_overlay_position()
+        if hasattr(self, 'indicator_line'):
+             self.indicator_line.setGeometry(0, self.height() - 3, self.width(), 3)
 
     def set_overlay_text(self, text):
         self.overlay_label.setText(text)
@@ -1468,3 +1533,553 @@ class ThumbnailPane(QDockWidget):
         if self.focused_index != -1:
             self.thumbnail_items[self.focused_index].set_focused(True)
             self.scroll_area.ensureWidgetVisible(self.thumbnail_items[self.focused_index])
+
+
+
+
+
+class SmartSortFilterProxyModel(QSortFilterProxyModel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.current_root_path = ""
+        self.hide_folders = False
+
+    def set_current_root_path(self, path):
+        self.current_root_path = os.path.normpath(path) if path else ""
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row, source_parent):
+        model = self.sourceModel()
+        index = model.index(source_row, 0, source_parent)
+        
+        # Check if it is an ancestor of the current view root (or root itself)
+        if model.isDir(index):
+            path = os.path.normpath(model.filePath(index))
+            if self.current_root_path:
+                if self.current_root_path == path:
+                    return True
+                
+                # Check strict ancestry
+                # Add separator to path if missing to prevent partial matches (e.g. /usr matching /usr_local)
+                # But do NOT add if it is the root path (/) which already has it
+                check_path = path
+                if not check_path.endswith(os.sep):
+                    check_path += os.sep
+                    
+                if self.current_root_path.startswith(check_path):
+                    return True
+                
+                # If we are here, it's a directory that is NOT an ancestor
+                if self.hide_folders:
+                    return False
+                
+        return super().filterAcceptsRow(source_row, source_parent)
+
+class BreadcrumbBar(QWidget):
+    path_clicked = pyqtSignal(str)
+    edit_requested = pyqtSignal()
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.layout = QHBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(0)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(28) # Reasonable height
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.edit_requested.emit()
+        super().mousePressEvent(event)
+
+    def set_path(self, path):
+        # Clear existing
+        while self.layout.count():
+            item = self.layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        if not path:
+             return
+
+        # Normalize and split
+        path = os.path.normpath(path)
+        parts = []
+        if os.name == 'nt': # Windows
+             # Handle drive letter
+             drive, tail = os.path.splitdrive(path)
+             if drive: parts.append(drive + os.sep)
+             parts.extend([p for p in tail.split(os.sep) if p])
+        else:
+             if path.startswith(os.sep):
+                 parts.append(os.sep) # Root
+             parts.extend([p for p in path.split(os.sep) if p])
+
+        current_build_path = ""
+        for i, part in enumerate(parts):
+            if i == 0 and os.name != 'nt':
+                 if part == os.sep:
+                      current_build_path = os.sep
+                      btn_text = "/"
+                 else:
+                      current_build_path = part
+                      btn_text = part
+            else:
+                 current_build_path = os.path.join(current_build_path, part)
+                 btn_text = part
+            
+            # Button
+            btn = QPushButton(btn_text)
+            btn.setFlat(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            
+            # Styling to make it look like text/breadcrumb
+            btn.setStyleSheet("""
+                QPushButton {
+                    border: none;
+                    padding: 2px 5px;
+                    text-align: left;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: rgba(128, 128, 128, 50);
+                    border-radius: 3px;
+                }
+            """)
+            
+            # Capture path for closure
+            # Lambda default argument trick
+            btn.clicked.connect(lambda checked, p=current_build_path: self.path_clicked.emit(p))
+            
+            self.layout.addWidget(btn)
+            
+            # Arrow (if not last)
+            if i < len(parts) - 1:
+                arrow = QLabel(">")
+                arrow.setStyleSheet("color: gray; padding: 0 2px;")
+                self.layout.addWidget(arrow)
+
+        # Edit Button to make manual entry discoverable
+        edit_btn = QPushButton("✎") 
+        edit_btn.setFlat(True)
+        edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        edit_btn.setToolTip("Edit Address")
+        edit_btn.setFixedWidth(20)
+        edit_btn.setStyleSheet("""
+            QPushButton { 
+                border: none; 
+                color: #666; 
+                font-size: 14px;
+            } 
+            QPushButton:hover { 
+                color: #333; 
+                background-color: rgba(0,0,0,0.1); 
+                border-radius: 3px; 
+            }
+        """)
+        edit_btn.clicked.connect(self.edit_requested.emit)
+        self.layout.addWidget(edit_btn)
+
+        # History Button (Dropdown Arrow)
+        hist_btn = QPushButton("▼") 
+        hist_btn.setFlat(True)
+        hist_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        hist_btn.setToolTip("Recent Folders")
+        hist_btn.setFixedWidth(20)
+        hist_btn.setStyleSheet("""
+            QPushButton { 
+                border: none; 
+                color: #666; 
+                font-size: 10px;
+                padding-top: 2px;
+            } 
+            QPushButton:hover { 
+                color: #333; 
+                background-color: rgba(0,0,0,0.1); 
+                border-radius: 3px; 
+            }
+        """)
+        hist_btn.clicked.connect(self.edit_requested.emit)
+        self.layout.addWidget(hist_btn)
+
+        self.layout.addStretch()
+
+class SmartAddressBar(QWidget):
+    path_changed = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.layout = QStackedLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        
+        # Breadcrumb View
+        self.breadcrumbs = BreadcrumbBar()
+        self.breadcrumbs.path_clicked.connect(self._on_breadcrumb_clicked)
+        self.breadcrumbs.edit_requested.connect(self.show_edit)
+        self.layout.addWidget(self.breadcrumbs)
+        
+        # Edit View Container (Combo + Cancel Button)
+        self.edit_container = QWidget()
+        edit_layout = QHBoxLayout(self.edit_container)
+        edit_layout.setContentsMargins(0, 0, 0, 0)
+        edit_layout.setSpacing(2)
+
+        self.combo = QComboBox()
+        self.combo.setEditable(True)
+        self.combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.combo.lineEdit().returnPressed.connect(self._on_combo_entered)
+        self.combo.activated.connect(self._on_combo_activated)
+        self.combo.installEventFilter(self)
+        self.combo.lineEdit().installEventFilter(self)
+        edit_layout.addWidget(self.combo)
+        
+        self.cancel_btn = QToolButton()
+        self.cancel_btn.setText("✖") 
+        self.cancel_btn.setToolTip("Cancel Edit")
+        self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_btn.clicked.connect(self._cancel_edit)
+        self.cancel_btn.setStyleSheet("""
+            QToolButton { border: none; color: #888; font-weight: bold; } 
+            QToolButton:hover { color: #d00; background-color: rgba(0,0,0,0.1); border-radius: 3px; }
+        """)
+        edit_layout.addWidget(self.cancel_btn)
+
+        self.layout.addWidget(self.edit_container)
+        
+        self.recent_paths = load_folder_history()
+        self.combo.addItems(self.recent_paths)
+        self._current_path = ""
+
+    def show_edit(self):
+        self.layout.setCurrentWidget(self.edit_container)
+        self.combo.setFocus()
+        self.combo.lineEdit().selectAll()
+        if self.recent_paths:
+             self.combo.showPopup()
+
+    def set_path(self, path):
+        self._current_path = path
+        # Update Breadcrumbs
+        self.breadcrumbs.set_path(path)
+        
+        # Update Combo Text
+        self.combo.blockSignals(True)
+        self.combo.setEditText(path)
+        self.combo.blockSignals(False)
+        
+        # Add to recent
+        if path and os.path.exists(path):
+             self._add_recent(path)
+             
+        # Switch to Breadcrumbs
+        self.layout.setCurrentWidget(self.breadcrumbs)
+
+    def _add_recent(self, path):
+        if path in self.recent_paths:
+             self.recent_paths.remove(path)
+        self.recent_paths.insert(0, path)
+        self.recent_paths = self.recent_paths[:10] 
+        
+        self.combo.blockSignals(True)
+        self.combo.clear()
+        self.combo.addItems(self.recent_paths)
+        self.combo.setEditText(self._current_path)
+        self.combo.blockSignals(False)
+        save_folder_history(self.recent_paths)
+
+    def _on_breadcrumb_clicked(self, path):
+        self.path_changed.emit(path)
+
+    def _on_combo_entered(self):
+        path = self.combo.currentText()
+        if path and os.path.isdir(path):
+             self.path_changed.emit(path)
+             self.layout.setCurrentWidget(self.breadcrumbs)
+        else:
+             pass 
+
+    def _on_combo_activated(self, index):
+        path = self.combo.itemText(index)
+        if path and os.path.isdir(path):
+             self.path_changed.emit(path)
+             self.layout.setCurrentWidget(self.breadcrumbs)
+
+    def _cancel_edit(self):
+        self.layout.setCurrentWidget(self.breadcrumbs)
+        self.combo.setEditText(self._current_path)
+
+    def eventFilter(self, source, event):
+        if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+             self._cancel_edit()
+             return True
+
+        if source == self.combo and event.type() == QEvent.Type.FocusOut:
+            if not self.combo.view().isVisible():
+                 # Don't cancel immediately if focus went to cancel button
+                 # But cancel button click triggers logic anyway.
+                 # If focus went to cancel button, we rely on click.
+                 # If we return, we might close before click?
+                 # Actually if we click Cancel, focus out happens first.
+                 # If we close edit view on focus out, cancel button might move or disappear.
+                 # Let's check focus widget.
+                 focus_widget = QApplication.focusWidget()
+                 if focus_widget != self.cancel_btn:
+                     self._cancel_edit()
+            return False
+            
+        return super().eventFilter(source, event)
+
+class FileExplorerPane(QDockWidget):
+    files_selected = pyqtSignal(list)
+
+    def __init__(self, parent=None):
+        super().__init__("File Explorer", parent)
+        self.setObjectName("FileExplorerPane")
+        self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.target_selection_path = None
+
+        # Initialize Models FIRST to prevent AttributeError on widget signal triggers
+        # File System Model
+        self.model = QFileSystemModel()
+        self.model.setRootPath(QDir.rootPath())
+        self.model.setNameFilters(["*"]) 
+        self.model.setNameFilterDisables(False) 
+        
+        # Proxy Model
+        self.proxy_model = SmartSortFilterProxyModel()
+        self.proxy_model.setSourceModel(self.model)
+        self.proxy_model.setFilterKeyColumn(0) # Name column
+        self.proxy_model.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.proxy_model.setDynamicSortFilter(True)
+        self.proxy_model.layoutChanged.connect(self._select_first_item)
+        self.model.directoryLoaded.connect(lambda p: self._select_first_item())
+
+        self.content_widget = QWidget()
+        self.layout = QVBoxLayout(self.content_widget)
+
+        # Navigation Bar (Up Button + Path Input)
+        nav_layout = QHBoxLayout()
+        
+        self.up_button = QToolButton()
+        self.up_button.setIcon(QIcon.fromTheme("go-up"))
+        if self.up_button.icon().isNull(): # Fallback if theme icon missing
+             self.up_button.setText("..") 
+        self.up_button.clicked.connect(self._on_up_clicked)
+        nav_layout.addWidget(self.up_button)
+        
+        self.path_input = SmartAddressBar()
+        self.path_input.path_changed.connect(self.set_root_path)
+        nav_layout.addWidget(self.path_input)
+        
+        self.layout.addLayout(nav_layout)
+
+        # Filter Input with History
+        self.filter_input = QComboBox()
+        self.filter_input.setEditable(True)
+        self.filter_input.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.filter_input.lineEdit().setPlaceholderText("Filter files (e.g. *.png, image_*)")
+        self.filter_input.editTextChanged.connect(self._on_filter_changed)
+        self.filter_input.lineEdit().returnPressed.connect(self._add_filter_history)
+        self.layout.addWidget(self.filter_input)
+        
+        self.filter_history = load_filter_history()
+        self.filter_input.addItems(self.filter_history)
+        self.filter_input.setEditText("")
+        
+        # Options Bar (Hide Folders Checkbox)
+        options_layout = QHBoxLayout()
+        self.hide_folders_cb = QCheckBox("Hide Folders")
+        self.hide_folders_cb.stateChanged.connect(self._on_hide_folders_changed)
+        options_layout.addWidget(self.hide_folders_cb)
+        options_layout.addStretch()
+        self.layout.addLayout(options_layout)
+        
+        # Tree View
+        self.tree_view = QTreeView()
+        self.tree_view.setModel(self.proxy_model)
+        self.tree_view.setRootIsDecorated(True)
+        self.tree_view.setSortingEnabled(True)
+        self.tree_view.setHeaderHidden(False)
+        self.tree_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.tree_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tree_view.setColumnWidth(0, 400)
+        
+        self.tree_view.selectionModel().selectionChanged.connect(self._on_selection_changed)
+        self.tree_view.activated.connect(self._on_item_activated) # Double click or enter
+        self.tree_view.installEventFilter(self)
+        self.layout.addWidget(self.tree_view)
+
+        self.setWidget(self.content_widget)
+        
+        self.set_root_path(QDir.homePath())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Ensure focus goes to tree when shown so selection is "active" (e.g. blue not gray)
+        self.tree_view.setFocus()
+        self._select_first_item()
+
+    def set_supported_extensions(self, extensions):
+        """Set filename filters for the file system model.
+           extensions: list of strings like ['*.png', '*.jpg']
+        """
+        if extensions:
+            self.model.setNameFilters(extensions)
+            self.model.setNameFilterDisables(False) # Hide filtered files
+        else:
+             self.model.setNameFilters(["*"])
+             
+    def eventFilter(self, source, event):
+        if source == self.tree_view and event.type() == QEvent.Type.KeyPress:
+            # Handle Enter/Return explicitly for navigation (Folder Dive-in)
+            if event.key() in [Qt.Key.Key_Return, Qt.Key.Key_Enter]:
+                indexes = self.tree_view.selectionModel().selectedRows()
+                if indexes:
+                    self._on_item_activated(indexes[0])
+                    return True
+
+            # Handle Backspace explicitly for navigation (Folder Up)
+            if event.key() == Qt.Key.Key_Backspace:
+                self._on_up_clicked()
+                return True
+
+            # Keys allowed to remain in the tree view for navigational use
+            # Strictly: Up, Down, Enter, and Backspace
+            allowed_keys = [
+                Qt.Key.Key_Up, 
+                Qt.Key.Key_Down, 
+                Qt.Key.Key_Return, 
+                Qt.Key.Key_Enter,
+                Qt.Key.Key_Backspace
+            ]
+            
+            if event.key() not in allowed_keys:
+                # Forward to main window (shortcuts, pan, etc.)
+                main_win = self.window()
+                if main_win:
+                    main_win.keyPressEvent(event)
+                    return True # Consume to prevent tree_view from using it (e.g. searching by letter)
+                    
+        return super().eventFilter(source, event)
+             
+    def _on_item_activated(self, index):
+        source_index = self.proxy_model.mapToSource(index)
+        if self.model.isDir(source_index):
+            file_path = self.model.filePath(source_index)
+            self.set_root_path(file_path)
+        else:
+            self._emit_selection()
+
+    def _on_up_clicked(self):
+        old_root = self.root_path
+        parent_dir = os.path.dirname(self.root_path)
+        if parent_dir and os.path.exists(parent_dir):
+            self.target_selection_path = old_root
+            self.set_root_path(parent_dir)
+
+    def set_root_path(self, path):
+        if not path:
+             path = QDir.homePath()
+        elif not os.path.isdir(path):
+            path = os.path.dirname(path) if os.path.exists(path) else QDir.homePath()
+            
+        if hasattr(self, 'root_path') and self.root_path == path:
+             return
+
+        self.root_path = path
+        self.path_input.set_path(path)
+        self.proxy_model.set_current_root_path(path)
+        self._set_view_to_path(path)
+        self.tree_view.clearSelection()
+
+    def _select_first_item(self):
+        root_index = self.tree_view.rootIndex()
+        
+        # Try to select the target path (context-aware up)
+        if self.target_selection_path:
+            target_source_index = self.model.index(self.target_selection_path)
+            if target_source_index.isValid():
+                target_proxy_index = self.proxy_model.mapFromSource(target_source_index)
+                if target_proxy_index.isValid() and target_proxy_index.parent() == root_index:
+                    self.tree_view.setCurrentIndex(target_proxy_index)
+                    self.tree_view.selectionModel().select(target_proxy_index, QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows)
+                    self.tree_view.scrollTo(target_proxy_index)
+                    self.target_selection_path = None
+                    if self.isVisible():
+                        self.tree_view.setFocus()
+                    return
+
+        # Fallback to first item
+        if self.proxy_model.rowCount(root_index) > 0:
+            first_index = self.proxy_model.index(0, 0, root_index)
+            if first_index.isValid():
+                self.tree_view.setCurrentIndex(first_index)
+                self.tree_view.selectionModel().select(first_index, QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows)
+                self.tree_view.scrollTo(first_index)
+                # If the explorer is active, make sure the tree is focused for visual clarity
+                if self.isVisible():
+                    self.tree_view.setFocus()
+        
+    def _set_view_to_path(self, path):
+        root_index = self.model.index(path)
+        proxy_root_index = self.proxy_model.mapFromSource(root_index)
+        self.tree_view.setRootIndex(proxy_root_index)
+
+    def _on_hide_folders_changed(self, state):
+        self.proxy_model.hide_folders = (state == Qt.CheckState.Checked.value or state == 2)
+        self.proxy_model.invalidateFilter()
+
+    def _on_filter_changed(self, text):
+        if not text:
+            self.proxy_model.setFilterRegularExpression("")
+            return
+            
+        pattern = None
+        if '*' in text or '?' in text:
+             import re
+             escaped = re.escape(text)
+             regex_pattern = escaped.replace(r'\*', '.*').replace(r'\?', '.')
+             pattern = QRegularExpression(regex_pattern, QRegularExpression.PatternOption.CaseInsensitiveOption)
+        else:
+             pattern = QRegularExpression(text, QRegularExpression.PatternOption.CaseInsensitiveOption)
+             if not pattern.isValid():
+                  # Fallback to literal search if invalid regex
+                  pattern = QRegularExpression(QRegularExpression.escape(text), QRegularExpression.PatternOption.CaseInsensitiveOption)
+
+        self.proxy_model.setFilterRegularExpression(pattern)
+
+    def _add_filter_history(self):
+         text = self.filter_input.currentText().strip()
+         if not text: return
+         
+         if text in self.filter_history:
+             self.filter_history.remove(text)
+         self.filter_history.insert(0, text)
+         self.filter_history = self.filter_history[:30]
+         
+         # Persist current text across update
+         self.filter_input.blockSignals(True)
+         self.filter_input.clear()
+         self.filter_input.addItems(self.filter_history)
+         self.filter_input.setEditText(text)
+         self.filter_input.blockSignals(False)
+         self.filter_input.clearFocus()
+         save_filter_history(self.filter_history)
+
+    def _on_selection_changed(self, selected, deselected):
+        self._emit_selection()
+
+
+    def _emit_selection(self):
+        indexes = self.tree_view.selectionModel().selectedRows()
+        file_paths = []
+        for index in indexes:
+            source_index = self.proxy_model.mapToSource(index)
+            path = self.model.filePath(source_index)
+            if not self.model.isDir(source_index):
+                file_paths.append(path)
+        
+        if file_paths:
+            self.files_selected.emit(file_paths)

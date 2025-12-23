@@ -57,3 +57,22 @@ def update_raw_history(file_path, params):
         del history[oldest_key]
         
     save_raw_history(history)
+
+SETTINGS_FOLDER_HISTORY_KEY = "folderHistory"
+SETTINGS_FILTER_HISTORY_KEY = "filterHistory"
+
+def load_folder_history():
+    settings = QSettings("ImageViewer", "ImageViewer")
+    return settings.value(SETTINGS_FOLDER_HISTORY_KEY, [], type=list)
+
+def save_folder_history(history):
+    settings = QSettings("ImageViewer", "ImageViewer")
+    settings.setValue(SETTINGS_FOLDER_HISTORY_KEY, history)
+
+def load_filter_history():
+    settings = QSettings("ImageViewer", "ImageViewer")
+    return settings.value(SETTINGS_FILTER_HISTORY_KEY, [], type=list)
+
+def save_filter_history(history):
+    settings = QSettings("ImageViewer", "ImageViewer")
+    settings.setValue(SETTINGS_FILTER_HISTORY_KEY, history)

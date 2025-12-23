@@ -9,6 +9,7 @@ class ImageHandler:
         self.width = 0
         self.height = 0
         self.dtype = None
+        self.color_format = None
         self.is_raw = False
         self.raw_extensions = [
             ".raw", ".bin", ".dat", 
@@ -96,6 +97,7 @@ class ImageHandler:
         self.width = width
         self.height = height
         self.dtype = dtype
+        self.color_format = color_format
 
         # raw file reading
         raw_data = np.fromfile(file_name, dtype=container)

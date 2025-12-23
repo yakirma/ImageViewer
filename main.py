@@ -1,5 +1,6 @@
 import sys
 from PyQt6.QtWidgets import QApplication
+from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import Qt
 from image_viewer import ImageViewer
 
@@ -8,6 +9,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setOrganizationName("ImageViewer")
     app.setApplicationName("ImageViewer")
+    app.setWindowIcon(QIcon("assets/app_icon.png"))
 
     # Central list to manage open windows
     open_windows = []
