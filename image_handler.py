@@ -2,6 +2,7 @@ import os
 import re
 import numpy as np
 from PIL import Image
+import cv2
 
 class ImageHandler:
     def __init__(self):
@@ -21,6 +22,12 @@ class ImageHandler:
             ".rgb", ".rgba", ".bgr", ".bgra",
             ".yuyv", ".uyvy"
         ]
+        self.video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm']
+        self.is_video = False
+        self.video_cap = None
+        self.video_fps = 30
+        self.video_frame_count = 0
+        self.current_frame_index = -1
         self.dtype_map = {
             ".f32": np.float32, 
             ".f16": np.float16, 
@@ -38,18 +45,71 @@ class ImageHandler:
 
     def load_image(self, file_path, override_settings=None):
         _, ext = os.path.splitext(file_path)
-        self.is_raw = ext.lower() in self.raw_extensions or (override_settings is not None)
+        ext_lower = ext.lower()
+        self.is_raw = ext_lower in self.raw_extensions or (override_settings is not None)
 
-        if self.is_raw or override_settings:
+        self.is_video = False
+        if self.video_cap:
+             self.video_cap.release()
+             self.video_cap = None
+
+        if ext_lower in self.video_extensions:
+             self._load_video(file_path)
+        elif self.is_raw or override_settings:
             # If we have settings, we treat it as raw even if extension is png
             self._load_raw_image(file_path, override_settings)
         else:
             self._load_standard_image(file_path)
 
+    def _load_video(self, file_path):
+        self.video_cap = cv2.VideoCapture(file_path)
+        if not self.video_cap.isOpened():
+             raise Exception(f"Could not open video file: {file_path}")
+        
+        self.is_video = True
+        fps = self.video_cap.get(cv2.CAP_PROP_FPS)
+        self.video_fps = fps if fps > 0 else 30.0
+        self.video_frame_count = int(self.video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.width = int(self.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.height = int(self.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # Load first frame
+        self.seek_frame(0)
+
+    def seek_frame(self, index):
+        if not self.is_video or not self.video_cap: return False
+        
+        # Clamp
+        if self.video_frame_count > 0:
+            index = max(0, min(index, self.video_frame_count - 1))
+        
+        self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, index)
+        return self._update_from_current_frame(expected_index=index)
+
+    def get_next_frame(self):
+        if not self.is_video or not self.video_cap: return False
+        return self._update_from_current_frame()
+
+    def _update_from_current_frame(self, expected_index=None):
+        ret, frame = self.video_cap.read()
+        if ret:
+             if expected_index is not None:
+                 self.current_frame_index = expected_index
+             else:
+                 self.current_frame_index = int(self.video_cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
+             
+             # Convert BGR to RGB
+             self.original_image_data = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+             self.dtype = self.original_image_data.dtype
+             return True
+        return False
+
     def _load_standard_image(self, file_name):
         try:
             with Image.open(file_name) as img:
-                if img.mode in ("RGB", "RGBA"):
+                if img.mode.startswith("I;16") or img.mode in ("I", "F"):
+                    self.original_image_data = np.array(img)
+                elif img.mode in ("RGB", "RGBA"):
                     self.original_image_data = np.array(img.convert("RGB"))
                 else:
                     self.original_image_data = np.array(img.convert("L"))

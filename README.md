@@ -4,6 +4,15 @@ ImageViewer is a powerful, cross-platform desktop application for viewing and an
 
 ![ImageViewer Screenshot](assets/screenshot.png)
 
+<div style="display: flex; gap: 10px;">
+  <video width="48%" autoplay loop muted playsinline>
+    <source src="assets/video_demo.mov" type="video/quicktime">
+    <source src="assets/video_demo.mov" type="video/mp4">
+    Your browser does not support the video tag.
+  </video>
+  <img src="assets/3d_point_cloud.png" width="48%" />
+</div>
+
 ---
 
 ## Key Features
@@ -39,6 +48,26 @@ ImageViewer is a powerful, cross-platform desktop application for viewing and an
 - **Synchronized Crosshair:** Press `c` to toggle crosshairs and see per-image pixel values in the status bar.
 - **Smart Overlays:** Overlay images preserve all modifications (colormap, contrast, math transforms) from source windows.
 
+### 5. Video Playback
+- **Native Video Support:** Opens standard video formats (`.mp4`, `.avi`, `.mov`) just like images.
+- **Frame-by-Frame Control:** Scrub through frames using the slider, play/pause video, or step continuously.
+- **Persistent Edits:** Apply zoom, pan, contrast stretching, or math transforms to a running video—frames update in real-time while preserving your view modifications.
+- **Keyboard Navigation:** Use `Left/Right` arrow keys to step backward/forward frame-by-frame.
+
+
+
+### 6. 3D Visualization (Point Cloud)
+- **3D Surface View:** Visualize any 2D image as a 3D terrain where pixel intensity represents height.
+- **Hardware Acceleration:** Uses OpenGL for smooth interaction even with large datasets.
+- **Interaction:**
+  - **Rotate:** Left-click drag.
+  - **Pan:** Middle-click drag.
+  - **Zoom:** Scroll wheel.
+  - **Reset:** Dedicated button to restore default view.
+- **Optimized Rendering:** Automatically downsamples large images to maintain responsive frame rates without losing structural context.
+
+
+
 ---
 
 ## Installation & Usage
@@ -73,6 +102,8 @@ ImageViewer is a powerful, cross-platform desktop application for viewing and an
 | `Backspace` | Navigate up one folder level in File Explorer. |
 | `Enter` | Dive into folder or open file in File Explorer. |
 | `Arrow Up/Down` | Navigate files/thumbnails. |
+| `Arrow Left/Right` | Previous/Next video frame (in video mode). |
+| `Pinch/Scroll` | Zoom in/out of image (Mac Trackpad supported). |
 
 ---
 

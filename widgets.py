@@ -30,10 +30,18 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QToolButton,
     QStackedLayout,
-    QFrame
+    QFrame,
+    QFileDialog,
+    QInputDialog,
+    QProgressDialog
 )
+import sys
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 import pyqtgraph as pg
+try:
+    import pyqtgraph.opengl as gl
+except ImportError:
+    gl = None
 import os
 import matplotlib.cm as cm
 from settings import load_folder_history, save_folder_history, load_filter_history, save_filter_history
@@ -42,6 +50,7 @@ from settings import load_folder_history, save_folder_history, load_filter_histo
 class SharedViewState(QObject):
     """An object to hold and synchronize view parameters for multiple labels."""
     view_changed = pyqtSignal()
+    zoom_changed = pyqtSignal(float)
     crosshair_changed = pyqtSignal()
 
     def __init__(self):
@@ -80,6 +89,7 @@ class SharedViewState(QObject):
         if self._zoom_multiplier != value:
             self._zoom_multiplier = value
             self.view_changed.emit()
+            self.zoom_changed.emit(self._zoom_multiplier)
 
     @property
     def offset(self):
@@ -566,7 +576,8 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         super().__init__(parent)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        self.grabGesture(Qt.GestureType.PinchGesture)
+        self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents)
+        self.grabGesture(Qt.GestureType.PinchGesture) # Re-enable for standard handling
 
         self.shared_state = shared_state
         if self.shared_state:
@@ -775,7 +786,8 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self.original_data = data
         if is_pristine:
             self.pristine_data = data
-        self.contrast_limits = None
+        if reset_view:
+            self.contrast_limits = None
         self.apply_colormap(is_new_image=reset_view)
 
     def is_single_channel(self):
@@ -1151,7 +1163,13 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                     self._pinch_start_scale_factor = self._get_effective_scale_factor()
                 elif pinch.state() == Qt.GestureState.GestureUpdated:
                     new_scale_factor = self._pinch_start_scale_factor * pinch.totalScaleFactor()
-                    self._apply_zoom(new_scale_factor, pinch.centerPoint())
+                    
+                    # pinch.centerPoint() is in Global Screen Coordinates.
+                    # _apply_zoom expects Local Widget Coordinates.
+                    center_point = pinch.centerPoint().toPoint()
+                    local_pos = QPointF(self.mapFromGlobal(center_point))
+                    
+                    self._apply_zoom(new_scale_factor, local_pos)
                 elif pinch.state() == Qt.GestureState.GestureFinished:
                     self._pinch_start_scale_factor = None
                 return True
@@ -1943,8 +1961,8 @@ class FileExplorerPane(QDockWidget):
         self.proxy_model.setFilterKeyColumn(0) # Name column
         self.proxy_model.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.proxy_model.setDynamicSortFilter(True)
-        self.proxy_model.layoutChanged.connect(self._select_first_item)
-        self.model.directoryLoaded.connect(lambda p: self._select_first_item())
+        # self.proxy_model.layoutChanged.connect(self._select_first_item)
+        self.model.directoryLoaded.connect(self._on_directory_loaded)
 
         self.content_widget = QWidget()
         self.content_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
@@ -2005,6 +2023,12 @@ class FileExplorerPane(QDockWidget):
         self.tree_view.activated.connect(self._on_item_activated) # Double click or enter
         self.tree_view.installEventFilter(self)
         self.layout.addWidget(self.tree_view)
+
+        # Video Creation
+        self.create_video_btn = QPushButton("Create Video from Selection")
+        self.create_video_btn.setEnabled(False)
+        self.create_video_btn.clicked.connect(self._create_video_from_selection)
+        self.layout.addWidget(self.create_video_btn)
 
         self.setWidget(self.content_widget)
         
@@ -2088,6 +2112,14 @@ class FileExplorerPane(QDockWidget):
         self.proxy_model.set_current_root_path(path)
         self._set_view_to_path(path)
         self.tree_view.clearSelection()
+        
+        # Manually trigger selection update if we are not waiting for directory loaded
+        # (Though usually QFileSystemModel loads async so directoryLoaded will fire)
+        self._select_first_item()
+
+    def _on_directory_loaded(self, path):
+         if os.path.normpath(path) == os.path.normpath(self.root_path):
+             self._select_first_item()
 
     def _select_first_item(self):
         root_index = self.tree_view.rootIndex()
@@ -2178,3 +2210,221 @@ class FileExplorerPane(QDockWidget):
         
         if file_paths:
             self.files_selected.emit(file_paths)
+            
+        self.create_video_btn.setEnabled(len(file_paths) > 1)
+
+    def _create_video_from_selection(self):
+        indexes = self.tree_view.selectionModel().selectedRows()
+        # Sort by row to match visual order
+        indexes = sorted(indexes, key=lambda i: i.row())
+        
+        file_paths = []
+        for index in indexes:
+            source_index = self.proxy_model.mapToSource(index)
+            path = self.model.filePath(source_index)
+            if not self.model.isDir(source_index):
+                file_paths.append(path)
+        
+        if len(file_paths) < 2: return
+
+        default_dir = os.path.dirname(file_paths[0])
+        # Default to .avi (MJPG) which is much more reliable with OpenCV on macOS/Windows default installs
+        save_path, _ = QFileDialog.getSaveFileName(self, "Save Video", os.path.join(default_dir, "video.avi"), "AVI Files (*.avi);;MP4 Files (*.mp4)")
+        if not save_path: return
+
+        fps, ok = QInputDialog.getInt(self, "Video Settings", "Frames Per Second:", 10, 1, 120)
+        if not ok: return
+
+        try:
+            import cv2
+            cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+        except ImportError:
+            QMessageBox.critical(self, "Error", "OpenCV (opencv-python) is required for this feature.")
+            return
+
+        progress = QProgressDialog("Creating Video...", "Cancel", 0, len(file_paths), self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.show()
+        
+        writer = None
+        target_size = None # (w, h)
+        
+        try:
+            for i, path in enumerate(file_paths):
+                if progress.wasCanceled(): break
+                
+                # Check extension roughly or just try load
+                img = cv2.imread(path)
+                if img is None: continue
+                
+                if writer is None:
+                    h, w = img.shape[:2]
+                    # Ensure dimensions are multiples of 2 for codecs like H.264
+                    target_w = w if w % 2 == 0 else w - 1
+                    target_h = h if h % 2 == 0 else h - 1
+                    target_size = (target_w, target_h)
+
+                    # FourCC
+                    ext = os.path.splitext(save_path)[1].lower()
+                    
+                    codecs = []
+                    # On many systems, especially MacOS with OpenCV, 'MJPG' is the most robust internal codec.
+                    # It works for .avi and often for .mp4 containers.
+                    codecs = ['MJPG']
+                    
+                    # If we are on MacOS and user wants mp4, we can try native avc1 if MJPG fails
+                    if ext == '.mp4' and sys.platform == 'darwin':
+                        codecs.append('avc1')
+                    
+                    # Final fallback
+                    if ext == '.mp4':
+                        codecs.append('mp4v')
+
+                    import time
+                    for codec in codecs:
+                        try:
+                            # AVAssetWriter cleanup
+                            if os.path.exists(save_path):
+                                os.remove(save_path)
+                                time.sleep(0.1) 
+                            
+                            print(f"Trying codec: {codec}")
+                            fourcc = cv2.VideoWriter_fourcc(*codec)
+                            # FPS must be float for some backends
+                            writer = cv2.VideoWriter(save_path, fourcc, float(fps), target_size)
+                            if writer.isOpened():
+                                print(f"Successfully opened video writer with {codec}")
+                                break
+                        except Exception as e:
+                            print(f"Failed codec {codec}: {e}")
+                            continue
+                            
+                    if not writer or not writer.isOpened():
+                         raise Exception(f"Could not open video writer. Tried: {codecs}")
+                            
+                    if not writer or not writer.isOpened():
+                         raise Exception(f"Could not open video writer using codecs: {codecs}")
+                         
+                # Resize if necessary
+                h, w = img.shape[:2]
+                if (w, h) != target_size:
+                    img = cv2.resize(img, target_size, interpolation=cv2.INTER_AREA)
+
+                writer.write(img)
+                progress.setValue(i+1)
+                QApplication.processEvents() 
+
+            if writer:
+                writer.release()
+                
+            if not progress.wasCanceled():
+                 QMessageBox.information(self, "Success", f"Video saved to {save_path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create video: {e}")
+        finally:
+            progress.close()
+class PointCloudViewer(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("3D Point Cloud Viewer")
+        self.resize(800, 600)
+        
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        
+        if gl is None:
+            self.layout.addWidget(QLabel("Error: PyOpenGL or pyqtgraph.opengl not available."))
+            return
+
+        self.view_widget = gl.GLViewWidget()
+        self.view_widget.opts['distance'] = 200
+        self.layout.addWidget(self.view_widget)
+        
+        # Controls Overlay
+        controls_layout = QHBoxLayout()
+        controls_layout.setContentsMargins(10, 10, 10, 10)
+        
+        self.reset_btn = QPushButton("Reset View")
+        self.reset_btn.clicked.connect(self.reset_view)
+        controls_layout.addWidget(self.reset_btn)
+        
+        controls_layout.addStretch()
+        
+        # We wrap controls in a widget to overlay or just put at bottom? 
+        # Bottom is easier.
+        self.layout.addLayout(controls_layout)
+        
+        self.scatter = None
+
+    def set_data(self, data):
+        if gl is None: return
+        
+        if data is None: return
+        
+        # Ensure single channel
+        if data.ndim == 3:
+            # Fallback to luminance
+            data = np.mean(data, axis=2)
+            
+        h, w = data.shape
+        
+        # Downsample for performance (target ~100k points max usually good for Python/GL)
+        target_points = 50000
+        total_points = h * w
+        step = 1
+        if total_points > target_points:
+            step = int(np.sqrt(total_points / target_points))
+            
+        sub_data = data[::step, ::step]
+        sh, sw = sub_data.shape
+        
+        # Create grid
+        # Center the grid
+        y = np.linspace(-sh/2, sh/2, sh)
+        x = np.linspace(-sw/2, sw/2, sw)
+        xv, yv = np.meshgrid(x, y)
+        
+        # Flatten
+        z_vals = sub_data.flatten()
+        
+        # Normalize Z for better view scaling (e.g. proportional to X/Y?)
+        # User said "values interpreted as depth map". 
+        # Usually depth values are in same units as X/Y or arbitrary.
+        # Let's keep raw values but maybe center them?
+        z_vals = z_vals - np.mean(z_vals)
+        
+        # Scale Z to be visible? If Data is 0..1 (float) and W is 1000, flat.
+        # If Data is 0..255 and W is 1000, ok.
+        # Let's verify range.
+        z_min, z_max = z_vals.min(), z_vals.max()
+        z_range = z_max - z_min
+        if z_range == 0: z_range = 1
+        
+        # Optional: Auto-scale Z to match aspect ratio of Width? 
+        # For now, keep raw values to preserve physical meaning if any.
+        
+        pos = np.vstack((xv.flatten(), yv.flatten(), z_vals)).transpose()
+        
+        # Color mapping
+        # Normalize for colormap
+        norm_z = (z_vals - z_min) / z_range
+        # Use matplotlib colormap (viridis)
+        # viridis returns RGBA floats 0..1
+        colors = cm.viridis(norm_z) 
+        
+        if self.scatter:
+            self.view_widget.removeItem(self.scatter)
+            self.scatter = None
+            
+        self.scatter = gl.GLScatterPlotItem(pos=pos, color=colors, size=2, pxMode=True)
+        self.view_widget.addItem(self.scatter)
+        
+        # Reset Camera to fit
+        self.reset_view()
+
+    def reset_view(self):
+        if gl is None: return
+        # Simple reset
+        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=45, azimuth=45)
+        # Ideally we compute optimal distance based on bounds

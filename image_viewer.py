@@ -22,11 +22,12 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QGridLayout,
+    QSpinBox,
 )
 import matplotlib.cm as cm
 
 from widgets import ZoomableDraggableLabel, InfoPane, MathTransformPane, ZoomSettingsDialog, HistogramWidget, \
-    ThumbnailPane, SharedViewState, FileExplorerPane
+    ThumbnailPane, SharedViewState, FileExplorerPane, PointCloudViewer
 from image_handler import ImageHandler
 import settings
 import sys
@@ -55,6 +56,13 @@ class ImageViewer(QMainWindow):
         self.window_list.append(self)
 
         self.image_handler = ImageHandler()
+        self.playback_timer = QTimer(self)
+        self.playback_timer.timeout.connect(self._video_timer_timeout)
+        self.is_slider_pressed = False
+        
+        self.shared_state = SharedViewState()
+        self.shared_state.zoom_changed.connect(self._on_shared_zoom_changed)
+        self.current_math_expression = None # Persist math across video frames
         self.recent_files = settings.load_recent_files()
         self.last_raw_settings = None
         self.current_file_path = None
@@ -250,11 +258,18 @@ class ImageViewer(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
+        
+        self._create_video_toolbar()
 
         self.histogram_action = QAction(QIcon(resource_path("assets/icons/histogram.png")), "Histogram", self)
         self.histogram_action.triggered.connect(self.toggle_histogram_window)
         self.histogram_action.setEnabled(False)
         toolbar.addAction(self.histogram_action)
+
+        threed_action = QAction(QIcon(resource_path("assets/icons/3d.png")), "3D View", self) # Fallback if icon missing
+        threed_action.setText("3D") # Force text
+        threed_action.triggered.connect(self.open_3d_view)
+        toolbar.addAction(threed_action)
 
         self.math_transform_action = QAction(QIcon.fromTheme("accessories-calculator"), "Math Transform", self)
         self.math_transform_action.triggered.connect(self.toggle_math_transform_pane)
@@ -268,6 +283,125 @@ class ImageViewer(QMainWindow):
         thumbnail_action = QAction(QIcon(resource_path("assets/icons/opened_images.png")), "Opened Images", self)
         thumbnail_action.triggered.connect(self.toggle_thumbnail_pane)
         toolbar.addAction(thumbnail_action)
+
+    def _create_video_toolbar(self):
+        self.video_toolbar = QToolBar("Video Playback")
+        self.addToolBar(Qt.ToolBarArea.BottomToolBarArea, self.video_toolbar)
+        self.video_toolbar.hide() 
+        
+        # Play/Pause
+        self.play_action = QAction("Play", self) 
+        self.play_action.setCheckable(True)
+        self.play_action.triggered.connect(self._on_play_pause)
+        self.video_toolbar.addAction(self.play_action)
+        
+        self.video_toolbar.addSeparator()
+
+        # Prev
+        prev_action = QAction("<", self)
+        prev_action.triggered.connect(self._prev_frame)
+        self.video_toolbar.addAction(prev_action)
+        
+        # Slider
+        self.video_slider = QSlider(Qt.Orientation.Horizontal)
+        self.video_slider.setMinimumWidth(200)
+        self.video_slider.valueChanged.connect(self._on_frame_slider_changed)
+        self.video_slider.sliderPressed.connect(self._on_slider_pressed)
+        self.video_slider.sliderReleased.connect(self._on_slider_released)
+        self.video_toolbar.addWidget(self.video_slider)
+        
+        # Next
+        next_action = QAction(">", self)
+        next_action.triggered.connect(self._next_frame)
+        self.video_toolbar.addAction(next_action)
+        
+        self.video_toolbar.addSeparator()
+
+        # FPS
+        self.video_toolbar.addWidget(QLabel(" FPS: "))
+        self.fps_spin = QSpinBox()
+        self.fps_spin.setRange(1, 120)
+        self.fps_spin.setValue(30)
+        self.fps_spin.valueChanged.connect(self._on_fps_changed)
+        self.video_toolbar.addWidget(self.fps_spin)
+        
+        # Frame Counter
+        self.frame_label = QLabel(" 0 / 0 ")
+        self.video_toolbar.addWidget(self.frame_label)
+        
+    def _on_play_pause(self, checked):
+        if checked:
+            fps = self.fps_spin.value()
+            interval = int(1000 / fps)
+            self.playback_timer.start(interval)
+            self.play_action.setText("Pause")
+        else:
+            self.playback_timer.stop()
+            self.play_action.setText("Play")
+
+    def _video_timer_timeout(self):
+        if not self.image_handler.is_video:
+            self.playback_timer.stop()
+            return
+            
+        success = self.image_handler.get_next_frame()
+        if success:
+             self._update_video_view()
+        else:
+             # Loop or stop? Let's loop
+             self.image_handler.seek_frame(0)
+             self._update_video_view()
+             
+    def _update_video_view(self):
+        # Block signals to prevent feedback loop from slider
+        self.video_slider.blockSignals(True)
+        self.video_slider.setValue(self.image_handler.current_frame_index)
+        self.video_slider.blockSignals(False)
+        
+        self.frame_label.setText(f" {self.image_handler.current_frame_index + 1} / {self.image_handler.video_frame_count} ")
+        
+        # Update image without resetting view, but UPDATE pristine data for this new frame
+        # This ensures subsequent math transforms use this frame as base
+        self.image_label.set_data(self.image_handler.original_image_data, reset_view=False, is_pristine=True)
+        
+        # Re-apply math transform if active
+        if self.current_math_expression:
+             self.apply_math_transform(self.current_math_expression)
+        
+    def _on_frame_slider_changed(self, value):
+        if self.image_handler.is_video and not self.is_slider_pressed: # Only seek if not dragging
+             self.image_handler.seek_frame(value)
+             # Update image without resetting view
+             self.image_label.set_data(self.image_handler.original_image_data, reset_view=False)
+             self.frame_label.setText(f" {self.image_handler.current_frame_index + 1} / {self.image_handler.video_frame_count} ")
+
+    def _on_slider_pressed(self):
+        self.is_slider_pressed = True
+        self.was_playing_before_drag = self.playback_timer.isActive()
+        self.playback_timer.stop()
+        
+    def _on_slider_released(self):
+        self.is_slider_pressed = False
+        if self.was_playing_before_drag:
+             self.playback_timer.start()
+        # Ensure frame is updated after release, in case valueChanged was blocked during drag
+        self._on_frame_slider_changed(self.video_slider.value())
+
+    def _on_fps_changed(self, value):
+        if self.playback_timer.isActive():
+             self.playback_timer.setInterval(int(1000/value))
+
+    def _prev_frame(self):
+        if self.image_handler.is_video:
+             current = self.image_handler.current_frame_index
+             self.image_handler.seek_frame(current - 1)
+             self._update_video_view()
+
+    def _next_frame(self):
+        if self.image_handler.is_video:
+             current = self.image_handler.current_frame_index
+             self.image_handler.seek_frame(current + 1)
+             self._update_video_view()
 
     def _create_info_pane(self):
         self.info_pane = InfoPane(self)
@@ -305,7 +439,7 @@ class ImageViewer(QMainWindow):
         self.file_explorer_pane.files_selected.connect(self._on_explorer_files_selected)
         
         # Configure supported extensions for filtering
-        extensions = self.image_handler.raw_extensions + ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']
+        extensions = self.image_handler.raw_extensions + ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif'] + self.image_handler.video_extensions
         # Create unique list
         extensions = list(set(extensions))
         ext_filters = ['*' + ext for ext in extensions]
@@ -625,7 +759,18 @@ class ImageViewer(QMainWindow):
         if self.active_label:
             zoom_factor = 10 ** ((value / 1000.0) - 2.0)
             if abs(self.active_label._get_effective_scale_factor() - zoom_factor) > 1e-5:
-                self.active_label._apply_zoom(zoom_factor)
+                # Use setter which updates shared state if active
+                self.active_label.zoom_scale = zoom_factor
+
+    def _on_shared_zoom_changed(self, multiplier):
+        # Triggered when shared state changes (e.g. via mouse wheel on image)
+        if self.active_label and not self.zoom_slider.isSliderDown():
+             zoom = self.active_label._get_effective_scale_factor()
+             if zoom > 0:
+                 val = (np.log10(zoom) + 2.0) * 1000.0
+                 self.zoom_slider.blockSignals(True)
+                 self.zoom_slider.setValue(int(val))
+                 self.zoom_slider.blockSignals(False)
 
     def _on_image_label_zoom_changed(self, scale_factor):
         if self.sender() is not self.active_label: return
@@ -657,6 +802,7 @@ class ImageViewer(QMainWindow):
             QMessageBox.critical(self, "Error", f"Error applying parameters:\n{e}")
 
     def apply_math_transform(self, expression):
+        self.current_math_expression = expression
         try:
             context = {}
             if self.stacked_widget.currentWidget() == self.montage_widget:
@@ -676,6 +822,7 @@ class ImageViewer(QMainWindow):
             self.math_transform_pane.set_error_message(str(e))
 
     def restore_original_image(self):
+        self.current_math_expression = None
         if self.active_label and self.active_label.pristine_data is not None:
             self.active_label.set_data(self.active_label.pristine_data, reset_view=False)
             self.update_histogram_data(new_image=True)
@@ -695,7 +842,7 @@ class ImageViewer(QMainWindow):
     def apply_zoom_settings(self):
         # Apply to main image label
         if hasattr(self, 'image_label'):
-             self._apply_zoom_settings_to_label(self.   image_label)
+             self._apply_zoom_settings_to_label(self.image_label)
         
         # Apply to all montage labels
         for label in self.montage_labels:
@@ -716,6 +863,24 @@ class ImageViewer(QMainWindow):
         # Apply only to the active label, ensuring independence in montage view
         if self.active_label:
             self.active_label.set_contrast_limits(min_val, max_val)
+
+    def open_3d_view(self):
+        if not self.active_label or self.active_label.original_data is None:
+             return
+             
+        # Check dimensionality and warn?
+        data = self.active_label.original_data
+        
+        # Instantiate if needed
+        # We don't cache it as a permanent member to avoid holding OpenGL contexts if closed?
+        # Actually reusing window is better UI.
+        if not hasattr(self, 'point_cloud_viewer') or self.point_cloud_viewer is None:
+             from widgets import PointCloudViewer # Lazy or ensure it's there
+             self.point_cloud_viewer = PointCloudViewer(self)
+             
+        self.point_cloud_viewer.set_data(data)
+        self.point_cloud_viewer.show()
+        self.point_cloud_viewer.activateWindow()
 
     def toggle_file_explorer_pane(self):
         visible = not self.file_explorer_pane.isVisible()
@@ -793,7 +958,7 @@ class ImageViewer(QMainWindow):
                 pass 
 
     def open_image_dialog(self):
-        extensions = self.image_handler.raw_extensions + ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']
+        extensions = self.image_handler.raw_extensions + ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif'] + self.image_handler.video_extensions
         # Create unique list
         extensions = list(set(extensions))
         ext_str = " ".join(['*' + ext for ext in extensions])
@@ -1021,6 +1186,25 @@ class ImageViewer(QMainWindow):
                 if self.histogram_action.isChecked():
                     self.histogram_window.repaint()
 
+                # Configure Video UI
+                if self.image_handler.is_video:
+                     self.video_toolbar.show()
+                     self.video_slider.blockSignals(True)
+                     self.video_slider.setRange(0, max(0, self.image_handler.video_frame_count - 1))
+                     self.video_slider.setValue(self.image_handler.current_frame_index)
+                     self.video_slider.blockSignals(False)
+                     self.fps_spin.blockSignals(True)
+                     self.fps_spin.setValue(int(self.image_handler.video_fps))
+                     self.fps_spin.blockSignals(False)
+                     self.frame_label.setText(f" {self.image_handler.current_frame_index + 1} / {self.image_handler.video_frame_count} ")
+                     # Reset Play state
+                     self.playback_timer.stop()
+                     self.play_action.setChecked(False)
+                     self.play_action.setText("Play")
+                else:
+                     self.video_toolbar.hide()
+                     self.playback_timer.stop()
+
         except Exception as e:
             if is_raw and override_settings:
                 # Transform/Inheritance caused a mismatch? Fallback to guessing.
@@ -1144,6 +1328,17 @@ class ImageViewer(QMainWindow):
                 self._update_active_view(reset_histogram=False) # Update UI to reflect new state
                 self.status_bar.showMessage("View Pasted", 2000)
             return
+
+        # Video Navigation
+        if self.image_handler.is_video:
+            if event.key() == Qt.Key.Key_Left:
+                 self._prev_frame()
+                 return
+            elif event.key() == Qt.Key.Key_Right:
+                 self._next_frame()
+                 return
+        
+
 
         if event.key() == Qt.Key.Key_N and is_cmd_or_ctrl:
             current_pos = self.pos()
@@ -1464,7 +1659,7 @@ class ImageViewer(QMainWindow):
                         file_path = urls[0].toLocalFile()
                         _, ext = os.path.splitext(file_path)
                         supported_extensions = ['.png', '.jpg', '.jpeg', '.bmp',
-                                                '.tiff'] + self.image_handler.raw_extensions
+                                                '.tiff', '.tif'] + self.image_handler.raw_extensions + self.image_handler.video_extensions
                         if ext.lower() in supported_extensions:
                             event.acceptProposedAction()
         elif event.type() == QEvent.Type.Drop:

@@ -3,4 +3,6 @@ Pillow
 numpy
 matplotlib
 pyqtgraph
+opencv-python
+PyOpenGL
 pyinstaller
