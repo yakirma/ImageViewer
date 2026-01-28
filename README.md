@@ -120,13 +120,27 @@ ImageViewer is a powerful, cross-platform desktop application for viewing and an
 
 ## Building from Source
 
+### Prerequisites
+
+- **Python 3.10+** (Ensure it's added to your system PATH).
+- **Recommended:** Create a virtual environment (`venv` or `conda`).
+- **Dependencies:** `pip install -r requirements.txt`
+
+### Building on Windows
+
+1.  **Install Python:** Download from [python.org](https://www.python.org/downloads/). **Important:** Check "Add Python to PATH" during installation.
+2.  **Run Build Script:** Double-click `build.bat`.
+    *   *Note:* If running from a network share (e.g., Parallels `\\Mac\Home`), the script effectively handles the path.
+    *   If you see "Python was not found", ensure Python is installed and in your PATH.
+
+### Building on macOS / Linux
+
 To create standalone executables for your platform, run the unified build script:
 
 ```sh
 ./build.sh
 ```
 
-**What it does:**
 **What it does:**
 - **macOS:** Creates a `.dmg` installer in `dist/` (requires `hdiutil`).
 - **Windows:**
