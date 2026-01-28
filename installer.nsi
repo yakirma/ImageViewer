@@ -52,11 +52,56 @@ Section "ImageViewer (required)"
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"
   CreateShortCut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\ImageViewer.exe"
   CreateShortCut "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk" "$INSTDIR\uninstall.exe"
+
+  ; File Associations
+  !macro RegisterExtension EXT DESC
+    WriteRegStr HKCR ".${EXT}" "" "${APP_NAME}.${EXT}"
+    WriteRegStr HKCR "${APP_NAME}.${EXT}" "" "${DESC}"
+    WriteRegStr HKCR "${APP_NAME}.${EXT}\DefaultIcon" "" "$INSTDIR\ImageViewer.exe,0"
+    WriteRegStr HKCR "${APP_NAME}.${EXT}\shell" "" "open"
+    WriteRegStr HKCR "${APP_NAME}.${EXT}\shell\open\command" "" '"$INSTDIR\ImageViewer.exe" "%1"'
+    
+    ; Register for "Open With"
+    WriteRegStr HKCR ".${EXT}\OpenWithProgIDs" "${APP_NAME}.${EXT}" ""
+  !macroend
+
+  !insertmacro RegisterExtension "png" "PNG Image"
+  !insertmacro RegisterExtension "jpg" "JPEG Image"
+  !insertmacro RegisterExtension "jpeg" "JPEG Image"
+  !insertmacro RegisterExtension "tif" "TIFF Image"
+  !insertmacro RegisterExtension "tiff" "TIFF Image"
+  !insertmacro RegisterExtension "raw" "Raw Image Data"
+  !insertmacro RegisterExtension "bin" "Binary Image Data"
+  !insertmacro RegisterExtension "u16" "16-bit Unsigned Image"
+  !insertmacro RegisterExtension "f32" "32-bit Float Image"
+  !insertmacro RegisterExtension "mp4" "MPEG-4 Video"
+  !insertmacro RegisterExtension "avi" "AVI Video"
+  !insertmacro RegisterExtension "mov" "QuickTime Video"
+
 SectionEnd
 
 Section "Uninstall"
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
   DeleteRegKey HKLM "SOFTWARE\${APP_NAME}"
+
+  ; Remove File Associations
+  !macro UnregisterExtension EXT
+    DeleteRegKey HKCR "${APP_NAME}.${EXT}"
+    DeleteRegValue HKCR ".${EXT}\OpenWithProgIDs" "${APP_NAME}.${EXT}"
+  !macroend
+
+  !insertmacro UnregisterExtension "png"
+  !insertmacro UnregisterExtension "jpg"
+  !insertmacro UnregisterExtension "jpeg"
+  !insertmacro UnregisterExtension "tif"
+  !insertmacro UnregisterExtension "tiff"
+  !insertmacro UnregisterExtension "raw"
+  !insertmacro UnregisterExtension "bin"
+  !insertmacro UnregisterExtension "u16"
+  !insertmacro UnregisterExtension "f32"
+  !insertmacro UnregisterExtension "mp4"
+  !insertmacro UnregisterExtension "avi"
+  !insertmacro UnregisterExtension "mov"
 
   RMDir /r "$SMPROGRAMS\${APP_NAME}"
   RMDir /r "$INSTDIR"
