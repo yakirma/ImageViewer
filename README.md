@@ -6,7 +6,7 @@ ImageViewer is a powerful, cross-platform desktop application for viewing and an
 
 <div style="display: flex; gap: 10px;">
   <img src="assets/video_demo.gif" width="48%" />
-  <img src="assets/3d_point_cloud.png" width="48%" />
+  <img src="assets/3d_demo.gif" width="48%" />
 </div>
 
 ---
