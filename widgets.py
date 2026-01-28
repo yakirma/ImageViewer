@@ -2324,6 +2324,33 @@ class FileExplorerPane(QDockWidget):
             QMessageBox.critical(self, "Error", f"Failed to create video: {e}")
         finally:
             progress.close()
+class CustomGLViewWidget(gl.GLViewWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents)
+
+    def mouseMoveEvent(self, event):
+        # Disable Right Button Drag (PyQtGraph uses this for Zoom)
+        if event.buttons() & Qt.MouseButton.RightButton:
+            event.ignore()
+            return
+        super().mouseMoveEvent(event)
+
+    def event(self, event):
+        if event.type() == QEvent.Type.NativeGesture:
+            if event.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:
+                # Zoom In (+val) -> Decrease Distance
+                # Zoom Out (-val) -> Increase Distance
+                # Boost sensitivity
+                factor = 1.0 - (event.value() * 5.0) 
+                
+                # Apply limit to prevent going negatives or too close
+                self.opts['distance'] = max(1.0, self.opts['distance'] * factor)
+                self.update()
+                return True
+        return super().event(event)
+
+
 class PointCloudViewer(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2337,7 +2364,7 @@ class PointCloudViewer(QDialog):
             self.layout.addWidget(QLabel("Error: PyOpenGL or pyqtgraph.opengl not available."))
             return
 
-        self.view_widget = gl.GLViewWidget()
+        self.view_widget = CustomGLViewWidget()
         self.view_widget.opts['distance'] = 200
         self.layout.addWidget(self.view_widget)
         
