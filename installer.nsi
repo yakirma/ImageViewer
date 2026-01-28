@@ -53,16 +53,38 @@ Section "ImageViewer (required)"
   CreateShortCut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\ImageViewer.exe"
   CreateShortCut "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk" "$INSTDIR\uninstall.exe"
 
-  ; File Associations
+  ; File Associations Strategy: 
+  ; 1. Register a ProgID (ImageViewer.File)
+  ; 2. Register under HKCR\Applications\ImageViewer.exe (for Open With list)
+  
+  ; --- Register Application for "Open With" list ---
+  WriteRegStr HKCR "Applications\ImageViewer.exe" "" ""
+  WriteRegStr HKCR "Applications\ImageViewer.exe\shell\open\command" "" '"$INSTDIR\ImageViewer.exe" "%1"'
+  
+  ; Supported Types
+  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".png" ""
+  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".jpg" ""
+  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".jpeg" ""
+  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".tif" ""
+  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".tiff" ""
+  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".raw" ""
+  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".bin" ""
+  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".u16" ""
+  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".f32" ""
+  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".mp4" ""
+  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".avi" ""
+  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".mov" ""
+
+  ; --- Register Extensions (ProgID) ---
   !macro RegisterExtension EXT DESC
-    WriteRegStr HKCR ".${EXT}" "" "${APP_NAME}.${EXT}"
-    WriteRegStr HKCR "${APP_NAME}.${EXT}" "" "${DESC}"
-    WriteRegStr HKCR "${APP_NAME}.${EXT}\DefaultIcon" "" "$INSTDIR\ImageViewer.exe,0"
-    WriteRegStr HKCR "${APP_NAME}.${EXT}\shell" "" "open"
-    WriteRegStr HKCR "${APP_NAME}.${EXT}\shell\open\command" "" '"$INSTDIR\ImageViewer.exe" "%1"'
+    ; Create ProgID
+    WriteRegStr HKCR "ImageViewer.${EXT}" "" "${DESC}"
+    WriteRegStr HKCR "ImageViewer.${EXT}\DefaultIcon" "" "$INSTDIR\ImageViewer.exe,0"
+    WriteRegStr HKCR "ImageViewer.${EXT}\shell" "" "open"
+    WriteRegStr HKCR "ImageViewer.${EXT}\shell\open\command" "" '"$INSTDIR\ImageViewer.exe" "%1"'
     
-    ; Register for "Open With"
-    WriteRegStr HKCR ".${EXT}\OpenWithProgIDs" "${APP_NAME}.${EXT}" ""
+    ; Link Extension to ProgID (OpenWithProgIDs is safer than default value)
+    WriteRegStr HKCR ".${EXT}\OpenWithProgIDs" "ImageViewer.${EXT}" ""
   !macroend
 
   !insertmacro RegisterExtension "png" "PNG Image"
@@ -77,17 +99,21 @@ Section "ImageViewer (required)"
   !insertmacro RegisterExtension "mp4" "MPEG-4 Video"
   !insertmacro RegisterExtension "avi" "AVI Video"
   !insertmacro RegisterExtension "mov" "QuickTime Video"
+  
+  ; Notify Shell to refresh icons
+  System::Call 'shell32::SHChangeNotify(i 0x8000000, i 0, i 0, i 0)'
 
 SectionEnd
 
 Section "Uninstall"
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
   DeleteRegKey HKLM "SOFTWARE\${APP_NAME}"
+  DeleteRegKey HKCR "Applications\ImageViewer.exe"
 
   ; Remove File Associations
   !macro UnregisterExtension EXT
-    DeleteRegKey HKCR "${APP_NAME}.${EXT}"
-    DeleteRegValue HKCR ".${EXT}\OpenWithProgIDs" "${APP_NAME}.${EXT}"
+    DeleteRegKey HKCR "ImageViewer.${EXT}"
+    DeleteRegValue HKCR ".${EXT}\OpenWithProgIDs" "ImageViewer.${EXT}"
   !macroend
 
   !insertmacro UnregisterExtension "png"
@@ -102,6 +128,8 @@ Section "Uninstall"
   !insertmacro UnregisterExtension "mp4"
   !insertmacro UnregisterExtension "avi"
   !insertmacro UnregisterExtension "mov"
+  
+  System::Call 'shell32::SHChangeNotify(i 0x8000000, i 0, i 0, i 0)'
 
   RMDir /r "$SMPROGRAMS\${APP_NAME}"
   RMDir /r "$INSTDIR"
