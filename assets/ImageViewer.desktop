@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=ImageViewer
+Comment=Professional Image Analysis Tool
+Exec=/usr/bin/ImageViewer %f
+Icon=/usr/share/icons/hicolor/256x256/apps/ImageViewer.png
+Terminal=false
+Categories=Graphics;Viewer;Science;
+MimeType=image/png;image/jpeg;image/tiff;image/x-raw;application/octet-stream;
+Keywords=image;viewer;analysis;3d;
+StartupNotify=true

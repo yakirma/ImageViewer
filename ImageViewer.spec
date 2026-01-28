@@ -6,11 +6,11 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('assets/icons', 'assets/icons')],
-    hiddenimports=['cv2', 'pyqtgraph', 'pyqtgraph.opengl', 'OpenGL', 'OpenGL.GL', 'OpenGL.GLU', 'numpy', 'PIL'],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['Qt6Location', 'Qt6Positioning', 'qdarwinpermissionplugin'],
     noarchive=False,
     optimize=0,
 )
@@ -32,6 +32,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['assets/ImageViewer.icns'],
 )
 coll = COLLECT(
     exe,
@@ -45,6 +46,30 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='ImageViewer.app',
-    icon=None,
-    bundle_identifier=None,
+    icon='assets/ImageViewer.icns',
+    bundle_identifier='com.yakirma.ImageViewer',
+    info_plist={
+        'CFBundleName': 'ImageViewer',
+        'CFBundleDisplayName': 'ImageViewer',
+        'CFBundleShortVersionString': '1.0.0',
+        'CFBundleVersion': '1.0.0',
+        'NSHighResolutionCapable': 'True',
+        'NSLocationUsageDescription': 'Required for image metadata analysis.',
+        'NSLocationWhenInUseUsageDescription': 'Required for image metadata analysis.',
+        'CFBundleDocumentTypes': [
+            {
+                'CFBundleTypeName': 'Image File',
+                'CFBundleTypeRole': 'Viewer',
+                'LSHandlerRank': 'Owner',
+                'LSItemContentTypes': ['public.image', 'public.png', 'public.jpeg', 'public.tiff', 'com.adobe.raw-image'],
+                'CFBundleTypeExtensions': ['png', 'jpg', 'jpeg', 'tif', 'tiff', 'raw', 'u16', 'f32', 'uint8', 'uint16', 'float32', 'bin']
+            },
+             {
+                'CFBundleTypeName': 'Video File',
+                'CFBundleTypeRole': 'Viewer',
+                'LSHandlerRank': 'Alternate',
+                'LSItemContentTypes': ['public.movie', 'public.mpeg-4', 'com.apple.quicktime-movie'],
+            }
+        ]
+    },
 )

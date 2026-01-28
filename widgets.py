@@ -1156,19 +1156,25 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self._apply_zoom(new_effective_scale, event.position())
 
     def event(self, event):
-        if event.type() == QEvent.Type.Gesture:
+        if event.type() == QEvent.Type.NativeGesture:
+            if event.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:
+                value = event.value()
+                current_scale = self._get_effective_scale_factor()
+                new_scale_factor = current_scale * (1.0 + value)
+                # Cast to QPointF explicitly to avoid TypeError
+                local_pos = QPointF(event.position())
+                self._apply_zoom(new_scale_factor, local_pos)
+                return True
+        elif event.type() == QEvent.Type.Gesture:
             pinch = event.gesture(Qt.GestureType.PinchGesture)
             if pinch:
                 if pinch.state() == Qt.GestureState.GestureStarted:
                     self._pinch_start_scale_factor = self._get_effective_scale_factor()
                 elif pinch.state() == Qt.GestureState.GestureUpdated:
                     new_scale_factor = self._pinch_start_scale_factor * pinch.totalScaleFactor()
-                    
-                    # pinch.centerPoint() is in Global Screen Coordinates.
-                    # _apply_zoom expects Local Widget Coordinates.
-                    center_point = pinch.centerPoint().toPoint()
-                    local_pos = QPointF(self.mapFromGlobal(center_point))
-                    
+                    center_point = pinch.hotSpot()
+                    # Cast to QPointF explicitly
+                    local_pos = QPointF(self.mapFromGlobal(center_point.toPoint()))
                     self._apply_zoom(new_scale_factor, local_pos)
                 elif pinch.state() == Qt.GestureState.GestureFinished:
                     self._pinch_start_scale_factor = None

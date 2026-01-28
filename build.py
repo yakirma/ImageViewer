@@ -7,7 +7,7 @@ from PyQt6.QtCore import QLibraryInfo
 # --- Configuration ---
 APP_NAME = "ImageViewer"
 ENTRY_POINT = "main.py"
-ICON_MACOS = "assets/icons/icon.icns"
+ICON_MACOS = "assets/ImageViewer.icns"
 ICON_WINDOWS = "assets/icons/icon.ico"
 
 def get_pyqtgraph_hooks():
@@ -27,47 +27,52 @@ def get_pyqtgraph_hooks():
     return None
 
 def main():
-    # --- Base PyInstaller command ---
-    command = [
-        '--name', APP_NAME,
-        '--windowed',
-        '--clean',
-        '--noconfirm',
-    ]
-
-    # --- Platform-specific arguments ---
-    system = platform.system()
-    if system == "Windows":
-        if os.path.exists(ICON_WINDOWS):
-            command.extend(['--icon', ICON_WINDOWS])
-    elif system == "Darwin":  # macOS
-        if os.path.exists(ICON_MACOS):
-            command.extend(['--icon', ICON_MACOS])
-
-    # --- Add data and hooks for libraries ---
-
-    # Correctly find and add Qt plugins
-    # PyInstaller hooks usually handle PyQt6 plugins automatically.
-    # Manual addition can cause conflicts.
-    command.extend([
-        '--add-data', 'assets/icons:assets/icons'
-    ])
-
-    # Add pyqtgraph hooks
-    hooks_path = get_pyqtgraph_hooks()
-    if hooks_path:
-        command.extend(['--additional-hooks-dir', hooks_path])
-
-    # --- Add the entry point script ---
-    command.append(ENTRY_POINT)
-
-    # --- Run PyInstaller ---
+    # --- Run PyInstaller with the spec file ---
+    # The spec file now contains all configuration (icon, data, plist, etc.)
+    command = ['ImageViewer.spec', '--noconfirm', '--clean']
+    
     print(f"Running PyInstaller with command: {' '.join(command)}")
     try:
         PyInstaller.__main__.run(command)
         print(f"\\nBuild complete. Look for the '{APP_NAME}' application in the 'dist' directory.")
     except Exception as e:
         print(f"An error occurred during the build process: {e}")
+        return
+
+    # --- Packaging Step ---
+    print(f"\\nStarting Packaging for {platform.system()}...")
+    
+    if platform.system() == "Windows":
+        # Check for makensis (NSIS)
+        nsis_found = False
+        try:
+            # Check if makensis is in PATH
+            import subprocess
+            subprocess.run(["makensis", "/VERSION"], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            nsis_found = True
+        except FileNotFoundError:
+            nsis_found = False
+            
+        if nsis_found:
+             print("Building Windows Installer with NSIS...")
+             try:
+                 subprocess.run(["makensis", "installer.nsi"], check=True)
+                 print(f"Packaging Complete: dist/{APP_NAME}_Setup.exe")
+             except subprocess.CalledProcessError as e:
+                 print(f"Error building installer: {e}")
+        else:
+             print("Warning: 'makensis' not found. Falling back to .zip archive.")
+             import shutil
+             dist_dir = os.path.join("dist", APP_NAME)
+             archive_name = os.path.join("dist", f"{APP_NAME}_Windows")
+             if os.path.exists(dist_dir):
+                 shutil.make_archive(archive_name, 'zip', root_dir='dist', base_dir=APP_NAME)
+                 print(f"Packaging Complete: {archive_name}.zip")
+             else:
+                 print(f"Error: {dist_dir} not found, cannot zip.")
+
+    else:
+        print("Packaging not implemented in Python for this OS yet (use build.sh for Mac/Linux).")
 
 if __name__ == "__main__":
     main()

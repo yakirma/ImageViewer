@@ -13,7 +13,24 @@ ImageViewer is a powerful, cross-platform desktop application for viewing and an
 
 ## Installation & Usage
 
-**Get started in 3 steps:**
+### Method 1: Pre-built Installer (Recommended)
+
+1.  **Download the latest release** for your operating system.
+2.  **Install/Run:**
+    -   **macOS:**
+        1.  Open the `.dmg` file.
+        2.  Drag the **ImageViewer** icon to the **Applications** folder shortcut.
+        3.  Open "Applications" and double-click **ImageViewer**.
+    -   **Windows:**
+        1.  Right-click the `.zip` file and select **Extract All...**.
+        2.  Open the extracted folder.
+        3.  Double-click `ImageViewer.exe` to launch.
+    -   **Linux:**
+        1.  Extract the archive: `tar -xzf ImageViewer_Linux.tar.gz`
+        2.  Navigate to the folder: `cd ImageViewer`
+        3.  Run the executable: `./ImageViewer`
+
+### Method 2: Running from Source (Development)
 
 1.  **Clone the repository:**
     ```sh
@@ -101,9 +118,36 @@ ImageViewer is a powerful, cross-platform desktop application for viewing and an
 
 ---
 
-## Building
+## Building from Source
 
-Created standalone executables using:
+To create standalone executables for your platform, run the unified build script:
+
 ```sh
-python build.py
+./build.sh
 ```
+
+**What it does:**
+**What it does:**
+- **macOS:** Creates a `.dmg` installer in `dist/` (requires `hdiutil`).
+- **Windows:**
+    - Creates `ImageViewer_Setup.exe` if `makensis` (NSIS) is installed.
+    - Fallback: Creates `.zip` archive.
+- **Linux:**
+    - Creates `.deb` package if `dpkg-deb` is installed.
+    - Fallback: Creates `.tar.gz` archive.
+
+### Installer Prerequisites
+
+To generate the `.exe` (Windows) or `.deb` (Linux) installers, you need the respective tools installed. If missing, the script falls back to creating Zip/Tar archives.
+
+#### Windows (NSIS)
+1.  Download **NSIS** from [nsis.sourceforge.io](https://nsis.sourceforge.io/Download).
+2.  Install it (standard settings are fine).
+3.  **Important:** Ensure `makensis` is enabled in your PATH (the installer usually does this, or adds a "Start NSIS" shortcut).
+    *   *Note for Git Bash users:* You might need to add the NSIS path (e.g., `/c/Program Files (x86)/NSIS`) to your environment variables if `makensis` command is not found.
+
+#### Linux
+*   Ensure `dpkg-deb` is installed (standard on Debian/Ubuntu):
+    ```sh
+    sudo apt-get install dpkg
+    ```
