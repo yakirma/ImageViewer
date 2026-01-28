@@ -6,12 +6,34 @@ ImageViewer is a powerful, cross-platform desktop application for viewing and an
 
 <div style="display: flex; gap: 10px;">
   <video width="48%" autoplay loop muted playsinline>
+    <source src="assets/video_demo.mp4" type="video/mp4">
     <source src="assets/video_demo.mov" type="video/quicktime">
-    <source src="assets/video_demo.mov" type="video/mp4">
     Your browser does not support the video tag.
   </video>
   <img src="assets/3d_point_cloud.png" width="48%" />
 </div>
+
+---
+
+## Installation & Usage
+
+**Get started in 3 steps:**
+
+1.  **Clone the repository:**
+    ```sh
+    git clone https://github.com/yakirma/ImageViewer.git
+    cd ImageViewer
+    ```
+
+2.  **Install dependencies:**
+    ```sh
+    pip install -r requirements.txt
+    ```
+
+3.  **Run the application:**
+    ```sh
+    python main.py
+    ```
 
 ---
 
@@ -54,8 +76,6 @@ ImageViewer is a powerful, cross-platform desktop application for viewing and an
 - **Persistent Edits:** Apply zoom, pan, contrast stretching, or math transforms to a running video—frames update in real-time while preserving your view modifications.
 - **Keyboard Navigation:** Use `Left/Right` arrow keys to step backward/forward frame-by-frame.
 
-
-
 ### 6. 3D Visualization (Point Cloud)
 - **3D Surface View:** Visualize any 2D image as a 3D terrain where pixel intensity represents height.
 - **Hardware Acceleration:** Uses OpenGL for smooth interaction even with large datasets.
@@ -65,28 +85,6 @@ ImageViewer is a powerful, cross-platform desktop application for viewing and an
   - **Zoom:** Scroll wheel.
   - **Reset:** Dedicated button to restore default view.
 - **Optimized Rendering:** Automatically downsamples large images to maintain responsive frame rates without losing structural context.
-
-
-
----
-
-## Installation & Usage
-
-1.  **Clone the repository:**
-    ```sh
-    git clone https://github.com/yakirma/ImageViewer.git
-    cd ImageViewer
-    ```
-
-2.  **Install dependencies:**
-    ```sh
-    pip install -r requirements.txt
-    ```
-
-3.  **Run the application:**
-    ```sh
-    python main.py
-    ```
 
 ---
 
@@ -113,4 +111,3 @@ Created standalone executables using:
 ```sh
 python build.py
 ```
-
