@@ -5,11 +5,7 @@ ImageViewer is a powerful, cross-platform desktop application for viewing and an
 ![ImageViewer Screenshot](assets/screenshot.png)
 
 <div style="display: flex; gap: 10px;">
-  <video width="48%" autoplay loop muted playsinline>
-    <source src="assets/video_demo.mp4" type="video/mp4">
-    <source src="assets/video_demo.mov" type="video/quicktime">
-    Your browser does not support the video tag.
-  </video>
+  <img src="assets/video_demo.gif" width="48%" />
   <img src="assets/3d_point_cloud.png" width="48%" />
 </div>
 
