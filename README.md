@@ -2,12 +2,7 @@
 
 ImageViewer is a powerful, cross-platform desktop application for viewing and analyzing scientific and standard image formats. Built with Python and PyQt6, it provides a fluid, multi-window interface packed with features designed for in-depth image comparison and analysis.
 
-![ImageViewer Screenshot](assets/screenshot.png)
-
-<div style="display: flex; gap: 10px;">
-  <img src="assets/video_demo.gif" width="48%" />
-  <img src="assets/3d_demo.gif" width="48%" />
-</div>
+![ImageViewer Demo](assets/3d_demo.gif) 
 
 ---
 
