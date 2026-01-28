@@ -439,7 +439,7 @@ class ImageViewer(QMainWindow):
         self.file_explorer_pane.files_selected.connect(self._on_explorer_files_selected)
         
         # Configure supported extensions for filtering
-        extensions = self.image_handler.raw_extensions + ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif'] + self.image_handler.video_extensions
+        extensions = self.image_handler.raw_extensions + ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.gif', '.webp'] + self.image_handler.video_extensions
         # Create unique list
         extensions = list(set(extensions))
         ext_filters = ['*' + ext for ext in extensions]
@@ -958,7 +958,7 @@ class ImageViewer(QMainWindow):
                 pass 
 
     def open_image_dialog(self):
-        extensions = self.image_handler.raw_extensions + ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif'] + self.image_handler.video_extensions
+        extensions = self.image_handler.raw_extensions + ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.gif', '.webp'] + self.image_handler.video_extensions
         # Create unique list
         extensions = list(set(extensions))
         ext_str = " ".join(['*' + ext for ext in extensions])

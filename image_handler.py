@@ -22,7 +22,7 @@ class ImageHandler:
             ".rgb", ".rgba", ".bgr", ".bgra",
             ".yuyv", ".uyvy"
         ]
-        self.video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm']
+        self.video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.gif']
         self.is_video = False
         self.video_cap = None
         self.video_fps = 30
@@ -109,10 +109,15 @@ class ImageHandler:
             with Image.open(file_name) as img:
                 if img.mode.startswith("I;16") or img.mode in ("I", "F"):
                     self.original_image_data = np.array(img)
+                elif img.mode == "L":
+                    # Explicit grayscale
+                    self.original_image_data = np.array(img)
                 elif img.mode in ("RGB", "RGBA"):
                     self.original_image_data = np.array(img.convert("RGB"))
                 else:
-                    self.original_image_data = np.array(img.convert("L"))
+                    # Fallback for P (Palette), CMYK, YCbCr, etc. -> Convert to RGB
+                    # Previous fallback to "L" caused GIFs/Paletted images to look like generic raw/grayscale
+                    self.original_image_data = np.array(img.convert("RGB"))
 
                 self.width, self.height = img.width, img.height
                 self.dtype = self.original_image_data.dtype
