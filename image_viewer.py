@@ -2125,7 +2125,7 @@ class ImageViewer(QMainWindow):
         active_path = getattr(self.active_label, 'file_path', None)
         
         if not active_path:
-            self.active_label.set_overlay(None)
+            self.active_label.set_overlays([])
             return
 
         # Only apply overlays where the active_path is the TARGET
@@ -2157,18 +2157,8 @@ class ImageViewer(QMainWindow):
                 if pair in self.overlay_cache:
                     overlays_to_draw.append((self.overlay_cache[pair], alpha))
 
-        if overlays_to_draw:
-            combined = QPixmap(target_size)
-            combined.fill(Qt.GlobalColor.transparent)
-            painter = QPainter(combined)
-            painter.drawPixmap(0, 0, self.active_label.current_pixmap)
-            for overlay_pixmap, alpha in overlays_to_draw:
-                painter.setOpacity(alpha)
-                painter.drawPixmap(0, 0, overlay_pixmap)
-            painter.end()
-            self.active_label.set_overlay(combined)
-        else:
-            self.active_label.set_overlay(None)
+        # Use set_overlays() method which expects a list of (pixmap, alpha) tuples
+        self.active_label.set_overlays(overlays_to_draw)
 
     def closeEvent(self, event):
         """Remove window from the list when closed."""
