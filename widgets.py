@@ -1022,6 +1022,10 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         # Proxy Rendering Logic
         # If image is too large, downsample it for display
         MAX_DIM = 2048
+        if processed_data is None:
+            # Should not happen given initialization, but defensive check
+            return
+
         h, w = processed_data.shape[:2]
         
         self._proxy_scale = 1.0
