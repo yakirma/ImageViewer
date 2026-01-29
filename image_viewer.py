@@ -1411,7 +1411,8 @@ class ImageViewer(QMainWindow):
                      # Update channel options based on loaded image
                      self.update_channel_options()
                      
-                     self._refresh_thumbnail_pane()
+                     # Don't refresh thumbnail pane - gallery persists and this causes selection loss
+                     # self._refresh_thumbnail_pane()
                      
                  except Exception as e:
                      pass
@@ -1522,8 +1523,8 @@ class ImageViewer(QMainWindow):
                  
             self.update_channel_options()
 
-            # Refresh thumbnail pane to show the new image
-            self._refresh_thumbnail_pane()
+            # Don't refresh thumbnail pane - gallery persists and this causes selection loss
+            # self._refresh_thumbnail_pane()
 
         except Exception as e:
             if is_raw and override_settings:
@@ -1784,6 +1785,10 @@ class ImageViewer(QMainWindow):
 
     def _on_thumbnail_selection_changed(self, selected_files):
         """Handle thumbnail selection by updating montage with selected images"""
+        # Block populate calls while we're updating the view from selection
+        if hasattr(self.thumbnail_pane, 'block_populate'):
+            self.thumbnail_pane.block_populate = True
+        
         # If no files selected, clear the montage view
         if not selected_files:
             # Clear montage
@@ -1793,6 +1798,8 @@ class ImageViewer(QMainWindow):
                     widget.setParent(None)
             self.montage_labels.clear()
             self.active_label = None
+            if hasattr(self.thumbnail_pane, 'block_populate'):
+                self.thumbnail_pane.block_populate = False
             return
         
         # Rebuild montage with selected files
@@ -1800,6 +1807,10 @@ class ImageViewer(QMainWindow):
             self.open_file(selected_files[0])
         else:
             self.display_montage(selected_files)
+        
+        # Unblock populate
+        if hasattr(self.thumbnail_pane, 'block_populate'):
+            self.thumbnail_pane.block_populate = False
 
     def _update_thumbnail_pane_for_single_image(self):
         """Deprecated: Use _refresh_thumbnail_pane instead to show all windows."""

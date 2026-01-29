@@ -1545,6 +1545,9 @@ class ThumbnailPane(QDockWidget):
         self.thumbnail_items = []
         self.focused_index = -1
         self.last_selection_anchor = -1
+        
+        # Persistent gallery: {file_path: pixmap}
+        self.gallery_images = {}
 
     def showEvent(self, event):
         """Refresh thumbnail pane contents when shown"""
@@ -1617,40 +1620,36 @@ class ThumbnailPane(QDockWidget):
             super().keyPressEvent(event)
 
     def populate(self, windows=None):
-        """Populate thumbnail pane with unique images from all open windows"""
-        # 1. Capture current selection
+        """Populate thumbnail pane from persistent gallery"""
+        # Don't populate if blocked (during selection-driven view changes)
+        if hasattr(self, 'block_populate') and self.block_populate:
+            return
+        
+        # 1. Update gallery with images from all windows
+        for widget in QApplication.topLevelWidgets():
+            if widget.__class__.__name__ == 'ImageViewer':
+                if hasattr(widget, 'stacked_widget') and hasattr(widget, 'montage_widget'):
+                    if widget.stacked_widget.currentWidget() == widget.montage_widget and widget.montage_labels:
+                        # Montage mode: add all montage images to gallery
+                        for label in widget.montage_labels:
+                            if hasattr(label, 'file_path') and label.current_pixmap and label.file_path:
+                                self.gallery_images[label.file_path] = label.current_pixmap
+                    elif widget.image_label.current_pixmap and widget.current_file_path:
+                        # Single image mode: add to gallery
+                        self.gallery_images[widget.current_file_path] = widget.image_label.current_pixmap
+        
+        # 2. Capture current selection
         selected_paths = {item.file_path for item in self.thumbnail_items if item.is_selected}
         
-        # 2. Clear all existing items
+        # 3. Clear all existing thumbnail widgets
         for item in self.thumbnail_items:
             self.thumbnail_layout.removeWidget(item)
             item.deleteLater()
         self.thumbnail_items.clear()
 
-        # 3. Collect unique images from all windows
-        seen_paths = set()
-        image_data = []  # (file_path, pixmap)
-        
-        for widget in QApplication.topLevelWidgets():
-            if widget.__class__.__name__ == 'ImageViewer':
-                # Check if widget is in montage mode
-                if hasattr(widget, 'stacked_widget') and hasattr(widget, 'montage_widget'):
-                    if widget.stacked_widget.currentWidget() == widget.montage_widget and widget.montage_labels:
-                        # Montage mode: collect all montage images
-                        for label in widget.montage_labels:
-                            if hasattr(label, 'file_path') and label.current_pixmap:
-                                if label.file_path not in seen_paths:
-                                    seen_paths.add(label.file_path)
-                                    image_data.append((label.file_path, label.current_pixmap))
-                    elif widget.image_label.current_pixmap and widget.current_file_path:
-                        # Single image mode
-                        if widget.current_file_path not in seen_paths:
-                            seen_paths.add(widget.current_file_path)
-                            image_data.append((widget.current_file_path, widget.image_label.current_pixmap))
-        
-        # 4. Create thumbnail items
+        # 4. Create thumbnail items from gallery
         from widgets import ThumbnailItem
-        for file_path, pixmap in image_data:
+        for file_path, pixmap in self.gallery_images.items():
             item = ThumbnailItem(file_path, pixmap)
             item.clicked.connect(lambda event, i=item: self._on_thumbnail_clicked(i, event))
             item.overlay_changed.connect(lambda alpha, p=file_path: self.overlay_changed.emit(p, alpha))
@@ -1684,18 +1683,27 @@ class ThumbnailPane(QDockWidget):
         is_shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
         is_ctrl = bool(modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier))
 
+        print(f"DEBUG: index={index}, is_shift={is_shift}, is_ctrl={is_ctrl}, modifiers={modifiers}")
+
         if is_shift:
             anchor = self.last_selection_anchor if self.last_selection_anchor != -1 else index
             self._select_range(anchor, index)
+            print(f"DEBUG: Range selection from {anchor} to {index}")
         elif is_ctrl:
             # Toggle (Cmd/Ctrl + Click)
+            old_state = self.thumbnail_items[index].is_selected
             self._toggle_selection(index)
+            new_state = self.thumbnail_items[index].is_selected
+            print(f"DEBUG: Toggle click - was {old_state}, now {new_state}")
             self.last_selection_anchor = index
         else:
             # Default: Select Single (Exclusive)
             self._select_single(index)
+            print(f"DEBUG: Single selection of index {index}")
             self.last_selection_anchor = index
 
+        selected = [i for i, item in enumerate(self.thumbnail_items) if item.is_selected]
+        print(f"DEBUG: Selected indices after handling: {selected}")
         self._emit_selection_change()
 
     def _toggle_selection(self, index):
