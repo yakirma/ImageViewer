@@ -59,8 +59,10 @@ Once installed, you can open any supported image or video file by **right-clicki
 - **Context-Aware Up-Navigation:** Automatically re-selects the previously exited subfolder when navigating up the directory tree.
 
 ### 2. Advanced Image Viewing & Raw Support
-- **Wide Format Support:** Natively opens standard formats (PNG, JPEG, TIFF) and specialized raw data formats (`.raw`, `.f32`, `.uint8`, etc.).
+- **Wide Format Support:** Natively opens standard formats (PNG, JPEG, TIFF), specialized raw data formats (`.raw`, `.f32`, `.uint8`, etc.), and 2D optical flow files (`.flo`).
+- **Optical Flow Visualization:** Automatic color coding for 2-channel flow fields (e.g., `.flo` files or "RG" channel selection). Includes dynamic contrast stretching via the histogram to visualize subtle motions.
 - **Smart Raw Inheritance:** Automatically inherits parameters (resolution, dtype) between similar raw files while gracefully falling back to resolution guessing on mismatches.
+- **Drag and Drop:** Drag images directly onto the application window to load them instantly.
 - **Interactive Zoom & Pan:** Smooth, mouse-based zooming and panning centered around the cursor.
 - **Multi-Window Interface:** Open multiple independent windows (`Ctrl+N`) with a robust lifecycle management to prevent crashes.
 

@@ -22,7 +22,9 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QGridLayout,
+    QHBoxLayout,
     QSpinBox,
+    QToolButton,
 )
 import matplotlib.cm as cm
 
@@ -54,6 +56,9 @@ class ImageViewer(QMainWindow):
 
         self.window_list = window_list
         self.window_list.append(self)
+        
+        # Enable Drag and Drop
+        self.setAcceptDrops(True)
 
         self.image_handler = ImageHandler()
         self.playback_timer = QTimer(self)
@@ -75,13 +80,14 @@ class ImageViewer(QMainWindow):
         self.move(screen_geometry.center() - self.rect().center())
 
         self.stacked_widget = QStackedWidget()
-        # MinimumExpanding + Stretch 0 makes it very rigid against automatic shrinking
-        policy = QSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Expanding)
-        policy.setHorizontalStretch(0)
+        # Give the central widget priority in horizontal space distribution (Stretch=1)
+        policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        policy.setHorizontalStretch(1)
         self.stacked_widget.setSizePolicy(policy)
         self.setCentralWidget(self.stacked_widget)
         self._last_center_width = 0
         self._updating_from_thumbnail = False  # Flag to prevent circular refresh
+        self._dock_sizes = {}  # Track dock sizes to preserve layout
         # Ensure Left Dock takes precedence on the left side
         self.setCorner(Qt.Corner.TopLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
         self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
@@ -108,7 +114,7 @@ class ImageViewer(QMainWindow):
         self._create_thumbnail_pane()
 
         # Force initial docking ratio if possible
-        self.resizeDocks([self.file_explorer_pane], [450], Qt.Orientation.Horizontal)
+        self.resizeDocks([self.file_explorer_pane], [225], Qt.Orientation.Horizontal)
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -250,11 +256,26 @@ class ImageViewer(QMainWindow):
         toolbar.addAction(reset_action)
 
         self.colormap_combo = QComboBox(self)
-        self.colormap_combo.addItems(["gray", "turbo", "viridis"])
+        self.colormap_combo.addItems([
+            "gray", "turbo", "viridis", "magma", "inferno", "plasma",  # Standard / Uniform
+            "bone", "hot", "cool", "copper", "pink",                   # Classic Sequential
+            "seismic", "coolwarm", "bwr", "spectral",                 # Diverging
+            "hsv", "twilight",                                        # Cyclic
+            "flow",                                                   # Optical Flow
+            "jet", "rainbow", "ocean", "terrain"                      # Misc
+        ])
         self.colormap_combo.setCurrentText(self.current_colormap)
         self.colormap_combo.currentTextChanged.connect(self.set_colormap)
         toolbar.addWidget(QLabel("Colormap:", self))
         toolbar.addWidget(self.colormap_combo)
+        
+        # Channel Selector
+        self.channel_combo = QComboBox(self)
+        self.channel_combo.addItem("Default")
+        self.channel_combo.currentTextChanged.connect(self.update_image_display)
+        toolbar.addWidget(QLabel("  Channel:", self))
+        toolbar.addWidget(self.channel_combo)
+        
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
@@ -266,10 +287,56 @@ class ImageViewer(QMainWindow):
         self.histogram_action.setEnabled(False)
         toolbar.addAction(self.histogram_action)
 
-        threed_action = QAction(QIcon(resource_path("assets/icons/3d.png")), "3D View", self) # Fallback if icon missing
-        threed_action.setText("3D") # Force text
-        threed_action.triggered.connect(self.open_3d_view)
-        toolbar.addAction(threed_action)
+        # Custom "3D" Button with separate colors for '3' (Green) and 'D' (Red)
+        threed_container = QWidget()
+        threed_container.setFixedSize(40, 32)
+        threed_container.setCursor(Qt.CursorShape.PointingHandCursor)
+        threed_container.setToolTip("Open 3D View")
+        
+        container_layout = QHBoxLayout(threed_container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
+        
+        label_3 = QLabel("3")
+        label_3.setStyleSheet("color: #00E676; font-weight: 900; font-size: 16px; font-family: 'Arial'; margin-right: -5px;")
+        label_3.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        label_d = QLabel("D")
+        label_d.setStyleSheet("color: #FF1744; font-weight: 900; font-size: 16px; font-family: 'Arial'; margin-left: -5px;")
+        label_d.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        container_layout.addWidget(label_3)
+        container_layout.addWidget(label_d)
+        
+        # Make the whole container clickable by filtering events
+        class ClickableFilter(QWidget):
+            def __init__(self, parent_obj, callback):
+                super().__init__()
+                self.parent_obj = parent_obj
+                self.callback = callback
+            def eventFilter(self, source, event):
+                if event.type() == QEvent.Type.MouseButtonPress:
+                    self.callback()
+                    return True
+                return False
+        
+        self.threed_click_filter = ClickableFilter(self, self.open_3d_view)
+        threed_container.installEventFilter(self.threed_click_filter)
+        
+        # Styling the container background
+        threed_container.setStyleSheet("""
+            QWidget {
+                background-color: transparent;
+                border-radius: 6px;
+                border: none;
+            }
+            QWidget:hover {
+                background-color: rgba(255, 255, 255, 30);
+                border: none;
+            }
+        """)
+        
+        toolbar.addWidget(threed_container)
 
         self.math_transform_action = QAction(QIcon.fromTheme("accessories-calculator"), "Math Transform", self)
         self.math_transform_action.triggered.connect(self.toggle_math_transform_pane)
@@ -283,6 +350,116 @@ class ImageViewer(QMainWindow):
         thumbnail_action = QAction(QIcon(resource_path("assets/icons/opened_images.png")), "Opened Images", self)
         thumbnail_action.triggered.connect(self.toggle_thumbnail_pane)
         toolbar.addAction(thumbnail_action)
+
+    def update_channel_options(self):
+        """Populate channel selector based on current image channels."""
+        self.channel_combo.blockSignals(True)
+        self.channel_combo.clear()
+        
+        image = self.image_handler.original_image_data
+        if image is None:
+            self.channel_combo.addItem("Default")
+            self.channel_combo.blockSignals(False)
+            return
+
+        # Check dimensions
+        if image.ndim == 2:
+            self.channel_combo.addItems(["Gray"])
+        elif image.ndim == 3:
+            channels = image.shape[2]
+            if channels == 3:
+                # Standard RGB
+                self.channel_combo.addItems(["RGB", "R", "G", "B", "RG"])
+            elif channels == 4:
+                # RGBA
+                self.channel_combo.addItems(["RGBA", "RGB", "RG", "R", "G", "B", "A"])
+            elif channels == 2:
+                # RG
+                self.channel_combo.addItems(["RG", "R", "G"])
+            else:
+                self.channel_combo.addItem(f"{channels} Channels")
+        
+        self.channel_combo.blockSignals(False)
+
+    def apply_channel_selection(self, image_data):
+        """Slice image data based on selected channel option."""
+        selection = self.channel_combo.currentText()
+        if image_data is None or image_data.ndim < 3:
+            return image_data
+            
+        if selection == "Default" or selection == "RGB" or selection == "RGBA":
+            # Return full image (handle RGBA->RGB if needed elsewhere, but here we keep original)
+             # Actually, if selection is RGB but image is RGBA, we might want to slice alpha out?
+             # For now let's assume 'RGB' means full color view or explicit 3 channels
+             if selection == "RGB" and image_data.shape[2] == 4:
+                 return image_data[:, :, :3]
+             return image_data
+             
+        # Single Channels
+        if selection == "R":
+            return image_data[:, :, 0]
+        elif selection == "G":
+            return image_data[:, :, 1]
+        elif selection == "B":
+            return image_data[:, :, 2]
+        elif selection == "A" and image_data.shape[2] >= 4:
+            return image_data[:, :, 3]
+            
+        # Multi-Channel combinations
+        if selection == "RG":
+            # Return true 2-channel data to enable flow visualization auto-detection
+            return image_data[:, :, :2]
+            
+        return image_data
+
+    def update_image_display(self, reset_view=False):
+        """Centralized method to update image display with channel selection and transforms."""
+        if not self.active_label or self.image_handler.original_image_data is None:
+            return
+        
+        # 1. Get the base data (original or current video frame)
+        if self.image_handler.is_video:
+            data = self.image_handler.get_current_frame()
+        else:
+            data = self.image_handler.original_image_data
+        
+        if data is None:
+            return
+        
+        # 2. Apply Channel Selection
+        sliced_data = self.apply_channel_selection(data)
+        
+        # 3. Auto-select flow mode or Reset to Default
+        # Check if we were in 'flow' mode but now data is not compatible (e.g. RGB)
+        # OR if we switched from RG (2-channel) to something else
+        if sliced_data.ndim == 3 and sliced_data.shape[2] == 2:
+             if self.colormap_combo.currentText() != "flow":
+                 self.colormap_combo.setCurrentText("flow")
+        elif self.colormap_combo.currentText() == "flow":
+             # We entered a non-flow compatible state but still have 'flow' selected.
+             # Reset to default 'gray' as requested.
+             self.colormap_combo.setCurrentText("gray")
+        
+        # Capture inspection data (raw values) before any visualization conversion
+        # With new architecture, sliced_data IS the raw data passed to the label
+        inspection_data = sliced_data
+        
+        # 4. [REMOVED] Flow Visualization is now handled dynamically in ZoomableDraggableLabel.apply_colormap
+        # This allows histogram contrast limits to affect the flow rendering (normalization)
+        
+        # 5. Set Data to Label (as pristine base)
+        # Pass both the display data (sliced_data) and the raw values (inspection_data)
+        self.image_label.set_data(sliced_data, reset_view=reset_view, is_pristine=True, inspection_data=inspection_data)
+        
+        # 6. Apply Math Transform if exists
+        if self.current_math_expression:
+            self.apply_math_transform(self.current_math_expression, from_update=True)
+        
+        # 7. Trigger repaint and histogram update
+        self.image_label.repaint()
+        self.update_histogram_data()
+        
+
 
     def _create_video_toolbar(self):
         self.video_toolbar = QToolBar("Video Playback")
@@ -362,17 +539,13 @@ class ImageViewer(QMainWindow):
         
         # Update image without resetting view, but UPDATE pristine data for this new frame
         # This ensures subsequent math transforms use this frame as base
-        self.image_label.set_data(self.image_handler.original_image_data, reset_view=False, is_pristine=True)
-        
-        # Re-apply math transform if active
-        if self.current_math_expression:
-             self.apply_math_transform(self.current_math_expression)
+        self.update_image_display(reset_view=False)
         
     def _on_frame_slider_changed(self, value):
         if self.image_handler.is_video and not self.is_slider_pressed: # Only seek if not dragging
              self.image_handler.seek_frame(value)
              # Update image without resetting view
-             self.image_label.set_data(self.image_handler.original_image_data, reset_view=False)
+             self.update_image_display(reset_view=False)
              self.frame_label.setText(f" {self.image_handler.current_frame_index + 1} / {self.image_handler.video_frame_count} ")
 
     def _on_slider_pressed(self):
@@ -405,14 +578,14 @@ class ImageViewer(QMainWindow):
 
     def _create_info_pane(self):
         self.info_pane = InfoPane(self)
-        self.info_pane.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
+        self.info_pane.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.info_pane)
         self.info_pane.hide()
         self.info_pane.settings_changed.connect(self.reapply_raw_parameters)
 
     def _create_math_transform_pane(self):
         self.math_transform_pane = MathTransformPane(self)
-        self.math_transform_pane.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
+        self.math_transform_pane.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.math_transform_pane.transform_requested.connect(self.apply_math_transform)
         self.math_transform_pane.restore_original_requested.connect(self.restore_original_image)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.math_transform_pane)
@@ -425,7 +598,7 @@ class ImageViewer(QMainWindow):
 
     def _create_thumbnail_pane(self):
         self.thumbnail_pane = ThumbnailPane(self)
-        self.thumbnail_pane.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
+        self.thumbnail_pane.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.thumbnail_pane)
         self.thumbnail_pane.hide()
         self.thumbnail_pane.selection_changed.connect(self._on_thumbnail_selection_changed)
@@ -433,7 +606,8 @@ class ImageViewer(QMainWindow):
 
     def _create_file_explorer_pane(self):
         self.file_explorer_pane = FileExplorerPane(self)
-        self.file_explorer_pane.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
+        self.file_explorer_pane.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        self.file_explorer_pane.setMaximumWidth(600)  # Prevent excessive expansion
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.file_explorer_pane)
         self.file_explorer_pane.hide()
         self.file_explorer_pane.files_selected.connect(self._on_explorer_files_selected)
@@ -441,21 +615,39 @@ class ImageViewer(QMainWindow):
         # Configure supported extensions for filtering
         extensions = self.image_handler.raw_extensions + ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.gif', '.webp'] + self.image_handler.video_extensions
         # Create unique list
+        # Create unique list
         extensions = list(set(extensions))
-        ext_filters = ['*' + ext for ext in extensions]
+        
+        # Create case-insensitive filters (add both lowercase and uppercase)
+        ext_filters = []
+        for ext in extensions:
+            ext_filters.append('*' + ext.lower())
+            ext_filters.append('*' + ext.upper())
+            
         self.file_explorer_pane.set_supported_extensions(ext_filters)
 
         self.overlay_alphas = {} # path -> alpha
         self.overlay_cache = {}  # path -> QPixmap (resized to match current active view)
 
     def display_montage(self, file_paths):
+        # Cache state of existing montage labels (for re-applying when refreshing montage)
+        # This prevents losing colormap/contrast when adding 3rd image to an existing 2-image montage
+        existing_states = {} # path -> state_dict
+        for label in self.montage_labels:
+            if hasattr(label, 'file_path') and label.file_path:
+                existing_states[label.file_path] = label.get_view_state()
+
         # Reset active_label BEFORE clearing layout to prevent accessing deleted objects
         self.active_label = None
         
-        for i in reversed(range(self.montage_layout.count())):
-            widget = self.montage_layout.itemAt(i).widget()
-            if widget:
-                widget.setParent(None)
+        while self.montage_layout.count():
+            item = self.montage_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Force immediate processing of delete events to prevent ghosting
+        QApplication.processEvents()
+        
         self.montage_labels.clear()
         
         # Clear overlays for files not in the new selection
@@ -469,7 +661,15 @@ class ImageViewer(QMainWindow):
 
         if not file_paths:
             if self.current_file_path:
-                self.open_file(self.current_file_path)
+                # If we have a current file but nothing is selected, clearing the view is safer
+                # than re-opening the unselected file.
+                pass
+            
+            # Clear layout and show welcome/empty
+            self.montage_labels.clear()
+            self._update_active_view()
+            self.stacked_widget.setCurrentWidget(self.welcome_widget)
+            self._refresh_thumbnail_pane() # Ensure thumbnails are cleared
             return
 
 
@@ -481,8 +681,17 @@ class ImageViewer(QMainWindow):
         
         for file_path in file_paths:
             temp_handler = ImageHandler()
+            
+            # Smart Override: Only apply raw settings if the file itself is raw
+            # This prevents trying to read a PNG using raw dimensions/settings
+            current_override = override_settings
+            if current_override:
+                _, ext = os.path.splitext(file_path)
+                if ext.lower() not in temp_handler.raw_extensions:
+                    current_override = None
+
             try:
-                temp_handler.load_image(file_path, override_settings=override_settings)
+                temp_handler.load_image(file_path, override_settings=current_override)
             except:
                 # Fallback if load fails (e.g. missing resolution and no override)
                 continue
@@ -498,26 +707,39 @@ class ImageViewer(QMainWindow):
                 image_label.set_data(data, is_pristine=True)
                 image_label.file_path = file_path # Store for overlay restoration
 
-                # Check if this file is already open in another window and inherit its state
-                for window in self.window_list:
-                    # Retrieve the path safely, handling potential missing attribute or closed window
-                    try:
-                        # Skip windows in Montage Mode as their current_file_path might be stale
-                        if window.stacked_widget.currentWidget() == window.montage_widget:
-                            continue
+                state_applied = False
+                
+                # 1. Try to inherit from PREVIOUS montage state
+                if file_path in existing_states:
+                    state = existing_states[file_path]
+                    filtered_state = {
+                        'colormap': state.get('colormap'),
+                        'contrast_limits': state.get('contrast_limits')
+                    }
+                    image_label.set_view_state(filtered_state)
+                    state_applied = True
+                
+                # 2. If not found, check other open windows
+                if not state_applied:
+                    for window in self.window_list:
+                        # Retrieve the path safely, handling potential missing attribute or closed window
+                        try:
+                            # Skip windows in Montage Mode as their current_file_path might be stale
+                            if window.stacked_widget.currentWidget() == window.montage_widget:
+                                continue
 
-                        win_path = getattr(window, 'current_file_path', None)
-                        if win_path == file_path and window.active_label:
-                            state = window.active_label.get_view_state()
-                            # Only inherit Colormap and Contrast (preserve Montage's layout/zoom)
-                            filtered_state = {
-                                'colormap': state.get('colormap'),
-                                'contrast_limits': state.get('contrast_limits')
-                            }
-                            image_label.set_view_state(filtered_state)
-                            break
-                    except Exception:
-                        pass # Ignore errors accessing other windows
+                            win_path = getattr(window, 'current_file_path', None)
+                            if win_path == file_path and window.active_label:
+                                state = window.active_label.get_view_state()
+                                # Only inherit Colormap and Contrast (preserve Montage's layout/zoom)
+                                filtered_state = {
+                                    'colormap': state.get('colormap'),
+                                    'contrast_limits': state.get('contrast_limits')
+                                }
+                                image_label.set_view_state(filtered_state)
+                                break
+                        except Exception:
+                            pass # Ignore errors accessing other windows
 
                 image_label.set_overlay_text(file_path)
                 image_label.clicked.connect(lambda label=image_label: self._set_active_montage_label(label))
@@ -556,8 +778,8 @@ class ImageViewer(QMainWindow):
         # Synchronous update
         self.montage_widget.repaint()
         
-        # Update thumbnail selection states to reflect current montage
-        self._update_thumbnail_selection_states()
+        # Update thumbnail pane strictly
+        self._refresh_thumbnail_pane()
 
     def _set_active_montage_label(self, label):
         if self.active_label:
@@ -689,70 +911,72 @@ class ImageViewer(QMainWindow):
             self.thumbnail_pane.setFocus()
             
     def _set_dock_visibility_preserving_window(self, dock, visible):
+        """Toggle dock visibility while keeping image pane centered in same screen position."""
         if dock.isVisible() == visible:
             return
 
-        # Check if maximized
-        if self.isMaximized():
-             dock.setVisible(visible)
-             return
-
-        screen_geo = self.screen().availableGeometry()
+        dock_name = dock.objectName()
+        
+        # Save original position
+        original_x = self.x()
+        original_y = self.y()
+        
+        # Get all docks except the one being toggled
+        all_docks = [self.file_explorer_pane, self.info_pane, 
+                     self.math_transform_pane, self.thumbnail_pane]
+        other_docks = [d for d in all_docks if d != dock and d.isVisible() and not d.isFloating()]
+        
+        # Determine the dock's width
+        if visible:
+            dock_width = self._dock_sizes.get(dock_name, 0)
+            if dock_width <= 0:
+                dock_width = dock.sizeHint().width()
+        else:
+            dock_width = dock.width()
+        
+        # Save current sizes of other docks
+        for d in other_docks:
+            self._dock_sizes[d.objectName()] = d.width()
+        
+        # Determine if dock is on left or right
+        is_left_dock = (dock == self.file_explorer_pane)
+        
+        # Calculate new window width (half dock width split)
         current_width = self.width()
+        half_dock_width = dock_width // 2
         
-        # Determine dock width
         if visible:
-            # When showing, use the dock's intended width. 
-            # If it was hidden (width 0), use the size hint.
-            target_dock_width = dock.width()
-            if target_dock_width <= 0:
-                target_dock_width = dock.sizeHint().width()
+            new_width = current_width + half_dock_width
         else:
-            # When hiding, use the actual current width
-            target_dock_width = dock.width()
+            new_width = current_width - half_dock_width
         
-        # Guard against zero or tiny values
-        if target_dock_width < 50:
-            if isinstance(dock, FileExplorerPane):
-                target_dock_width = 450 # Default for file explorer
+        # Toggle visibility
+        dock.setVisible(visible)
+        
+        # Calculate new window x position to keep image pane centered
+        if is_left_dock:
+            if visible:
+                new_window_x = original_x - half_dock_width
             else:
-                target_dock_width = 300 # Sane default for other docks
-        
-        if visible:
-            new_width = current_width + target_dock_width
-            # Limit to screen width
-            if new_width > screen_geo.width():
-                new_width = screen_geo.width()
+                new_window_x = original_x + half_dock_width
         else:
-            new_width = current_width - target_dock_width
-            if new_width < self.minimumWidth():
-                new_width = self.minimumWidth()
-            
-        # Adjust position to keep center fixed
-        current_x = self.x()
-        new_x = current_x + (current_width - new_width) // 2
+            new_window_x = original_x
         
-        # Ensure stays within screen bounds (roughly)
-        if new_x < screen_geo.left():
-             new_x = screen_geo.left()
-        if new_x + new_width > screen_geo.right():
-             new_x = screen_geo.right() - new_width
-
-        # LOCK the central widget width before resizing the window
-        # to ensure the entire expansion/shrinkage is taken by the dock area
-        center = self.centralWidget()
-        current_center_w = center.width()
-        center.setMinimumWidth(current_center_w)
-        center.setMaximumWidth(current_center_w)
-        QTimer.singleShot(0, self._reset_center_constraints)
-
-        self.move(new_x, self.y())
+        # Use separate calls to avoid any coordinate coupling
+        self.move(new_window_x, original_y)
         self.resize(new_width, self.height())
         
-        if visible:
-            dock.show()
-        else:
-            dock.hide()
+        # Restore other dock sizes
+        QTimer.singleShot(0, lambda: self._restore_dock_sizes(other_docks))
+    
+    def _restore_dock_sizes(self, docks):
+        """Restore saved sizes for the given docks."""
+        for dock in docks:
+            dock_name = dock.objectName()
+            if dock_name in self._dock_sizes:
+                saved_width = self._dock_sizes[dock_name]
+                if saved_width > 0:
+                    self.resizeDocks([dock], [saved_width], Qt.Orientation.Horizontal)
 
     def _on_zoom_slider_changed(self, value):
         if self.sender() is not self.zoom_slider: return
@@ -856,13 +1080,45 @@ class ImageViewer(QMainWindow):
         label.zoom_out_interp = interp_map[self.zoom_settings["zoom_out_interp"]]
 
     def set_colormap(self, name):
+        # "flow" is a special mode that requires re-generating the RGB buffer via update_image_display.
+        # Standard colormaps are applied in-shader/texture on the ImageLabel.
+
+        current_is_flow = (name == "flow")
+        # We need a way to know if we are currently displaying a baked "flow" RGB image.
+        # We can infer this: if we are in "flow" mode, we need to generate it.
+        # If we are switching AWAY from "flow" (meaning name != flow), we need to revert to raw data.
+        # Since we don't strictly track "previous mode", calling update_image_display is the safest way 
+        # to ensure the data sent to ImageLabel matches the mode.
+        
+        # However, for pure 1ch -> 1ch colormap changes (gray -> hot), calling update_image_display 
+        # is slightly heavier but correct. Given modern CPUs, slicing a 2K image is negligible.
+        # Let's prioritize correctness:
+        
+        self.update_image_display(reset_view=False)
+        
         if self.active_label:
-            self.active_label.set_colormap(name)
+             # If mode is "flow", the data is now RGB, so set_colormap("flow") might act as "none" 
+             # or simply be ignored by ImageLabel if data is RGB.
+             self.active_label.set_colormap(name)
+            
+             # Broadcast invalidation to all windows using this image as overlay
+             path = getattr(self.active_label, 'file_path', self.current_file_path)
+             if path:
+                 for win in self.window_list:
+                     if hasattr(win, '_invalidate_overlay_cache'):
+                         win._invalidate_overlay_cache(path)
 
     def set_contrast_limits(self, min_val, max_val):
         # Apply only to the active label, ensuring independence in montage view
         if self.active_label:
             self.active_label.set_contrast_limits(min_val, max_val)
+
+            # Broadcast invalidation to all windows using this image as overlay
+            path = getattr(self.active_label, 'file_path', self.current_file_path)
+            if path:
+                for win in self.window_list:
+                    if hasattr(win, '_invalidate_overlay_cache'):
+                        win._invalidate_overlay_cache(path)
 
     def open_3d_view(self):
         if not self.active_label or self.active_label.original_data is None:
@@ -891,8 +1147,22 @@ class ImageViewer(QMainWindow):
         self._set_dock_visibility_preserving_window(self.file_explorer_pane, visible)
 
     def _on_explorer_files_selected(self, file_paths):
-        if not file_paths:
+        # Allow empty list to proceed to clear the view if needed
+        if file_paths is None:
             return
+            
+        if not file_paths:
+             # Selection cleared
+             # If we are in Montage mode, clear it.
+             # If in Single view, maybe stay? Or clear?
+             # For now, let's clear the montage if we were using it, or do nothing.
+             # But the user complains "unselected images still appear".
+             # If they deselect everything, they probably expect an empty view or the last valid single file?
+             # Let's try displaying an empty montage if we are already in montage mode, or just return if not?
+             # Actually, if I select A,B (Montage), then deselect all. I expect empty.
+             if self.stacked_widget.currentWidget() == self.montage_widget:
+                 self.display_montage([])
+             return
 
         # Capture View State and Raw Settings from ACTIVE image
         view_state = None
@@ -1079,7 +1349,7 @@ class ImageViewer(QMainWindow):
                      self.zoom_slider.setEnabled(True)
                      self.histogram_action.setEnabled(True)
                      
-                     self.image_label.set_data(self.image_handler.original_image_data, is_pristine=True)
+                     self.update_image_display(reset_view=True)
                      self._set_active_montage_label(self.image_label)
                      self._apply_histogram_preset(0, 100)
                      self.overlay_cache.clear()
@@ -1123,7 +1393,7 @@ class ImageViewer(QMainWindow):
                 self.info_pane.hide()
             
             # Load Data (triggers render with set attributes)
-            self.image_label.set_data(self.image_handler.original_image_data, is_pristine=True)
+            self.update_image_display(reset_view=not maintain_view_state)
             self._set_active_montage_label(self.image_label)
             
             # Apply State (View / Contrast)
@@ -1201,9 +1471,12 @@ class ImageViewer(QMainWindow):
                      self.playback_timer.stop()
                      self.play_action.setChecked(False)
                      self.play_action.setText("Play")
+                     self.play_action.setText("Play")
                 else:
                      self.video_toolbar.hide()
                      self.playback_timer.stop()
+                     
+                self.update_channel_options()
 
         except Exception as e:
             if is_raw and override_settings:
@@ -1245,7 +1518,12 @@ class ImageViewer(QMainWindow):
 
             self.status_bar.showMessage(" | ".join(status_text))
         elif self.active_label and self.active_label.original_data is not None:
-            data = self.active_label.original_data
+            # Use inspection_data which contains the raw values (before visualization conversions)
+            data = getattr(self.active_label, 'inspection_data', self.active_label.original_data)
+            
+            if data is None:
+                data = self.active_label.original_data
+
             if y_coord < data.shape[0] and x_coord < data.shape[1]:
                 value = data[y_coord, x_coord]
                 self.status_bar.showMessage(f"({x_coord}, {y_coord}): {value}")
@@ -1297,7 +1575,12 @@ class ImageViewer(QMainWindow):
         else:
             if visible_data is not None and visible_data.size > 0:
                 if len(visible_data.shape) == 3:
-                    hist_data = np.dot(visible_data[..., :3], [0.2989, 0.5870, 0.1140])
+                    if visible_data.shape[2] >= 3:
+                        hist_data = np.dot(visible_data[..., :3], [0.2989, 0.5870, 0.1140])
+                    elif visible_data.shape[2] == 2:
+                        hist_data = np.linalg.norm(visible_data, axis=2)
+                    else:
+                        hist_data = visible_data[:, :, 0]
                 else:
                     hist_data = visible_data
                 min_v, max_v = np.min(hist_data), np.max(hist_data)
@@ -1379,6 +1662,17 @@ class ImageViewer(QMainWindow):
         super().keyPressEvent(event)
 
 
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+    
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if urls:
+            file_path = urls[0].toLocalFile()
+            if os.path.exists(file_path):
+                self.load_image(file_path)
+    
     def resizeEvent(self, event):
         old_size = event.oldSize()
         new_size = event.size()
@@ -1484,78 +1778,47 @@ class ImageViewer(QMainWindow):
             self.thumbnail_pane._select_single(0)
 
     def _refresh_thumbnail_pane(self):
-        """Refresh thumbnail pane with all open images across windows"""
+        """Refresh thumbnail pane to show ONLY images from the current window"""
         if not self.thumbnail_pane:
             return
         
-        # Clear existing thumbnails
-        for item in self.thumbnail_pane.thumbnail_items:
-            self.thumbnail_pane.thumbnail_layout.removeWidget(item)
-            item.deleteLater()
+        # Clear existing thumbnails - remove from layout AND delete
+        while self.thumbnail_pane.thumbnail_layout.count():
+            item = self.thumbnail_pane.thumbnail_layout.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+                item.widget().deleteLater()
         self.thumbnail_pane.thumbnail_items.clear()
         
-        # Get current window's viewed files
-        current_files = set()
-        if self.stacked_widget.currentWidget() == self.montage_widget:
-            current_files = {label.file_path for label in self.montage_labels if hasattr(label, 'file_path')}
-        elif self.current_file_path:
-            current_files = {self.current_file_path}
-        
-        # Track files we've already added to avoid duplicates
-        added_files = set()
-        
-        # Add thumbnails from all windows
+        # Add thumbnails ONLY from THIS window (not all windows)
         from widgets import ThumbnailItem
-        for window in self.window_list:
-            # Collect all images from this window (both single view and montage)
-            window_images = []
-            
-            # If window is in montage mode, get all montage images
-            if hasattr(window, 'montage_labels') and window.montage_labels:
-                for label in window.montage_labels:
-                    if hasattr(label, 'file_path') and label.current_pixmap:
-                        window_images.append((label.file_path, label.current_pixmap))
-            # Otherwise get the single image
-            elif window.image_label.current_pixmap and window.current_file_path:
-                window_images.append((window.current_file_path, window.image_label.current_pixmap))
-            
-            # Add each image as a thumbnail
-            for file_path, pixmap in window_images:
-                # Skip duplicates
-                if file_path in added_files:
-                    continue
-                
-                item = ThumbnailItem(file_path, pixmap)
-                item.clicked.connect(lambda event, i=item: self.thumbnail_pane._on_thumbnail_clicked(i, event))
-                item.overlay_changed.connect(lambda alpha, path=file_path: self.thumbnail_pane.overlay_changed.emit(path, alpha))
-                
-                # Set selected if from current window's view
-                is_selected = file_path in current_files
-                item.set_selected(is_selected)
-                
-                self.thumbnail_pane.thumbnail_items.append(item)
-                self.thumbnail_pane.thumbnail_layout.addWidget(item)
-                added_files.add(file_path)
         
-        # Set first selected item as focused
-        selected_items = [item for item in self.thumbnail_pane.thumbnail_items if item.is_selected]
-        if selected_items:
-            idx = self.thumbnail_pane.thumbnail_items.index(selected_items[0])
-            self.thumbnail_pane._set_focused_item(idx)
+        # Check if in montage mode
+        if self.stacked_widget.currentWidget() == self.montage_widget and self.montage_labels:
+            for label in self.montage_labels:
+                if hasattr(label, 'file_path') and label.current_pixmap:
+                    item = ThumbnailItem(label.file_path, label.current_pixmap)
+                    item.clicked.connect(lambda event, i=item: self.thumbnail_pane._on_thumbnail_clicked(i, event))
+                    item.overlay_changed.connect(lambda alpha, path=label.file_path: self.thumbnail_pane.overlay_changed.emit(path, alpha))
+                    item.set_selected(True)  # All visible montage images are "selected"
+                    self.thumbnail_pane.thumbnail_items.append(item)
+                    self.thumbnail_pane.thumbnail_layout.addWidget(item)
+        # Single view mode
+        elif self.image_label.current_pixmap and self.current_file_path:
+            item = ThumbnailItem(self.current_file_path, self.image_label.current_pixmap)
+            item.clicked.connect(lambda event, i=item: self.thumbnail_pane._on_thumbnail_clicked(i, event))
+            item.overlay_changed.connect(lambda alpha, path=self.current_file_path: self.thumbnail_pane.overlay_changed.emit(path, self.current_file_path))
+            item.set_selected(True)
+            self.thumbnail_pane.thumbnail_items.append(item)
+            self.thumbnail_pane.thumbnail_layout.addWidget(item)
         
-        # Update Select All checkbox state
-        selected_count = len(selected_items)
-        total_count = len(self.thumbnail_pane.thumbnail_items)
+        # Force immediate layout and widget updates
+        self.thumbnail_pane.thumbnail_layout.activate()
+        for item in self.thumbnail_pane.thumbnail_items:
+            item.show()
+            item.update()
+        self.thumbnail_pane.update()
         
-        self.thumbnail_pane.select_all_cb.blockSignals(True)
-        if selected_count == 0:
-            self.thumbnail_pane.select_all_cb.setCheckState(Qt.CheckState.Unchecked)
-        elif selected_count == total_count:
-            self.thumbnail_pane.select_all_cb.setCheckState(Qt.CheckState.Checked)
-        else:
-            self.thumbnail_pane.select_all_cb.setCheckState(Qt.CheckState.PartiallyChecked)
-        self.thumbnail_pane.select_all_cb.blockSignals(False)
-    
     def _update_thumbnail_selection_states(self):
         """Update selection states of existing thumbnails based on current montage"""
         if not self.thumbnail_pane or not self.thumbnail_pane.thumbnail_items:
@@ -1597,7 +1860,15 @@ class ImageViewer(QMainWindow):
         visible_data = self._get_visible_image_data(use_visible_only)
         if visible_data is not None and visible_data.size > 0:
             if len(visible_data.shape) == 3:
-                hist_data = np.dot(visible_data[..., :3], [0.2989, 0.5870, 0.1140])
+                if visible_data.shape[2] >= 3:
+                    # RGB: compute luminance
+                    hist_data = np.dot(visible_data[..., :3], [0.2989, 0.5870, 0.1140])
+                elif visible_data.shape[2] == 2:
+                    # 2-channel: use magnitude
+                    hist_data = np.linalg.norm(visible_data, axis=2)
+                else:
+                    # Single channel in 3D array
+                    hist_data = visible_data[:, :, 0]
             else:
                 hist_data = visible_data
 
@@ -1694,6 +1965,14 @@ class ImageViewer(QMainWindow):
             
             return True
         return super().eventFilter(source, event)
+
+    def _invalidate_overlay_cache(self, file_path):
+        """Invalidate the cache for a specific file path and refresh overlays.
+           Call this when the source image appearance (colormap/contrast) changes.
+        """
+        if file_path in self.overlay_cache:
+            del self.overlay_cache[file_path]
+            self._update_overlays()
 
     def _on_overlay_changed(self, file_path, alpha):
         self.overlay_alphas[file_path] = alpha
@@ -1843,6 +2122,12 @@ class ImageViewer(QMainWindow):
 
         if self.active_label:
             self.active_label.set_overlays(overlays_to_draw)
+        
+        # Also update all montage labels if in montage mode
+        if self.montage_labels:
+            for label in self.montage_labels:
+                if label != self.active_label: # Active already updated
+                    label.set_overlays(overlays_to_draw)
 
     def closeEvent(self, event):
         """Remove window from the list when closed."""
@@ -1861,3 +2146,11 @@ class ImageViewer(QMainWindow):
     def _cleanup_window_list(self):
         if hasattr(self, 'window_list') and self in self.window_list:
             self.window_list.remove(self)
+            
+            # Notify all other windows to refresh their thumbnail pane
+            for win in self.window_list:
+                try:
+                    if hasattr(win, '_refresh_thumbnail_pane'):
+                        win._refresh_thumbnail_pane()
+                except RuntimeError:
+                    pass

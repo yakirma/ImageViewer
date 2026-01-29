@@ -44,6 +44,7 @@ except ImportError:
     gl = None
 import os
 import matplotlib.cm as cm
+from utils import flow_to_color
 from settings import load_folder_history, save_folder_history, load_filter_history, save_filter_history
 
 
@@ -578,6 +579,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents)
         self.grabGesture(Qt.GestureType.PinchGesture) # Re-enable for standard handling
+        self.setAcceptDrops(True) # Enable drag and drop
 
         self.shared_state = shared_state
         if self.shared_state:
@@ -782,10 +784,16 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             self.hover_left.emit()
             self.unsetCursor()
 
-    def set_data(self, data, reset_view=True, is_pristine=False):
+    def set_data(self, data, reset_view=True, is_pristine=False, inspection_data=None):
         self.original_data = data
+        # inspection_data is the raw data used for value introspection (e.g. status bar values)
+        # If not provided, it defaults to the display data (data)
+        self.inspection_data = inspection_data if inspection_data is not None else data
+
         if is_pristine:
             self.pristine_data = data
+            self.base_inspection_data = self.inspection_data # Store base inspection data too
+            
         if reset_view:
             self.contrast_limits = None
         self.apply_colormap(is_new_image=reset_view)
@@ -854,51 +862,90 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             return
 
         data = self.original_data
+        
+        if self.colormap == "flow":
+            # If data is 2-channel, convert to RGB using flow_to_color
+            if data.ndim == 3 and data.shape[2] == 2:
+                # Use contrast max as max_flow for normalization (stretching)
+                max_flow = None
+                if self.contrast_limits:
+                     try:
+                         # Ensure valid max_flow
+                         val = float(self.contrast_limits[1])
+                         if val > 1e-6:
+                             max_flow = val
+                     except:
+                         pass
+                
+                try:
+                    # Make sure data is contiguous to avoid potential C-API issues with views
+                    if not data.flags['C_CONTIGUOUS']:
+                        data = np.ascontiguousarray(data)
+                        
+                    processed_data = flow_to_color(data, max_flow=max_flow)
+                    h, w, _ = processed_data.shape
+                    q_image = QImage(processed_data.tobytes(), w, h, 3 * w, QImage.Format.Format_RGB888)
+                except Exception as e:
+                    print(f"Error in flow_to_color: {e}")
+                    return
+            
+            # If data is already RGB (legacy or handled external), just display it
+            elif data.ndim == 3 and data.shape[2] >= 3:
+                processed_data = data[:, :, :3].astype(np.uint8) if data.dtype != np.uint8 else data[:, :, :3]
+                h, w, _ = processed_data.shape
+                q_image = QImage(processed_data.tobytes(), w, h, 3 * w, QImage.Format.Format_RGB888)
+            else:
+                return  # Invalid state for flow mode
+        else:
+            # Original logic for other colormaps
+            # Determine mode: standard RGB or Colormapped (single channel)
+            # If RGB and map is 'gray', show as RGB.
+            # If RGB and map is NOT 'gray', extract Ch0 and map it.
+            is_rgb = (data.ndim == 3 and data.shape[2] == 3)
+            treat_as_rgb = is_rgb and (self.colormap == 'gray')
 
-        # Determine mode: standard RGB or Colormapped (single channel)
-        # If RGB and map is 'gray', show as RGB.
-        # If RGB and map is NOT 'gray', extract Ch0 and map it.
-        is_rgb = (data.ndim == 3 and data.shape[2] == 3)
-        treat_as_rgb = is_rgb and (self.colormap == 'gray')
-
-        if treat_as_rgb:  # Color Image
-            if self.contrast_limits:
-                min_val, max_val = self.contrast_limits
-                if max_val > min_val:
-                    stretched_channels = []
-                    for i in range(3):
-                        channel = data[..., i].astype(np.float32)
-                        stretched = 255 * (channel - min_val) / (max_val - min_val)
-                        stretched_channels.append(np.clip(stretched, 0, 255))
-                    processed_data = np.stack(stretched_channels, axis=-1).astype(np.uint8)
+            if treat_as_rgb:  # Color Image
+                if self.contrast_limits:
+                    min_val, max_val = self.contrast_limits
+                    if max_val > min_val:
+                        stretched_channels = []
+                        for i in range(3):
+                            channel = data[..., i].astype(np.float32)
+                            stretched = 255 * (channel - min_val) / (max_val - min_val)
+                            stretched_channels.append(np.clip(stretched, 0, 255))
+                        processed_data = np.stack(stretched_channels, axis=-1).astype(np.uint8)
+                    else:
+                        processed_data = np.zeros_like(data, dtype=np.uint8)
                 else:
-                    processed_data = np.zeros_like(data, dtype=np.uint8)
-            else:
-                processed_data = data.astype(np.uint8)
+                    processed_data = data.astype(np.uint8)
 
-            h, w, _ = processed_data.shape
-            q_image = QImage(processed_data.tobytes(), w, h, 3 * w, QImage.Format.Format_RGB888)
+                h, w, _ = processed_data.shape
+                q_image = QImage(processed_data.tobytes(), w, h, 3 * w, QImage.Format.Format_RGB888)
 
-        else:  # Grayscale / Colormapped
-            if is_rgb:
-                 data = data[:, :, 0] # Use Channel 0 for colormapping
+            else:  # Grayscale / Colormapped
+                if is_rgb:
+                     data = data[:, :, 0] # Use Channel 0 for colormapping
+                elif data.ndim == 3 and data.shape[2] == 2:
+                     # 2-Channel non-flow -> Use Magnitude
+                     data = np.linalg.norm(data, axis=2)
 
-            processed_data = data.copy()
-            if self.contrast_limits:
-                min_val, max_val = self.contrast_limits
-                processed_data = np.clip(processed_data, min_val, max_val)
+                processed_data = data.copy()
+                if self.contrast_limits:
+                    min_val, max_val = self.contrast_limits
+                    processed_data = np.clip(processed_data, min_val, max_val)
 
-            min_val, max_val = np.min(processed_data), np.max(processed_data)
-            if min_val == max_val:
-                norm_data = np.zeros_like(processed_data, dtype=float)
-            else:
-                norm_data = (processed_data - min_val) / (max_val - min_val)
+                min_val, max_val = np.min(processed_data), np.max(processed_data)
+                if min_val == max_val:
+                    norm_data = np.zeros_like(processed_data, dtype=float)
+                else:
+                    norm_data = (processed_data - min_val) / (max_val - min_val)
 
-            colored_data = cm.get_cmap(self.colormap)(norm_data)
-            image_data_8bit = (colored_data[:, :, :3] * 255).astype(np.uint8)
-            processed_data = image_data_8bit # Fix: Update processed_data to hold the 3D RGB array
-            h, w, _ = image_data_8bit.shape
-            q_image = QImage(image_data_8bit.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+                colored_data = cm.get_cmap(self.colormap)(norm_data)
+                image_data_8bit = (colored_data[:, :, :3] * 255).astype(np.uint8)
+                processed_data = image_data_8bit # Fix: Update processed_data to hold the 3D RGB array
+                h, w, _ = image_data_8bit.shape
+                q_image = QImage(image_data_8bit.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+            # End of else block for non-flow colormaps
 
         # Proxy Rendering Logic
         # If image is too large, downsample it for display
@@ -1227,6 +1274,20 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         """
         self.overlays = overlays
         self.update()
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+    
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if urls:
+            file_path = urls[0].toLocalFile()
+            if os.path.exists(file_path):
+                # Try to find load_image in the window hierarchy
+                window = self.window()
+                if hasattr(window, 'load_image'):
+                    window.load_image(file_path)
 
     def paintEvent(self, event):
         super().paintEvent(event)

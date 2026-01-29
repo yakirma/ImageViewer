@@ -3,6 +3,7 @@ import re
 import numpy as np
 from PIL import Image
 import cv2
+from utils import read_flow, flow_to_color
 
 class ImageHandler:
     def __init__(self):
@@ -23,6 +24,7 @@ class ImageHandler:
             ".yuyv", ".uyvy"
         ]
         self.video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.gif']
+        self.flow_extensions = ['.flo']
         self.is_video = False
         self.video_cap = None
         self.video_fps = 30
@@ -55,6 +57,8 @@ class ImageHandler:
 
         if ext_lower in self.video_extensions:
              self._load_video(file_path)
+        elif ext_lower in self.flow_extensions:
+             self._load_optical_flow(file_path)
         elif self.is_raw or override_settings:
             # If we have settings, we treat it as raw even if extension is png
             self._load_raw_image(file_path, override_settings)
@@ -103,6 +107,20 @@ class ImageHandler:
              self.dtype = self.original_image_data.dtype
              return True
         return False
+
+    def _load_optical_flow(self, file_name):
+        try:
+            flow_data = read_flow(file_name)
+            if flow_data is not None:
+                # Convert flow to RGB for visualization
+                self.original_image_data = flow_to_color(flow_data)
+                self.height, self.width, _ = self.original_image_data.shape
+                self.dtype = self.original_image_data.dtype
+                self.color_format = "RGB (Flow)"
+            else:
+                raise ValueError("Failed to read flow file")
+        except Exception:
+             raise
 
     def _load_standard_image(self, file_name):
         try:
