@@ -898,13 +898,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                     return
             
             # If data is already RGB (legacy or handled external), just display it
-            elif data.ndim == 3 and data.shape[2] >= 3:
-                processed_data = data[:, :, :3].astype(np.uint8) if data.dtype != np.uint8 else data[:, :, :3]
-                h, w, _ = processed_data.shape
-                q_image = QImage(processed_data.tobytes(), w, h, 3 * w, QImage.Format.Format_RGB888)
-            else:
-                return  # Invalid state for flow mode
-        else:
+
             # Original logic for other colormaps
             # Determine mode: standard RGB or Colormapped (single channel)
             # If RGB and map is 'gray', show as RGB.
