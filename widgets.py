@@ -1623,7 +1623,10 @@ class ThumbnailPane(QDockWidget):
         """Populate thumbnail pane from persistent gallery"""
         # Don't populate if blocked (during selection-driven view changes)
         if hasattr(self, 'block_populate') and self.block_populate:
+            print("DEBUG: populate() blocked by block_populate flag")
             return
+        
+        print("DEBUG: populate() called - rebuilding thumbnails")
         
         # 1. Update gallery with images from all windows
         for widget in QApplication.topLevelWidgets():
@@ -1720,9 +1723,20 @@ class ThumbnailPane(QDockWidget):
 
     def _emit_selection_change(self):
         selected_files = [item.file_path for item in self.thumbnail_items if item.is_selected]
-        self.selection_changed.emit(selected_files)
+        print(f"DEBUG: _emit_selection_change() - emitting {len(selected_files)} files: {[os.path.basename(f) for f in selected_files]}")
         
-        # Update Select All checkbox state
+        if len(selected_files) == 0:
+            import traceback
+            print("DEBUG: Stack trace for 0-file selection:")
+            traceback.print_stack()
+        
+        self.selection_changed.emit(selected_files)
+        print(f"DEBUG: _emit_selection_change() - signal emitted, checking state after...")
+        selected_after = [item.file_path for item in self.thumbnail_items if item.is_selected]
+        print(f"DEBUG: After emit, {len(selected_after)} still selected")
+        
+        # Update Select All checkbox state (block signals to prevent loop)
+        self.select_all_cb.blockSignals(True)
         if not self.thumbnail_items:
             self.select_all_cb.setCheckState(Qt.CheckState.Unchecked)
         else:
@@ -1734,6 +1748,7 @@ class ThumbnailPane(QDockWidget):
                 self.select_all_cb.setCheckState(Qt.CheckState.Checked)
             else:
                 self.select_all_cb.setCheckState(Qt.CheckState.PartiallyChecked)
+        self.select_all_cb.blockSignals(False)
     
     def _on_select_all_changed(self, state):
         """Handle Select All checkbox changes"""
