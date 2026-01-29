@@ -1546,6 +1546,7 @@ class ImageViewer(QMainWindow):
             self.recent_files = settings.add_to_recent_files(self.recent_files, actual_file_path)
             self._update_recent_files_menu()
             self.image_label.set_overlay_text(actual_file_path)
+            self.image_label.file_path = actual_file_path # Essential for overlay system to identify target
                 
             # Save override to history if successful (and if it was a missing resolution file)
             # Logic: If we used override_settings, we should save it? 
