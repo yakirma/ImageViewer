@@ -66,7 +66,7 @@ class ImageViewer(QMainWindow):
         self.is_slider_pressed = False
         
         self.shared_state = SharedViewState()
-        self.shared_state.zoom_changed.connect(self._on_shared_zoom_changed)
+
         self.current_math_expression = None # Persist math across video frames
         self.recent_files = settings.load_recent_files()
         self.last_raw_settings = None
