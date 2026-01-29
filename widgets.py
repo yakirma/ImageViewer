@@ -962,15 +962,10 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                 if not processed_data.flags['C_CONTIGUOUS']:
                     processed_data = np.ascontiguousarray(processed_data)
 
-                if c_out == 4:
-                    # Use ARGB32 (Native) to avoid potential stride/rendering artifacts on some platforms
-                    # ARGB32 expects BGRA byte order
-                    processed_data = processed_data[..., [2, 1, 0, 3]].copy()
-                    fmt = QImage.Format.Format_ARGB32
-                else:
-                    fmt = QImage.Format.Format_RGB888
+                # Use RGBA8888 as native mapping for R,G,B,A data
+                fmt = QImage.Format.Format_RGB888 if c_out == 3 else QImage.Format.Format_RGBA8888
 
-                stride = c_out * w
+                stride = processed_data.strides[0]
                 
                 # Keep reference to data to prevent garbage collection!
                 self._qimage_bytes = processed_data.tobytes()
