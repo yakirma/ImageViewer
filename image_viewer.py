@@ -272,7 +272,7 @@ class ImageViewer(QMainWindow):
         # Channel Selector
         self.channel_combo = QComboBox(self)
         self.channel_combo.addItem("Default")
-        self.channel_combo.currentTextChanged.connect(self.update_image_display)
+        self.channel_combo.currentTextChanged.connect(lambda: self.update_image_display(reset_view=False))
         toolbar.addWidget(QLabel("  Channel:", self))
         toolbar.addWidget(self.channel_combo)
         
@@ -502,6 +502,14 @@ class ImageViewer(QMainWindow):
         # 5. Set Data to Label (as pristine base)
         # Pass both the display data (sliced_data) and the raw values (inspection_data)
         self.image_label.set_data(sliced_data, reset_view=reset_view, is_pristine=True, inspection_data=inspection_data)
+        
+        # Safeguard: If we are displaying RGB data, ensure colormap is gray 
+        # (otherwise it might extract channel 0 if colormap is stuck on something else and is_rgb logic fails)
+        if sliced_data.ndim == 3 and sliced_data.shape[2] in [3, 4] and self.colormap_combo.currentText() != "gray" and self.colormap_combo.currentText() != "flow":
+             self.colormap_combo.blockSignals(True)
+             self.colormap_combo.setCurrentText("gray")
+             self.colormap_combo.blockSignals(False)
+             self.image_label.set_colormap("gray")
         
         # 6. Apply Math Transform if exists
         if self.current_math_expression:
