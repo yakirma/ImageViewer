@@ -1501,18 +1501,23 @@ class ImageViewer(QMainWindow):
             # If override_settings is passed (from History, Guess, or Explorer Inheritance), use it.
             self.image_handler.load_image(actual_file_path, override_settings=override_settings)
 
-            self.info_action.setEnabled(self.image_handler.is_raw)
+            self.info_action.setEnabled(True) # Always enable info pane
             self.info_pane.set_raw_mode(self.image_handler.is_raw)
             self.math_transform_action.setEnabled(True)
             self.zoom_slider.setEnabled(True)
             self.histogram_action.setEnabled(True)
 
-            if self.image_handler.is_raw:
-                self.info_pane.update_info(self.image_handler.width, self.image_handler.height,
-                                           self.image_handler.dtype, self.image_handler.dtype_map,
-                                           file_size=file_size)
-            else:
-                self.info_pane.hide()
+            # Update Info Pane for ALL images
+            self.info_pane.update_info(self.image_handler.width, self.image_handler.height,
+                                       self.image_handler.dtype, self.image_handler.dtype_map,
+                                       file_size=file_size)
+            
+            # If not visible and not previously hidden by user preference interaction (handled elsewhere),
+            # we generally leave visibility as is or default to hidden if it's annoying?
+            # User request implies they want to see it. 
+            # But maybe we shouldn't force show it every time if they closed it.
+            # Existing logic was: explicitly hide if not raw.
+            # We will just NOT hide it. If it's open, it updates. If closed, it stays closed unless toggled.
             
             # Load Data (triggers render with set attributes)
             self.stacked_widget.setCurrentWidget(self.image_display_container)

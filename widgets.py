@@ -530,7 +530,15 @@ class InfoPane(QDockWidget):
 
 
     def set_raw_mode(self, is_raw):
-        self.setEnabled(is_raw)
+        # Allow viewing info even if not raw (read-only mode for parameters)
+        self.setEnabled(True) 
+        
+        # Enable/Disable editing widgets based on is_raw
+        self.dtype_combo.setEnabled(is_raw)
+        self.width_spinbox.setEnabled(is_raw)
+        self.height_spinbox.setEnabled(is_raw)
+        self.color_format_combo.setEnabled(is_raw)
+        self.reset_button.setEnabled(is_raw)
 
 
 class ZoomSettingsDialog(QDialog):
