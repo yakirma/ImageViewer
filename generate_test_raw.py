@@ -19,14 +19,14 @@ c2 = yv
 # Channel 3: Circle (Blue)
 c3 = np.sqrt((xv - 0.5)**2 + (yv - 0.5)**2)
 c3 = 1 - c3/np.max(c3)
-# Channel 4: Noise (Alpha/Data)
-c4 = np.random.rand(height, width)
+# Channel 4: Zero (Transparent)
+c4 = np.zeros((height, width))
 
 # Stack channels
 img = np.stack([c1, c2, c3, c4], axis=-1).astype(dtype)
 
 # Naming convention: _WxH_dtype.raw
-filename = f"test_{width}x{height}_float32.raw"
+filename = f"test_{width}x{height}_A0_float32.raw"
 
 # Save
 img.tofile(filename)

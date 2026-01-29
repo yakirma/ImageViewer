@@ -892,7 +892,7 @@ class ImageViewer(QMainWindow):
 
         # Disconnect all signals first to prevent multiple connections
         try:
-            self.zoom_slider.valueChanged.disconnect()
+
             self.image_label.zoom_factor_changed.disconnect()
             self.image_label.hover_moved.disconnect()
             self.image_label.view_changed.disconnect()
@@ -906,7 +906,7 @@ class ImageViewer(QMainWindow):
 
         # Connect signals for the active label
         self.active_label.zoom_factor_changed.connect(self._on_image_label_zoom_changed)
-        self.zoom_slider.valueChanged.connect(self._on_zoom_slider_changed)
+
         self.active_label.hover_moved.connect(self.update_status_bar)
         self.active_label.view_changed.connect(self.update_histogram_data)
         self.histogram_window.region_changed.connect(self.set_contrast_limits)
@@ -1067,8 +1067,7 @@ class ImageViewer(QMainWindow):
                 if saved_width > 0:
                     self.resizeDocks([dock], [saved_width], Qt.Orientation.Horizontal)
 
-    def _on_zoom_slider_changed(self, value):
-        if self.sender() is not self.zoom_slider: return
+
         if self.active_label:
             zoom_factor = 10 ** ((value / 1000.0) - 2.0)
             if abs(self.active_label._get_effective_scale_factor() - zoom_factor) > 1e-5:
@@ -1081,17 +1080,13 @@ class ImageViewer(QMainWindow):
              zoom = self.active_label._get_effective_scale_factor()
              if zoom > 0:
                  val = (np.log10(zoom) + 2.0) * 1000.0
-                 self.zoom_slider.blockSignals(True)
-                 self.zoom_slider.setValue(int(val))
-                 self.zoom_slider.blockSignals(False)
+
 
     def _on_image_label_zoom_changed(self, scale_factor):
         if self.sender() is not self.active_label: return
         if scale_factor > 0:
             slider_value = int((np.log10(scale_factor) + 2.0) * 1000.0)
-            self.zoom_slider.blockSignals(True)
-            self.zoom_slider.setValue(slider_value)
-            self.zoom_slider.blockSignals(False)
+
             
             self.zoom_status_label.setText(f"Zoom: {int(scale_factor * 100)}%")
 
@@ -1468,7 +1463,7 @@ class ImageViewer(QMainWindow):
                      self.info_action.setEnabled(True)
                      self.info_pane.set_raw_mode(True)
                      self.math_transform_action.setEnabled(True)
-                     self.zoom_slider.setEnabled(True)
+
                      self.histogram_action.setEnabled(True)
                      
                      self.stacked_widget.setCurrentWidget(self.image_display_container)
@@ -1512,7 +1507,7 @@ class ImageViewer(QMainWindow):
             self.info_action.setEnabled(True) # Always enable info pane
             self.info_pane.set_raw_mode(self.image_handler.is_raw)
             self.math_transform_action.setEnabled(True)
-            self.zoom_slider.setEnabled(True)
+
             self.histogram_action.setEnabled(True)
 
             # Update Info Pane for ALL images
@@ -1647,7 +1642,7 @@ class ImageViewer(QMainWindow):
             self.math_transform_action.setEnabled(False)
             self.info_action.setEnabled(False)
             self.info_pane.set_raw_mode(False)
-            self.zoom_slider.setEnabled(False)
+
             self.histogram_action.setEnabled(False)
 
     def save_view(self):
