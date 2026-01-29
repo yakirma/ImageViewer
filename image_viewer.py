@@ -104,6 +104,9 @@ class ImageViewer(QMainWindow):
         self._create_image_display()
         self._create_montage_view()
 
+        # Start on welcome screen
+        self.stacked_widget.setCurrentIndex(0)
+
 
 
         self._create_menus_and_toolbar()

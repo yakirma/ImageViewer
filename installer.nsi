@@ -59,6 +59,8 @@ Section "ImageViewer (required)"
   
   ; --- Register Application for "Open With" list ---
   WriteRegStr HKCR "Applications\ImageViewer.exe" "" ""
+  WriteRegStr HKCR "Applications\ImageViewer.exe" "FriendlyAppName" "Image Viewer"
+  WriteRegStr HKCR "Applications\ImageViewer.exe" "MultiSelectModel" "Player"
   WriteRegStr HKCR "Applications\ImageViewer.exe\shell\open\command" "" '"$INSTDIR\ImageViewer.exe" "%1"'
   
   ; Supported Types

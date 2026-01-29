@@ -14,8 +14,8 @@ class ImageViewerApp(QApplication):
             # Handle macOS FileOpen event (Open With...)
             file_path = event.file()
             if file_path:
-                # Delay to ensure main loop is running/window is ready
-                QTimer.singleShot(100, lambda: self.open_file_event(file_path))
+                # Open immediately without delay to avoid flashes
+                self.open_file_event(file_path)
             return True
         return super().event(event)
         
@@ -76,8 +76,16 @@ if __name__ == "__main__":
     # Note: On macOS "Open With", FileOpen event handles it.
     # Terminal args are handled here.
     if len(sys.argv) > 1:
-        file_path = sys.argv[1]
-        if not file_path.startswith("-"):
-             QTimer.singleShot(100, lambda: viewer.open_file(file_path))
+        file_paths = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+        if file_paths:
+            # Open first file in primary window
+            viewer.open_file(file_paths[0])
+            
+            # Open additional files in new windows
+            for additional_file in file_paths[1:]:
+                if os.path.exists(additional_file):
+                    new_viewer = ImageViewer(window_list=open_windows)
+                    new_viewer.show()
+                    new_viewer.open_file(additional_file)
 
     sys.exit(app.exec())
