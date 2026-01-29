@@ -682,8 +682,8 @@ class ImageViewer(QMainWindow):
             
         self.file_explorer_pane.set_supported_extensions(ext_filters)
 
-        self.overlay_alphas = {} # path -> alpha
-        self.overlay_cache = {}  # path -> QPixmap (resized to match current active view)
+        self.overlay_alphas = {} # (source_path, target_path) -> alpha
+        self.overlay_cache = {}  # (source_path, target_path) -> QPixmap (resized to match target view)
 
     def display_montage(self, file_paths):
         # Cache state of existing montage labels (for re-applying when refreshing montage)
@@ -709,11 +709,12 @@ class ImageViewer(QMainWindow):
         # Clear overlays for files not in the new selection
         if file_paths:
             file_paths_set = set(file_paths)
-            overlays_to_remove = [path for path in self.overlay_alphas.keys() if path not in file_paths_set]
-            for path in overlays_to_remove:
-                del self.overlay_alphas[path]
-                if path in self.overlay_cache:
-                    del self.overlay_cache[path]
+            overlays_to_remove = [(src, tgt) for src, tgt in self.overlay_alphas.keys() 
+                                  if src not in file_paths_set or tgt not in file_paths_set]
+            for pair in overlays_to_remove:
+                del self.overlay_alphas[pair]
+                if pair in self.overlay_cache:
+                    del self.overlay_cache[pair]
 
         if not file_paths:
             if self.current_file_path:
@@ -1345,19 +1346,21 @@ class ImageViewer(QMainWindow):
         self.current_file_path = file_path
         
         # Clear overlays for files other than the current one
-        # For NPZ files, only clear overlays that don't share the same base file
+        # For NPZ files, keep overlays that involve keys from the same base file
         overlays_to_remove = []
-        for path in self.overlay_alphas.keys():
-            # Extract base file path for comparison
-            base_path = path.rsplit('#', 1)[0] if '#' in path else path
+        for (src, tgt) in self.overlay_alphas.keys():
+            # Extract base file paths for comparison
+            src_base = src.rsplit('#', 1)[0] if '#' in src else src
+            tgt_base = tgt.rsplit('#', 1)[0] if '#' in tgt else tgt
             current_base = file_path.rsplit('#', 1)[0] if '#' in file_path else file_path
-            if base_path != current_base:
-                overlays_to_remove.append(path)
+            # Remove pairs where neither source nor target matches the current file
+            if src_base != current_base and tgt_base != current_base:
+                overlays_to_remove.append((src, tgt))
         
-        for path in overlays_to_remove:
-            del self.overlay_alphas[path]
-            if path in self.overlay_cache:
-                del self.overlay_cache[path]
+        for pair in overlays_to_remove:
+            del self.overlay_alphas[pair]
+            if pair in self.overlay_cache:
+                del self.overlay_cache[pair]
         
         # Update File Explorer Path (use actual file on disk)
         if self.file_explorer_pane.isVisible():
@@ -2093,12 +2096,30 @@ class ImageViewer(QMainWindow):
             self._update_overlays()
 
     def _on_overlay_changed(self, file_path, alpha):
-        self.overlay_alphas[file_path] = alpha
-        self._update_overlays()
+        # file_path is the SOURCE of the overlay
+        # Store it as a pair with the currently active label (the TARGET)
+        if self.active_label and hasattr(self.active_label, 'file_path'):
+            target_path = self.active_label.file_path
+            if target_path and target_path != file_path:  # Don't overlay onto self
+                self.overlay_alphas[(file_path, target_path)] = alpha
+                self._update_overlays()
+            elif alpha == 0:
+                # If setting to 0, remove any existing pair
+                pairs_to_remove = [(src, tgt) for (src, tgt) in self.overlay_alphas.keys() 
+                                   if src == file_path]
+                for pair in pairs_to_remove:
+                    if pair in self.overlay_alphas:
+                        del self.overlay_alphas[pair]
+                    if pair in self.overlay_cache:
+                        del self.overlay_cache[pair]
+                self._update_overlays()
 
     def _update_overlays(self):
         if not self.active_label or not self.active_label.current_pixmap:
             return
+
+        print(f"DEBUG _update_overlays: active_label.file_path = '{getattr(self.active_label, 'file_path', 'NO FILE_PATH')}'")
+        print(f"DEBUG _update_overlays: overlay_alphas = {list(self.overlay_alphas.keys())}")
 
         overlays_to_draw = []
         target_size = self.active_label.current_pixmap.size()
