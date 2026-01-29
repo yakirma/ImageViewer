@@ -202,8 +202,13 @@ class ImageHandler:
                 elif img.mode == "L":
                     # Explicit grayscale
                     self.original_image_data = np.array(img)
-                elif img.mode in ("RGB", "RGBA"):
-                    self.original_image_data = np.array(img.convert("RGB"))
+                elif img.mode == "RGBA":
+                    self.original_image_data = np.array(img)
+                elif img.mode == "RGB":
+                    self.original_image_data = np.array(img)
+                elif img.mode.startswith("RGB") or img.mode.startswith("RGBA"):
+                     # Handle other variants if Pillow returns them, ensuring we get standard array
+                     self.original_image_data = np.array(img)
                 else:
                     # Fallback for P (Palette), CMYK, YCbCr, etc. -> Convert to RGB
                     # Previous fallback to "L" caused GIFs/Paletted images to look like generic raw/grayscale
@@ -214,8 +219,12 @@ class ImageHandler:
                 
                 # Set color format to display in info pane
                 if self.original_image_data.ndim == 3:
-                    self.color_format = "RGB"
-                    print(f"DEBUG: Detected Standard Image RGB. Shape: {self.original_image_data.shape}")
+                    if self.original_image_data.shape[2] == 4:
+                        self.color_format = "RGBA"
+                        print(f"DEBUG: Detected Standard Image RGBA. Shape: {self.original_image_data.shape}")
+                    else:
+                        self.color_format = "RGB"
+                        print(f"DEBUG: Detected Standard Image RGB. Shape: {self.original_image_data.shape}")
                 else:
                     self.color_format = "Grayscale"
                     print(f"DEBUG: Detected Standard Image Grayscale. Shape: {self.original_image_data.shape}")
