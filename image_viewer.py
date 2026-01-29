@@ -1315,6 +1315,14 @@ class ImageViewer(QMainWindow):
         """Load an image or video file."""
         if file_path is None:
             return
+        
+        # Handle NPZ key paths (format: "file.npz#key_name")
+        npz_key_to_switch = None
+        if '#' in file_path:
+            actual_file, key_name = file_path.rsplit('#', 1)
+            npz_key_to_switch = key_name
+            file_path = actual_file
+        
         self.current_file_path = file_path
         
         # Clear overlays for files other than the current one
@@ -1561,6 +1569,20 @@ class ImageViewer(QMainWindow):
                  self.playback_timer.stop()
                  
             self.update_channel_options()
+            
+            # Switch to specific NPZ key if requested
+            if npz_key_to_switch and hasattr(self.image_handler, 'npz_keys'):
+                if npz_key_to_switch in self.image_handler.npz_keys:
+                    # Update channel combo to trigger key switch
+                    self.channel_combo.blockSignals(True)
+                    try:
+                        index = list(self.image_handler.npz_keys.keys()).index(npz_key_to_switch)
+                        self.channel_combo.setCurrentIndex(index)
+                    except ValueError:
+                        pass
+                    self.channel_combo.blockSignals(False)
+                    # Manually trigger the update
+                    self.update_image_display(reset_view=False)
 
             # Don't refresh thumbnail pane - gallery persists and this causes selection loss
             # self._refresh_thumbnail_pane()
