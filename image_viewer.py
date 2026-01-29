@@ -2160,9 +2160,54 @@ class ImageViewer(QMainWindow):
                         except:
                             pass
                     
-                    # 2. Fallback: Search Thumbnail Gallery (Recent History)
-                    if not source_pixmap and hasattr(self, 'thumbnail_pane') and source_path in self.thumbnail_pane.gallery_images:
-                         source_pixmap = self.thumbnail_pane.gallery_images[source_path]
+                    if not source_pixmap:
+                        # 2. Fallback: Load from disk (to ensure full resolution)
+                        # The gallery cache might contain downsampled proxies, so avoiding it for overlays is safer.
+                        try:
+                             temp_handler = ImageHandler()
+                             # Determine if raw to apply overrides? 
+                             # For overlays, we usually want the "default" view or we'd need to persist settings perfectly.
+                             # Let's try loading.
+                             # Check if we have history for this file to respect resolution
+                             override = None
+                             _, ext = os.path.splitext(source_path)
+                             if ext.lower() in temp_handler.raw_extensions:
+                                  basename = os.path.basename(source_path)
+                                  if not re.search(r"_(\d+)x(\d+)", basename):
+                                      history = settings.load_raw_history()
+                                      if source_path in history:
+                                          override = history[source_path]
+                             
+                             temp_handler.load_image(source_path, override_settings=override)
+                             
+                             if temp_handler.original_image_data is not None:
+                                  # Create pixmap. We need to apply colormap... this is complex.
+                                  # If we load raw data, it's just data. We need to render it to a pixmap.
+                                  # We can use a temporary label to reuse the rendering logic?
+                                  # Or just simple gray/rgb conversion?
+                                  # Given the user wants "original image", we should probably apply default rendering.
+                                  
+                                  # Re-using ZoomableDraggableLabel logic is best to get consistent "image"
+                                  # But that requires a widget.
+                                  # Let's simple-render for now:
+                                  data = temp_handler.original_image_data
+                                  if data.ndim == 2:
+                                      h, w = data.shape
+                                      # Normalize to uint8
+                                      img_8bit = ((data - data.min()) / (data.max() - data.min()) * 255).astype(np.uint8)
+                                      qimg = QImage(img_8bit.data, w, h, w, QImage.Format.Format_Grayscale8)
+                                      source_pixmap = QPixmap.fromImage(qimg)
+                                  elif data.ndim == 3:
+                                      if data.shape[2] == 3:
+                                          h, w, _ = data.shape
+                                          qimg = QImage(data.data, w, h, 3*w, QImage.Format.Format_RGB888)
+                                          source_pixmap = QPixmap.fromImage(qimg)
+                                      elif data.shape[2] == 4:
+                                          h, w, _ = data.shape
+                                          qimg = QImage(data.data, w, h, 4*w, QImage.Format.Format_RGBA8888)
+                                          source_pixmap = QPixmap.fromImage(qimg)
+                        except:
+                             pass
                     
                     if source_pixmap:
                         scaled_pixmap = source_pixmap.scaled(target_size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
