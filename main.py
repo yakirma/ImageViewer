@@ -1,7 +1,9 @@
 import sys
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QIcon
-from PyQt6.QtCore import Qt, QTimer, QEvent
+import os
+import platform
+from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QFileDialog, QMessageBox, QSplitter
+from PyQt6.QtCore import Qt, QTimer, QEvent, QSize, pyqtSignal, QPoint
+from PyQt6.QtGui import QAction, QIcon, QKeySequence, QColor, QPalette
 from image_viewer import ImageViewer
 
 # Define Custom Application Class at module level
@@ -55,4 +57,4 @@ if __name__ == "__main__":
         if not file_path.startswith("-"):
              QTimer.singleShot(100, lambda: viewer.open_file(file_path))
 
-    sys.exit(app.exec())    
+    sys.exit(app.exec())

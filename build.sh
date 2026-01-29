@@ -44,7 +44,7 @@ if [ "$OS_TYPE" == "Mac" ]; then
     fi
 
     echo "Copying app bundle..."
-    cp -r "$APP_PATH" "$TMP_DIR/"
+    cp -a "$APP_PATH" "$TMP_DIR/"
     
     echo "Creating /Applications link..."
     ln -s /Applications "$TMP_DIR/Applications"

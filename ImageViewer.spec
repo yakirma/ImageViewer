@@ -10,7 +10,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['Qt6Location', 'Qt6Positioning', 'qdarwinpermissionplugin'],
+    excludes=['Qt6Location', 'Qt6Positioning', 'qdarwinpermissionplugin', 'PyQt6.QtLocation', 'PyQt6.QtPositioning'],
     noarchive=False,
     optimize=0,
 )
@@ -54,8 +54,6 @@ app = BUNDLE(
         'CFBundleShortVersionString': '1.0.0',
         'CFBundleVersion': '1.0.0',
         'NSHighResolutionCapable': 'True',
-        'NSLocationUsageDescription': 'Required for image metadata analysis.',
-        'NSLocationWhenInUseUsageDescription': 'Required for image metadata analysis.',
         'CFBundleDocumentTypes': [
             {
                 'CFBundleTypeName': 'Image File',

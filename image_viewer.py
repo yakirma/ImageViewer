@@ -423,10 +423,7 @@ class ImageViewer(QMainWindow):
             return
         
         # 1. Get the base data (original or current video frame)
-        if self.image_handler.is_video:
-            data = self.image_handler.get_current_frame()
-        else:
-            data = self.image_handler.original_image_data
+        data = self.image_handler.original_image_data
         
         if data is None:
             return
@@ -1834,34 +1831,18 @@ class ImageViewer(QMainWindow):
                 item.widget().deleteLater()
         self.thumbnail_pane.thumbnail_items.clear()
         
-        # Add thumbnails ONLY from THIS window (not all windows)
-        from widgets import ThumbnailItem
-        
-        # Check if in montage mode
         if self.stacked_widget.currentWidget() == self.montage_widget and self.montage_labels:
-            for label in self.montage_labels:
-                if hasattr(label, 'file_path') and label.current_pixmap:
-                    item = ThumbnailItem(label.file_path, label.current_pixmap)
-                    item.clicked.connect(lambda event, i=item: self.thumbnail_pane._on_thumbnail_clicked(i, event))
-                    item.overlay_changed.connect(lambda alpha, path=label.file_path: self.thumbnail_pane.overlay_changed.emit(path, alpha))
-                    item.set_selected(True)  # All visible montage images are "selected"
-                    self.thumbnail_pane.thumbnail_items.append(item)
-                    self.thumbnail_pane.thumbnail_layout.addWidget(item)
-        # Single view mode
-        elif self.image_label.current_pixmap and self.current_file_path:
-            item = ThumbnailItem(self.current_file_path, self.image_label.current_pixmap)
-            item.clicked.connect(lambda event, i=item: self.thumbnail_pane._on_thumbnail_clicked(i, event))
-            item.overlay_changed.connect(lambda alpha, path=self.current_file_path: self.thumbnail_pane.overlay_changed.emit(path, self.current_file_path))
-            item.set_selected(True)
-            self.thumbnail_pane.thumbnail_items.append(item)
-            self.thumbnail_pane.thumbnail_layout.addWidget(item)
+             # If filter mode active (implicit), might need special handling, but populate() is safest for "Showing what is open"
+             pass
         
-        # Force immediate layout and widget updates
-        self.thumbnail_pane.thumbnail_layout.activate()
-        for item in self.thumbnail_pane.thumbnail_items:
-            item.show()
-            item.update()
-        self.thumbnail_pane.update()
+        # Use the unified populate method which now correctly scans all windows
+        self.thumbnail_pane.populate(self.window_list)
+        
+        # Afterwards, ensure current window's item is selected if single view
+        if self.current_file_path:
+             for item in self.thumbnail_pane.thumbnail_items:
+                 if item.file_path == self.current_file_path:
+                     item.set_selected(True)
         
     def _update_thumbnail_selection_states(self):
         """Update selection states of existing thumbnails based on current montage"""

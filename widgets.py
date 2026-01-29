@@ -1590,12 +1590,21 @@ class ThumbnailPane(QDockWidget):
             # Pass all other keys to parent (ImageViewer) for global shortcuts
             super().keyPressEvent(event)
 
-    def populate(self, windows):
+    def populate(self, windows=None):
+        # Ignore passed windows list, get fresh list from QApplication
+        windows = []
+        for widget in QApplication.topLevelWidgets():
+             # We can't import ImageViewer here due to circular import, check by class name
+             if widget.__class__.__name__ == 'ImageViewer' and widget.isVisible():
+                 windows.append(widget)
+
         for item in self.thumbnail_items:
             self.thumbnail_layout.removeWidget(item)
             item.deleteLater()
         self.thumbnail_items.clear()
 
+        # Sort windows by title or ID to have consistent order? 
+        # For now, simplistic iteration.
         for window in windows:
             if window.image_label.current_pixmap and window.current_file_path:
                 pixmap = window.image_label.current_pixmap
