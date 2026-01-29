@@ -515,6 +515,14 @@ class InfoPane(QDockWidget):
         else:
              self.dtype_combo.setCurrentText(str(dtype) if not isinstance(dtype, type) else np.dtype(dtype).name)
              
+        # Update Color Format Combo
+        format_idx = self.color_format_combo.findText(color_format)
+        if format_idx != -1:
+            self.color_format_combo.setCurrentIndex(format_idx)
+        else:
+            self.color_format_combo.addItem(color_format)
+            self.color_format_combo.setCurrentText(color_format)
+             
         self.width_spinbox.blockSignals(False)
         self.height_spinbox.blockSignals(False)
         self.dtype_combo.blockSignals(False)
