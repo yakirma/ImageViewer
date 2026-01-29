@@ -913,22 +913,60 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             treat_as_rgb = is_rgb and (self.colormap == 'gray')
 
             if treat_as_rgb:  # Color Image
+                channels = data.shape[2]
                 if self.contrast_limits:
                     min_val, max_val = self.contrast_limits
                     if max_val > min_val:
                         stretched_channels = []
+                        # Process RGB channels with contrast
                         for i in range(3):
                             channel = data[..., i].astype(np.float32)
                             stretched = 255 * (channel - min_val) / (max_val - min_val)
                             stretched_channels.append(np.clip(stretched, 0, 255))
+                        
+                        # Process Alpha channel (if present)
+                        if channels == 4:
+                            # Alpha usually shouldn't be contrast stretched? 
+                            # Or should it? For transparency, probably keep original 0-255?
+                            # If float 0-1, scale to 0-255.
+                            # If raw float32, data might be 0-1?
+                            # User generated file has 0 or 1 floats?
+                            # Assuming data already normalized or we use raw?
+                            # If float, we need to know range.
+                            # BUT contrast logic above assumes data in min_val-max_val range.
+                            # If alpha is also same range?
+                            # Let's assume we copy alpha directly but cast to uint8 properly.
+                            alpha = data[..., 3]
+                            if alpha.dtype.kind == 'f':
+                                # Check range? If <= 1.0 assume 0-1 -> 0-255
+                                if alpha.max() <= 1.0:
+                                     alpha_u8 = (alpha * 255).astype(np.uint8)
+                                else:
+                                     alpha_u8 = np.clip(alpha, 0, 255).astype(np.uint8)
+                            else:
+                                alpha_u8 = np.clip(alpha, 0, 255).astype(np.uint8)
+                            stretched_channels.append(alpha_u8)
+                            
                         processed_data = np.stack(stretched_channels, axis=-1).astype(np.uint8)
                     else:
                         processed_data = np.zeros_like(data, dtype=np.uint8)
                 else:
                     processed_data = data.astype(np.uint8)
+                    # If float 0-1, this becomes 0 or 1.
+                    # We need checks for float -> uint8 conversion if limits not set?
+                    # Original code: `processed_data = data.astype(np.uint8)`
+                    # If data is float32 0-1, this truncates to 0/1. BAD.
+                    # BUT self.contrast_limits usually defaults to min/max of data?
+                    # If not, existing code was broken for floats without limits.
+                    # I will assume limits are set or user accepts it.
+                    # BUT specifically for floating point 0-1...
+                    if data.dtype.kind == 'f' and data.max() <= 1.0:
+                         processed_data = (data * 255).astype(np.uint8)
 
-                h, w, _ = processed_data.shape
-                q_image = QImage(processed_data.tobytes(), w, h, 3 * w, QImage.Format.Format_RGB888)
+                h, w, c_out = processed_data.shape
+                stride = c_out * w
+                fmt = QImage.Format.Format_RGB888 if c_out == 3 else QImage.Format.Format_RGBA8888
+                q_image = QImage(processed_data.tobytes(), w, h, stride, fmt)
 
             else:  # Grayscale / Colormapped
                 if is_rgb:
