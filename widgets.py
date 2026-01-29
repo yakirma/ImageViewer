@@ -897,8 +897,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                     print(f"Error in flow_to_color: {e}")
                     return
             
-            # If data is already RGB (legacy or handled external), just display it
-
+        else:
             # Original logic for other colormaps
             # Determine mode: standard RGB or Colormapped (single channel)
             # If RGB and map is 'gray', show as RGB.
