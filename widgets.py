@@ -1636,7 +1636,25 @@ class ThumbnailPane(QDockWidget):
                                 self.gallery_images[label.file_path] = label.current_pixmap
                     elif widget.image_label.current_pixmap and widget.current_file_path:
                         # Single image mode: add to gallery
-                        self.gallery_images[widget.current_file_path] = widget.image_label.current_pixmap
+                        # Check if this is an NPZ file with multiple keys
+                        if hasattr(widget.image_handler, 'npz_keys') and len(widget.image_handler.npz_keys) > 1:
+                            # Add thumbnails for each valid NPZ key
+                            for key in widget.image_handler.npz_keys.keys():
+                                if widget.image_handler.npz_keys[key]:  # Only valid keys
+                                    # Create a unique identifier for this NPZ key
+                                    npz_key_path = f"{widget.current_file_path}#{key}"
+                                    # Get or generate pixmap for this key
+                                    if key == widget.image_handler.current_npz_key:
+                                        # Current key - use existing pixmap
+                                        self.gallery_images[npz_key_path] = widget.image_label.current_pixmap
+                                    else:
+                                        # Other keys - generate thumbnail
+                                        pixmap = self._generate_npz_key_pixmap(widget.image_handler.npz_data[key])
+                                        if pixmap:
+                                            self.gallery_images[npz_key_path] = pixmap
+                        else:
+                            # Regular file
+                            self.gallery_images[widget.current_file_path] = widget.image_label.current_pixmap
         
         # 2. Capture current selection
         selected_paths = {item.file_path for item in self.thumbnail_items if item.is_selected}
@@ -1668,6 +1686,55 @@ class ThumbnailPane(QDockWidget):
              if self.focused_index == -1:
                  self.focused_index = 0
              self._set_focused_item(self.focused_index)
+    
+    def _generate_npz_key_pixmap(self, array_data):
+        """Generate a QPixmap for an NPZ key's array data."""
+        try:
+            import numpy as np
+            from PyQt6.QtGui import QImage, QPixmap
+            
+            data = array_data.copy()
+            
+            # Normalize to 0-255 range
+            if data.dtype != np.uint8:
+                data_min = data.min()
+                data_max = data.max()
+                if data_max > data_min:
+                    data = ((data - data_min) / (data_max - data_min) * 255).astype(np.uint8)
+                else:
+                    data = np.zeros_like(data, dtype=np.uint8)
+            
+            # Convert to QImage
+            if data.ndim == 2:
+                # Grayscale
+                height, width = data.shape
+                bytes_per_line = width
+                qimage = QImage(data.data, width, height, bytes_per_line, QImage.Format.Format_Grayscale8)
+            elif data.ndim == 3:
+                height, width, channels = data.shape
+                if channels == 3:
+                    # RGB
+                    bytes_per_line = width * 3
+                    qimage = QImage(data.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
+                elif channels == 4:
+                    # RGBA
+                    bytes_per_line = width * 4
+                    qimage = QImage(data.data, width, height, bytes_per_line, QImage.Format.Format_RGBA8888)
+                elif channels == 2:
+                    # RG - convert to RGB by adding zeros for B
+                    rgb_data = np.zeros((height, width, 3), dtype=np.uint8)
+                    rgb_data[:, :, :2] = data
+                    bytes_per_line = width * 3
+                    qimage = QImage(rgb_data.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
+                else:
+                    return None
+            else:
+                return None
+            
+            return QPixmap.fromImage(qimage.copy())
+        except Exception as e:
+            print(f"Error generating NPZ key pixmap: {e}")
+            return None
         
     # (Resuming actual content for replacement)
     
