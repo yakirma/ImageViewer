@@ -195,18 +195,7 @@ class ImageViewer(QMainWindow):
 
     def _create_image_display(self):
         self.image_label = ZoomableDraggableLabel()
-        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
-        self.zoom_slider.setRange(0, 5000)
-        self.zoom_slider.setValue(2000)
-        self.zoom_slider.setTickInterval(1000)
-        self.zoom_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.image_display_container = QWidget()
-        policy = QSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Expanding)
-        policy.setHorizontalStretch(100)
-        self.image_display_container.setSizePolicy(policy)
-        image_display_layout = QVBoxLayout(self.image_display_container)
-        image_display_layout.addWidget(self.image_label)
-        image_display_layout.addWidget(self.zoom_slider)
         self.image_label.setSizePolicy(policy) # Also on the label itself
 
 
