@@ -209,6 +209,12 @@ class ImageHandler:
 
                 self.width, self.height = img.width, img.height
                 self.dtype = self.original_image_data.dtype
+                
+                # Set color format to display in info pane
+                if self.original_image_data.ndim == 3:
+                    self.color_format = "RGB"
+                else:
+                    self.color_format = "Grayscale"
         except Exception:
              raise
 

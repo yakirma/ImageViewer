@@ -476,7 +476,7 @@ class InfoPane(QDockWidget):
         self.blockSignals(False)
         self._emit_settings()
 
-    def update_info(self, width, height, dtype, dtype_map, file_size=0):
+    def update_info(self, width, height, dtype, dtype_map, file_size=0, color_format="Grayscale"):
         self.file_size = file_size
         
         # Store defaults
@@ -484,16 +484,8 @@ class InfoPane(QDockWidget):
             'width': width,
             'height': height,
             'dtype': str(dtype) if not isinstance(dtype, type) else np.dtype(dtype).name,
-            'color_format': self.color_format_combo.currentText() # Preserve current format or reset to Gray? 
-            # Usually update_info is called with detected params. 
-            # If detected was just "Raw", format is default Grayscale, so getting currentText is risky if user changed it?
-            # Ideally update_info should take format. But image_handler only guesses Grayscale usually.
-            # Let's assume Grayscale default for new loads.
+            'color_format': color_format
         }
-        # If we want to allow override_settings loopback, we might need to handle format better.
-        # For now, default to 'Grayscale' in defaults if not passed, BUT wait,
-        # update_info is called from open_file. open_file doesn't pass format.
-        self.defaults['color_format'] = "Grayscale"
 
         self.width_spinbox.blockSignals(True)
         self.height_spinbox.blockSignals(True)
