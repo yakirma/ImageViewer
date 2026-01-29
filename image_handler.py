@@ -272,52 +272,53 @@ class ImageHandler:
 
         # raw file reading
         raw_data = np.fromfile(file_name, dtype=container)
-        
-        # Determine expected size based on format
-        expected_pixels = width * height
         total_elements = raw_data.size
+        expected_pixels = width * height
         
         channels = 1
         if total_elements > expected_pixels:
-             # Check if exact multiple
              if total_elements % expected_pixels == 0:
-                 channels = total_elements // expected_pixels
+                 channels = int(total_elements // expected_pixels)
         
+        print(f"DEBUG: w={width} h={height} size={total_elements} channels={channels}")
+
         if channels > 1:
-             print(f"DEBUG: Multi-channel path. Channels={channels}")
-             # Try to reshape into (H, W, C)
              try:
+                 # Reshape to (H, W, C)
                  raw_data = raw_data.reshape((height, width, channels))
                  
-                 # Set color format based on channel count
-                 if channels == 3:
-                     self.color_format = "RGB"
-                 elif channels == 4:
-                     self.color_format = "RGBA"
-                 elif channels == 2:
-                     # 2 Channel raw could be Flow or just 2-channel?
-                     pass 
-                 else:
-                     # Multi-channel
-                     pass
-             except ValueError as e:
-                 print(f"DEBUG: Multi-channel reshape failed: {e}")
-                 # Reshape failed? Fallback?
-                 pass
-        else:
-             print(f"DEBUG: Single-channel path. Channels={channels}")
-             # Single channel reshape
-             try:
-                 raw_data = raw_data.reshape((height, width))
-             except ValueError:
-                 # If reshape fails, it might be that explicit dimensions are wrong for file size?
-                 # But we proceed with flattened or whatever we have?
-                 # Legacy behavior was to just set original_image_data to raw_data 
-                 # (which is 1D array if fromfile used without reshape? Wait, ImageHandler legacy was...)
-                 # Actually legacy didn't reshape in fromfile line?
-                 # Let's check original lines.
-                 pass
+                 # Set Color Format
+                 if channels == 3: self.color_format = "RGB"
+                 elif channels == 4: self.color_format = "RGBA"
+                 elif channels == 2: pass # Flow or 2-channel
                  
+                 self.original_image_data = raw_data
+                 return # Success
+             except ValueError as e:
+                 print(f"DEBUG: Reshape (H,W,C) failed: {e}")
+                 # Fallthrough to single channel attempt? 
+                 # If explicit channels failed, maybe single channel interpretation is valid?
+                 # But likely not. 
+                 pass
+
+        # Single Channel / Fallback Path
+        try:
+             # This corresponds to 'else' block
+             if channels <= 1: # Only try this if we think it's 1 channel
+                 raw_data = raw_data.reshape((height, width))
+             else:
+                 # IF we calculated multiple channels but reshape failed (and we fell through),
+                 # we shouldn't try reshaping to (H,W) because size won't match!
+                 # Unless we want to keep it flat?
+                 # Raising error here is appropriate if we can't handle it.
+                 raise ValueError(f"Cannot reshape {total_elements} into ({height}, {width}, {channels})")
+
+        except ValueError:
+             # If exact reshape fails, keep flat? 
+             # Or raise, to match previous behavior that caused popup?
+             # Raising allows the user to see the error.
+             raise
+             
         self.original_image_data = raw_data
         
         # Format Handling for YUV etc (logic continues below...)
