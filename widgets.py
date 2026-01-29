@@ -1617,14 +1617,8 @@ class ThumbnailPane(QDockWidget):
             super().keyPressEvent(event)
 
     def populate(self, windows=None):
-        # Ignore passed windows list, get fresh list from QApplication
-        windows = []
-        for widget in QApplication.topLevelWidgets():
-             if widget.__class__.__name__ == 'ImageViewer':
-                 windows.append(widget)
-
-        # 1. Capture current accumulated selection (file paths)
-        # We use a set of paths because widget instances will be destroyed
+        """Populate thumbnail pane with unique images from all open windows"""
+        # 1. Capture current selection
         selected_paths = {item.file_path for item in self.thumbnail_items if item.is_selected}
         
         # 2. Clear all existing items
@@ -1633,33 +1627,47 @@ class ThumbnailPane(QDockWidget):
             item.deleteLater()
         self.thumbnail_items.clear()
 
-        # 3. Re-populate from current windows
-        for window in windows:
-            if window.image_label.current_pixmap and window.current_file_path:
-                pixmap = window.image_label.current_pixmap
-                file_path = window.current_file_path
+        # 3. Collect unique images from all windows
+        seen_paths = set()
+        image_data = []  # (file_path, pixmap)
+        
+        for widget in QApplication.topLevelWidgets():
+            if widget.__class__.__name__ == 'ImageViewer':
+                # Check if widget is in montage mode
+                if hasattr(widget, 'stacked_widget') and hasattr(widget, 'montage_widget'):
+                    if widget.stacked_widget.currentWidget() == widget.montage_widget and widget.montage_labels:
+                        # Montage mode: collect all montage images
+                        for label in widget.montage_labels:
+                            if hasattr(label, 'file_path') and label.current_pixmap:
+                                if label.file_path not in seen_paths:
+                                    seen_paths.add(label.file_path)
+                                    image_data.append((label.file_path, label.current_pixmap))
+                    elif widget.image_label.current_pixmap and widget.current_file_path:
+                        # Single image mode
+                        if widget.current_file_path not in seen_paths:
+                            seen_paths.add(widget.current_file_path)
+                            image_data.append((widget.current_file_path, widget.image_label.current_pixmap))
+        
+        # 4. Create thumbnail items
+        from widgets import ThumbnailItem
+        for file_path, pixmap in image_data:
+            item = ThumbnailItem(file_path, pixmap)
+            item.clicked.connect(lambda event, i=item: self._on_thumbnail_clicked(i, event))
+            item.overlay_changed.connect(lambda alpha, p=file_path: self.overlay_changed.emit(p, alpha))
+            
+            # Restore selection
+            if file_path in selected_paths:
+                item.set_selected(True)
                 
-                # Create new item
-                item = ThumbnailItem(file_path, pixmap)
-                item.clicked.connect(lambda event, i=item: self._on_thumbnail_clicked(i, event))
-                item.overlay_changed.connect(lambda alpha, p=file_path: self.overlay_changed.emit(p, alpha))
-                
-                # Restore selection state
-                if file_path in selected_paths:
-                    item.set_selected(True)
-                    
-                self.thumbnail_items.append(item)
-                self.thumbnail_layout.addWidget(item)
+            self.thumbnail_items.append(item)
+            self.thumbnail_layout.addWidget(item)
 
-        # 4. Handle focus
+        # 5. Handle focus
         if self.thumbnail_items:
-             # If we had a focused index, try to keep it, otherwise 0
              if self.focused_index >= len(self.thumbnail_items):
                  self.focused_index = len(self.thumbnail_items) - 1
-             
              if self.focused_index == -1:
                  self.focused_index = 0
-                 
              self._set_focused_item(self.focused_index)
         
     # (Resuming actual content for replacement)
