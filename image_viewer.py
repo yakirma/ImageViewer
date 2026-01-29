@@ -859,6 +859,11 @@ class ImageViewer(QMainWindow):
         self.colormap_combo.blockSignals(False)
 
         self.update_histogram_data(new_image=reset_histogram)
+        
+        # Update 3D point cloud viewer if it's open
+        if hasattr(self, 'point_cloud_viewer') and self.point_cloud_viewer and self.point_cloud_viewer.isVisible():
+            if self.active_label and self.active_label.pristine_data is not None:
+                self.point_cloud_viewer.set_data(self.active_label.pristine_data)
 
     def toggle_info_pane(self):
         visible = not self.info_pane.isVisible()
