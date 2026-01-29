@@ -1020,34 +1020,45 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         # If image is too large, downsample it for display
         MAX_DIM = 2048
         if processed_data is None:
-            # Should not happen given initialization, but defensive check
             return
 
         h, w = processed_data.shape[:2]
+        c_out = processed_data.shape[2] if processed_data.ndim == 3 else 1
         
         self._proxy_scale = 1.0
         if max(h, w) > MAX_DIM:
-            # simple integer downsampling for speed and sharpness
             import math
             step = max(1, int(math.ceil(max(h, w) / MAX_DIM)))
             if step > 1:
                 self._proxy_scale = 1.0 / step
-                # Downsample
                 if processed_data.ndim == 3:
                      processed_data = processed_data[::step, ::step, :]
                 else:
                      processed_data = processed_data[::step, ::step]
 
         h, w = processed_data.shape[:2]
-        # Ensure contiguous
         if not processed_data.flags['C_CONTIGUOUS']:
             processed_data = np.ascontiguousarray(processed_data)
             
-        q_image = QImage(processed_data.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+        # Select correct QImage Format and Stride
+        if processed_data.ndim == 3:
+            if c_out == 4:
+                fmt = QImage.Format.Format_RGBA8888
+                stride = w * 4
+            else:
+                fmt = QImage.Format.Format_RGB888
+                stride = w * 3
+        else:
+            fmt = QImage.Format.Format_Grayscale8
+            stride = w
+
+        # Keep reference to bytes to prevent crash
+        self._last_processed_bytes = processed_data.tobytes()
+        q_image = QImage(self._last_processed_bytes, w, h, stride, fmt).copy()
         pixmap = QPixmap.fromImage(q_image)
         
         if is_new_image:
-            self.processed_data = None # We don't need to store full res processed data in RAM for display anymore
+            self.processed_data = None 
             self.current_pixmap = pixmap
             self.fit_to_view()
         else:
@@ -1057,7 +1068,11 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self.current_pixmap = pixmap
         # Generate Thumbnail for Montage Optimization (if large)
         if pixmap and max(pixmap.width(), pixmap.height()) > 800:
-             self.thumbnail_pixmap = pixmap.scaled(800, 800, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+             # Use FastTransformation for small images to keep them sharp, Smooth for large ones
+            transform_mode = Qt.TransformationMode.SmoothTransformation
+            if pixmap.width() < 800 or pixmap.height() < 800:
+                transform_mode = Qt.TransformationMode.FastTransformation
+            self.thumbnail_pixmap = pixmap.scaled(800, 800, Qt.AspectRatioMode.KeepAspectRatio, transform_mode)
         else:
              self.thumbnail_pixmap = None
         self.update()
@@ -1087,29 +1102,30 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             self.overlay_label.move(x, y)
             self.overlay_label.raise_()
 
+    def get_original_size(self):
+        if self.current_pixmap:
+            if self.original_data is not None:
+                h, w = self.original_data.shape[:2]
+            else:
+                # Infer from pixmap and proxy
+                pix_size = self.current_pixmap.size()
+                w = pix_size.width() / self._proxy_scale
+                h = pix_size.height() / self._proxy_scale
+            return QSize(int(w), int(h))
+        return None
+
     def update_fit_scale(self):
         if self.current_pixmap and self.size().width() > 0 and self.size().height() > 0:
             label_size = self.size()
             
-            # Fit calculation needs to account for proxy scaling
-            # effective_image_w = pixmap_w / proxy_scale
-            # But simpler: fit scale is how much we scale the ORIGINAL to fit window.
-            # pixmap is (Original * proxy_scale).
-            
-            # Let's rely on original dimensions if available, or infer from pixmap/proxy
-            if self.original_data is not None:
-                h, w = self.original_data.shape[:2]
-            else:
-                # Infer
-                pix_size = self.current_pixmap.size()
-                w = pix_size.width() / self._proxy_scale
-                h = pix_size.height() / self._proxy_scale
+            orig_size = self.get_original_size()
+            if not orig_size: return
+            w, h = orig_size.width(), orig_size.height()
             
             if w == 0 or h == 0: return
 
             scale_w = label_size.width() / w
             scale_h = label_size.height() / h
-
             self._fit_scale = min(scale_w, scale_h)
 
             if self.shared_state:
@@ -1404,6 +1420,9 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         else: # scale == 1.0 or not use_smooth for zoom out
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.zoom_out_interp == Qt.TransformationMode.SmoothTransformation and use_smooth)
 
+        # Ensure Antialiasing is OFF for pixel-sharp rendering
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+
         # Draw Image (Thumbnail Optimized)
         drawn = False
         if self.thumbnail_pixmap and scale < 0.5: # Only use thumb if significantly zoomed out
@@ -1425,11 +1444,46 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
 
         # Draw Overlays (in Original Image Space)
         if self.overlays:
+            painter.save()
+            # If the label is using a proxy, the painter coordinate system 
+            # is currently aligned to PIXMAP pixels (scaled by draw_scale).
+            # Overlays are now scaled to match the ORIGINAL resolution for sharpness.
+            # So we must scale the painter by _proxy_scale to draw at original res.
+            if self._proxy_scale > 0:
+                painter.scale(self._proxy_scale, self._proxy_scale)
+            
+            # Get target dimensions (Original image space)
+            orig_size = self.get_original_size()
+            
             for overlay_pixmap, opacity in self.overlays:
                 if overlay_pixmap and not overlay_pixmap.isNull():
+                    painter.save()
                     painter.setOpacity(opacity)
+                    
+                    # Calculate effective scale of this overlay relative to screen pixels
+                    # draw_scale is ScreenPixels / OriginalImagePixels
+                    # overlay_rel_scale is OriginalImagePixels / OverlayPixels
+                    overlay_rel_scale_w = orig_size.width() / overlay_pixmap.width() if orig_size and overlay_pixmap.width() > 0 else 1.0
+                    overlay_rel_scale_h = orig_size.height() / overlay_pixmap.height() if orig_size and overlay_pixmap.height() > 0 else 1.0
+                    
+                    # Use average or aspect-ratio aware? Usually they match aspect ratio.
+                    overlay_rel_scale = overlay_rel_scale_w 
+                    effective_overlay_scale = draw_scale * overlay_rel_scale
+                    
+                    # Ensure Sharp Rendering for Each Overlay
+                    # If effective scale > 1.05 (upscaling on screen), use FastTransformation (Nearest Neighbor)
+                    if effective_overlay_scale > 1.05:
+                        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.zoom_in_interp == Qt.TransformationMode.SmoothTransformation)
+                    elif effective_overlay_scale < 0.95:
+                        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.zoom_out_interp == Qt.TransformationMode.SmoothTransformation)
+                    
+                    # Instead of drawPixmap(target_rect), we scale the painter.
+                    # This ensures Qt samples from the full-res source directly into the screen transform.
+                    painter.scale(overlay_rel_scale_w, overlay_rel_scale_h)
                     painter.drawPixmap(0, 0, overlay_pixmap)
+                    painter.restore()
             painter.setOpacity(1.0)
+            painter.restore()
 
         painter.restore()
         
@@ -1518,8 +1572,14 @@ class ThumbnailItem(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5) # Reduce margins
         self.image_label = QLabel()
+        # Use FastTransformation (Nearest Neighbor) for upscaling small images to keep them sharp,
+        # and SmoothTransformation for downscaling large images to avoid aliasing.
+        transform_mode = Qt.TransformationMode.SmoothTransformation
+        if pixmap.width() < 128 or pixmap.height() < 128:
+            transform_mode = Qt.TransformationMode.FastTransformation
+            
         self.image_label.setPixmap(
-            pixmap.scaled(128, 128, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            pixmap.scaled(128, 128, Qt.AspectRatioMode.KeepAspectRatio, transform_mode))
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.filename_label = QLabel(os.path.basename(file_path))
         self.filename_label.setAlignment(Qt.AlignmentFlag.AlignCenter)

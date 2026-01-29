@@ -746,23 +746,22 @@ class ImageViewer(QMainWindow):
                 actual_file_path, npz_key_to_load = file_path.rsplit('#', 1)
             
             temp_handler = ImageHandler()
+            basename = os.path.basename(actual_file_path)
             
-            # Smart Override: Only apply raw settings if the file itself is raw
-            # This prevents trying to read a PNG using raw dimensions/settings
+            # [FIX] Clear override_settings for non-raw files to prevent metadata leakage
             current_override = override_settings
-            if current_override:
-                _, ext = os.path.splitext(actual_file_path)
-                if ext.lower() not in temp_handler.raw_extensions:
+            
+            _, ext = os.path.splitext(actual_file_path)
+            ext_lower = ext.lower()
+            
+            if current_override and ext_lower not in temp_handler.raw_extensions:
+                current_override = None
+            elif current_override:
+                # Check if target file has explicit resolution in name
+                if re.search(r"[\-_](\d+)x(\d+)", basename):
                     current_override = None
-                else:
-                    # Check if target file has explicit resolution in name
-                    basename = os.path.basename(actual_file_path)
-                    if re.search(r"[\-_](\d+)x(\d+)", basename):
-                        current_override = None
-                    # [NEW] Check if file size matches the override settings
-                    # This prevents forcing small dimensions (e.g. 10x10) onto large files
-                    # or mismatching non-square settings.
-                    elif current_override and os.path.exists(actual_file_path):
+                # [NEW] Check if file size matches the override settings
+                elif current_override and os.path.exists(actual_file_path):
                          try:
                              fsize = os.path.getsize(actual_file_path)
                              ow = current_override.get('width', 0)
@@ -770,23 +769,22 @@ class ImageViewer(QMainWindow):
                              odtype = current_override.get('dtype', np.uint8)
                              
                              if isinstance(odtype, str):
-                                 pass # parsing hard here without handler, skip or trust?
+                                 # Try to parse string dtype
+                                 try:
+                                     cont, _, _, _ = temp_handler._parse_dtype_string(odtype)
+                                     bpp = np.dtype(cont).itemsize
+                                 except:
+                                     bpp = 1
                              else:
                                  bpp = np.dtype(odtype).itemsize
-                                 # Calculate expected channels effectively?
-                                 # If 10x10 RGBA -> 4 channels. 
-                                 # But override might not say channels explicitly if it was raw_settings dict?
-                                 # raw_settings usually has 'width', 'height', 'dtype', 'color_format'
-                                 c_fmt = current_override.get('color_format', 'Grayscale')
-                                 ch = 4 if 'RGBA' in c_fmt else (3 if 'RGB' in c_fmt else 1)
                                  
-                                 expected_size = ow * oh * bpp * ch
-                                 
-                                 # Allow some tolerance or exact match?
-                                 # Raw files are usually exact.
-                                 if fsize != expected_size:
-                                     # Mismatch - unlikely this override belongs to this file
-                                     current_override = None
+                             c_fmt = current_override.get('color_format', 'Grayscale')
+                             ch = 4 if 'RGBA' in c_fmt else (3 if 'RGB' in c_fmt else 1)
+                             
+                             expected_size = ow * oh * bpp * ch
+                             
+                             if fsize != expected_size:
+                                 current_override = None
                          except:
                              pass
 
@@ -1398,10 +1396,15 @@ class ImageViewer(QMainWindow):
         else:
              file_size = 0
 
+        # [FIX] Clear override_settings for non-raw files to prevent metadata leakage.
+        # This MUST happen before any logic that uses override_settings.
+        if override_settings and not is_raw:
+            override_settings = None
+
         # [REFINEMENT] Inherit settings only if target file has no explicit settings (filename or history)
         if is_raw and override_settings:
             basename = os.path.basename(actual_file_path)
-            has_explicit = bool(re.search(r"_(\d+)x(\d+)", basename))
+            has_explicit = bool(re.search(r"[\-_](\d+)x(\d+)", basename))
             if not has_explicit:
                 history = settings.load_raw_history()
                 if actual_file_path in history:
@@ -2152,21 +2155,24 @@ class ImageViewer(QMainWindow):
                 self._update_overlays()
 
     def _update_overlays(self):
-        print("DEBUG: _update_overlays called")
         if not self.active_label or not self.active_label.current_pixmap:
-            print("DEBUG: No active label or pixmap")
             return
 
         overlays_to_draw = []
-        target_size = self.active_label.current_pixmap.size()
+        # target_size should be the ORIGINAL resolution to avoid smearing when zoomed
+        # even if the label is using a downsampled proxy for display.
+        target_size = self.active_label.get_original_size()
         active_path = getattr(self.active_label, 'file_path', None)
-        print(f"DEBUG: Active Path: {active_path}")
-        print(f"DEBUG: Overlay Alphas Keys: {list(self.overlay_alphas.keys())}")
         
-        if not active_path:
-            print("DEBUG: No active_path")
+        if not active_path or not target_size or target_size.isEmpty():
             self.active_label.set_overlays([])
             return
+
+        # Clear cache if target image changed to prevent alignment/scaling artifacts
+        last_target = getattr(self, '_last_overlay_target', None)
+        if last_target != active_path:
+            self.overlay_cache.clear()
+            self._last_overlay_target = active_path
 
         # Only apply overlays where the active_path is the TARGET
         for (source_path, target_path), alpha in self.overlay_alphas.items():
@@ -2192,15 +2198,16 @@ class ImageViewer(QMainWindow):
                                 for label in win.montage_labels:
                                     if hasattr(label, 'file_path') and label.file_path == source_path and label.current_pixmap:
                                          if getattr(label, '_proxy_scale', 1.0) == 1.0:
-                                            source_pixmap = label.current_pixmap
-                                            break
+                                            # Verification: Ensure it's not a tiny thumbnail from somewhere
+                                                source_pixmap = label.current_pixmap
+                                                break
                                 if source_pixmap:
                                     break
                         except:
                             pass
                     
                     if not source_pixmap:
-                        # 2. Fallback: Load from disk (to ensure full resolution)
+
                         # The gallery cache might contain downsampled proxies, so avoiding it for overlays is safer.
                         try:
                              temp_handler = ImageHandler()
@@ -2212,17 +2219,15 @@ class ImageViewer(QMainWindow):
                              _, ext = os.path.splitext(source_path)
                              if ext.lower() in temp_handler.raw_extensions:
                                   basename = os.path.basename(source_path)
-                                  if not re.search(r"_(\d+)x(\d+)", basename):
+                                  if not re.search(r"[\-_](\d+)x(\d+)", basename):
                                       history = settings.load_raw_history()
                                       if source_path in history:
                                           override = history[source_path]
                              
-                             # print(f"DEBUG: Overlay disk load for {source_path}. Override: {override}")
                              temp_handler.load_image(source_path, override_settings=override)
                              
                              if temp_handler.original_image_data is not None:
                                   data = temp_handler.original_image_data
-                                  # print(f"DEBUG: Loaded overlay data shape: {data.shape}")
                                   if data.ndim == 2:
                                       h, w = data.shape
                                       # Normalize to uint8
@@ -2232,21 +2237,25 @@ class ImageViewer(QMainWindow):
                                   elif data.ndim == 3:
                                       if data.shape[2] == 3:
                                           h, w, _ = data.shape
+                                          if not data.flags['C_CONTIGUOUS']:
+                                               data = np.ascontiguousarray(data)
                                           qimg = QImage(data.data, w, h, 3*w, QImage.Format.Format_RGB888)
                                           source_pixmap = QPixmap.fromImage(qimg)
                                       elif data.shape[2] == 4:
                                           h, w, _ = data.shape
+                                          if not data.flags['C_CONTIGUOUS']:
+                                               data = np.ascontiguousarray(data)
                                           qimg = QImage(data.data, w, h, 4*w, QImage.Format.Format_RGBA8888)
                                           source_pixmap = QPixmap.fromImage(qimg)
+                                      
                         except Exception as e:
-                             print(f"DEBUG: Overlay disk load failed: {e}")
+                             pass
                              pass
                         except:
                              pass
                     
                     if source_pixmap:
-                        scaled_pixmap = source_pixmap.scaled(target_size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                        self.overlay_cache[pair] = scaled_pixmap
+                        self.overlay_cache[pair] = source_pixmap
                
                 if pair in self.overlay_cache:
                     overlays_to_draw.append((self.overlay_cache[pair], alpha))

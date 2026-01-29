@@ -280,7 +280,7 @@ class ImageHandler:
              if total_elements % expected_pixels == 0:
                  channels = int(total_elements // expected_pixels)
         
-        print(f"DEBUG: w={width} h={height} size={total_elements} channels={channels}")
+
 
         # Heuristic: If we detected 16 channels of uint8, it's very likely float32 RGBA (4 bytes * 4 channels = 16 bytes)
         # This fixes loading .raw files that are actually float32 RGBA without explicit extension/settings
@@ -310,7 +310,7 @@ class ImageHandler:
                  self.original_image_data = raw_data
                  return # Success
              except ValueError as e:
-                 print(f"DEBUG: Reshape (H,W,C) failed: {e}")
+
                  # Fallthrough to single channel attempt? 
                  # If explicit channels failed, maybe single channel interpretation is valid?
                  # But likely not. 
@@ -412,7 +412,7 @@ class ImageHandler:
 
     def parse_resolution(self, file_name):
         basename = os.path.basename(file_name)
-        match = re.search(r"_(\d+)x(\d+)", basename)
+        match = re.search(r"[\-_](\d+)x(\d+)", basename)
         width, height = (int(match.group(1)), int(match.group(2))) if match else (0, 0)
         
         if width == 0:
