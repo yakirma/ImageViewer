@@ -754,6 +754,12 @@ class ImageViewer(QMainWindow):
                 _, ext = os.path.splitext(actual_file_path)
                 if ext.lower() not in temp_handler.raw_extensions:
                     current_override = None
+                else:
+                    # Check if target file has explicit resolution in name (e.g. _10x10)
+                    # If so, we should NOT apply the override (which belongs to a different file)
+                    basename = os.path.basename(actual_file_path)
+                    if re.search(r"_(\d+)x(\d+)", basename):
+                        current_override = None
 
             try:
                 temp_handler.load_image(actual_file_path, override_settings=current_override)
