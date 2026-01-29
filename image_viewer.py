@@ -794,34 +794,7 @@ class ImageViewer(QMainWindow):
                 temp_handler.load_image(actual_file_path, override_settings=current_override)
                 # ... (rest of loading) ...
 
-# ... (jumping to _update_overlays fix) ...
 
-                    # 1. Search Open Windows
-                    for win in self.window_list:
-                        try:
-                            # Check main image label
-                            if getattr(win, 'current_file_path', None) == source_path and win.image_label:
-                                # Ensure we don't use a downsampled proxy
-                                label = win.image_label
-                                if label.current_pixmap and getattr(label, '_proxy_scale', 1.0) == 1.0:
-                                    source_pixmap = label.current_pixmap
-                                    break
-                            
-                            # Check montage labels
-                            if hasattr(win, 'montage_labels'):
-                                for label in win.montage_labels:
-                                    if hasattr(label, 'file_path') and label.file_path == source_path and label.current_pixmap:
-                                         if getattr(label, '_proxy_scale', 1.0) == 1.0:
-                                            source_pixmap = label.current_pixmap
-                                            break
-                                if source_pixmap:
-                                    break
-                        except:
-                            pass
-                    
-                    if not source_pixmap:
-                        # 2. Fallback: Load from disk
-                        # ...
                 
                 # If this is an NPZ file with a specific key, switch to that key
                 if npz_key_to_load and hasattr(temp_handler, 'npz_keys'):
@@ -2206,14 +2179,21 @@ class ImageViewer(QMainWindow):
                     # 1. Search Open Windows
                     for win in self.window_list:
                         try:
-                            if getattr(win, 'current_file_path', None) == source_path and win.image_label and win.image_label.current_pixmap:
-                                source_pixmap = win.image_label.current_pixmap
-                                break
+                            # Check main image label
+                            if getattr(win, 'current_file_path', None) == source_path and win.image_label:
+                                # Ensure we don't use a downsampled proxy
+                                label = win.image_label
+                                if label.current_pixmap and getattr(label, '_proxy_scale', 1.0) == 1.0:
+                                    source_pixmap = label.current_pixmap
+                                    break
+                            
+                            # Check montage labels
                             if hasattr(win, 'montage_labels'):
                                 for label in win.montage_labels:
                                     if hasattr(label, 'file_path') and label.file_path == source_path and label.current_pixmap:
-                                        source_pixmap = label.current_pixmap
-                                        break
+                                         if getattr(label, '_proxy_scale', 1.0) == 1.0:
+                                            source_pixmap = label.current_pixmap
+                                            break
                                 if source_pixmap:
                                     break
                         except:
