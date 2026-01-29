@@ -288,25 +288,25 @@ class ImageViewer(QMainWindow):
         toolbar.addAction(self.histogram_action)
 
         # Custom "3D" Button with separate colors for '3' (Green) and 'D' (Red)
-        threed_container = QWidget()
-        threed_container.setFixedSize(40, 32)
-        threed_container.setCursor(Qt.CursorShape.PointingHandCursor)
-        threed_container.setToolTip("Open 3D View")
+        self.threed_button = QWidget()
+        self.threed_button.setFixedSize(40, 32)
+        self.threed_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.threed_button.setToolTip("Open 3D View")
         
-        container_layout = QHBoxLayout(threed_container)
+        container_layout = QHBoxLayout(self.threed_button)
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
         
-        label_3 = QLabel("3")
-        label_3.setStyleSheet("color: #00E676; font-weight: 900; font-size: 16px; font-family: 'Arial'; margin-right: -5px;")
-        label_3.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.label_3d_3 = QLabel("3")
+        self.label_3d_3.setStyleSheet("color: #00E676; font-weight: 900; font-size: 16px; font-family: 'Arial'; margin-right: -5px;")
+        self.label_3d_3.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        label_d = QLabel("D")
-        label_d.setStyleSheet("color: #FF1744; font-weight: 900; font-size: 16px; font-family: 'Arial'; margin-left: -5px;")
-        label_d.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.label_3d_d = QLabel("D")
+        self.label_3d_d.setStyleSheet("color: #FF1744; font-weight: 900; font-size: 16px; font-family: 'Arial'; margin-left: -5px;")
+        self.label_3d_d.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        container_layout.addWidget(label_3)
-        container_layout.addWidget(label_d)
+        container_layout.addWidget(self.label_3d_3)
+        container_layout.addWidget(self.label_3d_d)
         
         # Make the whole container clickable by filtering events
         class ClickableFilter(QWidget):
@@ -316,15 +316,17 @@ class ImageViewer(QMainWindow):
                 self.callback = callback
             def eventFilter(self, source, event):
                 if event.type() == QEvent.Type.MouseButtonPress:
-                    self.callback()
-                    return True
+                    # Respect parent enablement
+                    if source.isEnabled():
+                        self.callback()
+                        return True
                 return False
         
         self.threed_click_filter = ClickableFilter(self, self.open_3d_view)
-        threed_container.installEventFilter(self.threed_click_filter)
+        self.threed_button.installEventFilter(self.threed_click_filter)
         
         # Styling the container background
-        threed_container.setStyleSheet("""
+        self.threed_button.setStyleSheet("""
             QWidget {
                 background-color: transparent;
                 border-radius: 6px;
@@ -334,9 +336,12 @@ class ImageViewer(QMainWindow):
                 background-color: rgba(255, 255, 255, 30);
                 border: none;
             }
+            QWidget:disabled {
+                opacity: 0.5;
+            }
         """)
         
-        toolbar.addWidget(threed_container)
+        toolbar.addWidget(self.threed_button)
 
         self.math_transform_action = QAction(QIcon.fromTheme("accessories-calculator"), "Math Transform", self)
         self.math_transform_action.triggered.connect(self.toggle_math_transform_pane)
@@ -429,6 +434,22 @@ class ImageViewer(QMainWindow):
         # 2. Apply Channel Selection
         sliced_data = self.apply_channel_selection(data)
         
+        # Enable 3D View only for single channel images
+        is_single_channel = (sliced_data.ndim == 2) or (sliced_data.ndim == 3 and sliced_data.shape[2] == 1)
+        if hasattr(self, 'threed_button'):
+             self.threed_button.setEnabled(is_single_channel)
+             # Update styling to look disabled/enabled
+             if is_single_channel:
+                 self.threed_button.setToolTip("Open 3D View")
+                 # Restore colors
+                 self.label_3d_3.setStyleSheet("color: #00E676; font-weight: 900; font-size: 16px; font-family: 'Arial'; margin-right: -5px;")
+                 self.label_3d_d.setStyleSheet("color: #FF1744; font-weight: 900; font-size: 16px; font-family: 'Arial'; margin-left: -5px;")
+             else:
+                 self.threed_button.setToolTip("3D View available only for single-channel images")
+                 # Set to gray
+                 self.label_3d_3.setStyleSheet("color: #808080; font-weight: 900; font-size: 16px; font-family: 'Arial'; margin-right: -5px;")
+                 self.label_3d_d.setStyleSheet("color: #808080; font-weight: 900; font-size: 16px; font-family: 'Arial'; margin-left: -5px;")
+        
         # 3. Auto-select flow mode or Reset to Default
         # Check if we were in 'flow' mode but now data is not compatible (e.g. RGB)
         # OR if we switched from RG (2-channel) to something else
@@ -458,6 +479,10 @@ class ImageViewer(QMainWindow):
         # 7. Trigger repaint and histogram update
         self.image_label.repaint()
         self.update_histogram_data()
+        
+        # 8. Update 3D View if open
+        if hasattr(self, 'point_cloud_viewer') and self.point_cloud_viewer and self.point_cloud_viewer.isVisible():
+             self.point_cloud_viewer.set_data(sliced_data)
         
 
 
@@ -1025,7 +1050,7 @@ class ImageViewer(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error applying parameters:\n{e}")
 
-    def apply_math_transform(self, expression):
+    def apply_math_transform(self, expression, from_update=False):
         self.current_math_expression = expression
         try:
             context = {}
@@ -1040,6 +1065,11 @@ class ImageViewer(QMainWindow):
             if self.active_label:
                 self.active_label.set_data(transformed_data, reset_view=False)
                 self.active_label.repaint()
+            
+                # Update 3D View if open
+                if hasattr(self, 'point_cloud_viewer') and self.point_cloud_viewer and self.point_cloud_viewer.isVisible():
+                     self.point_cloud_viewer.set_data(transformed_data)
+                     
             self.update_histogram_data(new_image=True)
             self.math_transform_pane.set_error_message("")
         except Exception as e:
@@ -1049,6 +1079,11 @@ class ImageViewer(QMainWindow):
         self.current_math_expression = None
         if self.active_label and self.active_label.pristine_data is not None:
             self.active_label.set_data(self.active_label.pristine_data, reset_view=False)
+            
+            # Update 3D View if open
+            if hasattr(self, 'point_cloud_viewer') and self.point_cloud_viewer and self.point_cloud_viewer.isVisible():
+                 self.point_cloud_viewer.set_data(self.active_label.pristine_data)
+
             self.update_histogram_data(new_image=True)
         # The instruction had a try-except block here, but it's not needed as the `if` condition handles the main case.
         # If `active_label` or `pristine_data` is None, it simply won't execute the `if` block.
@@ -1238,7 +1273,10 @@ class ImageViewer(QMainWindow):
         if file_path:
             self.open_file(file_path)
 
-    def open_file(self, file_path, override_settings=None, maintain_view_state=None):
+    def open_file(self, file_path=None, override_settings=None, maintain_view_state=None):
+        """Load an image or video file."""
+        if file_path is None:
+            return
         self.current_file_path = file_path
         
         # Clear overlays for files other than the current one
@@ -1349,26 +1387,31 @@ class ImageViewer(QMainWindow):
                      self.zoom_slider.setEnabled(True)
                      self.histogram_action.setEnabled(True)
                      
-                     self.update_image_display(reset_view=True)
+                     self.stacked_widget.setCurrentWidget(self.image_display_container)
+                     QApplication.processEvents() # Force layout update
                      self._set_active_montage_label(self.image_label)
+                     self.update_image_display(reset_view=True)
                      self._apply_histogram_preset(0, 100)
                      self.overlay_cache.clear()
                      self._update_overlays() 
                      
-                     if self.image_label.current_pixmap:
-                        self.stacked_widget.setCurrentWidget(self.image_display_container)
-                        self.recent_files = settings.add_to_recent_files(self.recent_files, file_path)
-                        self._update_recent_files_menu()
-                        self.image_label.set_overlay_text(file_path)
+                     self._update_overlays() 
+                     
+                     self.recent_files = settings.add_to_recent_files(self.recent_files, file_path)
+                     self._update_recent_files_menu()
+                     self.image_label.set_overlay_text(file_path)
                         
-                        # Save successful load to history
-                        settings.update_raw_history(file_path, guess_settings)
-                        
-                        # Synchronous update
-                        self.image_label.repaint()
-                        if self.histogram_action.isChecked():
-                            self.histogram_window.repaint()
-                        
+                     # Save successful load to history
+                     settings.update_raw_history(file_path, guess_settings)
+                     
+                     # Synchronous update
+                     self.image_label.repaint()
+                     if self.histogram_action.isChecked():
+                         self.histogram_window.repaint()
+                     
+                     # Update channel options based on loaded image
+                     self.update_channel_options()
+                     
                  except Exception as e:
                      pass
                      
@@ -1393,8 +1436,10 @@ class ImageViewer(QMainWindow):
                 self.info_pane.hide()
             
             # Load Data (triggers render with set attributes)
-            self.update_image_display(reset_view=not maintain_view_state)
+            self.stacked_widget.setCurrentWidget(self.image_display_container)
+            QApplication.processEvents() # Force layout update so widget has correct size for fit_to_view
             self._set_active_montage_label(self.image_label)
+            self.update_image_display(reset_view=not maintain_view_state)
             
             # Apply State (View / Contrast)
             if maintain_view_state:
@@ -1423,60 +1468,58 @@ class ImageViewer(QMainWindow):
             self.overlay_cache.clear()
             self._update_overlays() 
     
-            if self.image_label.current_pixmap:
-                self.stacked_widget.setCurrentWidget(self.image_display_container)
-                self.recent_files = settings.add_to_recent_files(self.recent_files, file_path)
-                self._update_recent_files_menu()
-                self.image_label.set_overlay_text(file_path)
+            self.recent_files = settings.add_to_recent_files(self.recent_files, file_path)
+            self._update_recent_files_menu()
+            self.image_label.set_overlay_text(file_path)
                 
-                # Save override to history if successful (and if it was a missing resolution file)
-                # Logic: If we used override_settings, we should save it? 
-                # If explicit resolution exists, self.image_handler.parse_resolution returns values.
-                # If we passed override settings, we don't necessarily update history unless it was "missing".
-                # But implementation plan says "update history on success".
-                # Let's check:
-                w, h, _ = self.image_handler.parse_resolution(file_path)
-                if (w == 0 or h == 0) and override_settings:
-                      settings.update_raw_history(file_path, override_settings)
+            # Save override to history if successful (and if it was a missing resolution file)
+            # Logic: If we used override_settings, we should save it? 
+            # If explicit resolution exists, self.image_handler.parse_resolution returns values.
+            # If we passed override settings, we don't necessarily update history unless it was "missing".
+            # But implementation plan says "update history on success".
+            # Let's check:
+            w, h, _ = self.image_handler.parse_resolution(file_path)
+            if (w == 0 or h == 0) and override_settings:
+                  settings.update_raw_history(file_path, override_settings)
 
-                # Update sticky settings if it's a raw file
-                if self.image_handler.is_raw:
-                    self.last_raw_settings = {
-                        'width': self.image_handler.width,
-                        'height': self.image_handler.height,
-                        'dtype': self.image_handler.dtype,
-                        'color_format': self.image_handler.color_format
-                    }
-                
-                # Synchronous update
-                self.image_label.repaint()
-                
-                # Update thumbnail selection states to reflect current image
-                self._update_thumbnail_selection_states()
-                if self.histogram_action.isChecked():
-                    self.histogram_window.repaint()
+            # Update sticky settings if it's a raw file
+            if self.image_handler.is_raw:
+                self.last_raw_settings = {
+                    'width': self.image_handler.width,
+                    'height': self.image_handler.height,
+                    'dtype': self.image_handler.dtype,
+                    'color_format': self.image_handler.color_format
+                }
+            
+            # Synchronous update
+            self.image_label.repaint()
+            
+            # Update thumbnail selection states to reflect current image
+            self._update_thumbnail_selection_states()
+            if self.histogram_action.isChecked():
+                self.histogram_window.repaint()
 
-                # Configure Video UI
-                if self.image_handler.is_video:
-                     self.video_toolbar.show()
-                     self.video_slider.blockSignals(True)
-                     self.video_slider.setRange(0, max(0, self.image_handler.video_frame_count - 1))
-                     self.video_slider.setValue(self.image_handler.current_frame_index)
-                     self.video_slider.blockSignals(False)
-                     self.fps_spin.blockSignals(True)
-                     self.fps_spin.setValue(int(self.image_handler.video_fps))
-                     self.fps_spin.blockSignals(False)
-                     self.frame_label.setText(f" {self.image_handler.current_frame_index + 1} / {self.image_handler.video_frame_count} ")
-                     # Reset Play state
-                     self.playback_timer.stop()
-                     self.play_action.setChecked(False)
-                     self.play_action.setText("Play")
-                     self.play_action.setText("Play")
-                else:
-                     self.video_toolbar.hide()
-                     self.playback_timer.stop()
-                     
-                self.update_channel_options()
+            # Configure Video UI
+            if self.image_handler.is_video:
+                 self.video_toolbar.show()
+                 self.video_slider.blockSignals(True)
+                 self.video_slider.setRange(0, max(0, self.image_handler.video_frame_count - 1))
+                 self.video_slider.setValue(self.image_handler.current_frame_index)
+                 self.video_slider.blockSignals(False)
+                 self.fps_spin.blockSignals(True)
+                 self.fps_spin.setValue(int(self.image_handler.video_fps))
+                 self.fps_spin.blockSignals(False)
+                 self.frame_label.setText(f" {self.image_handler.current_frame_index + 1} / {self.image_handler.video_frame_count} ")
+                 # Reset Play state
+                 self.playback_timer.stop()
+                 self.play_action.setChecked(False)
+                 self.play_action.setText("Play")
+                 self.play_action.setText("Play")
+            else:
+                 self.video_toolbar.hide()
+                 self.playback_timer.stop()
+                 
+            self.update_channel_options()
 
         except Exception as e:
             if is_raw and override_settings:
@@ -1536,7 +1579,8 @@ class ImageViewer(QMainWindow):
         self.recent_files_menu.setEnabled(True)
         for file_path in self.recent_files:
             action = QAction(file_path, self)
-            action.triggered.connect(lambda checked, path=file_path: self.open_file(path))
+            # Use *args to safely handle 'triggered' signal which may or may not send 'checked' boolean
+            action.triggered.connect(lambda *args, path=file_path: self.open_file(path))
             self.recent_files_menu.addAction(action)
 
     def update_histogram_data(self, new_image=False):

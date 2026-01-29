@@ -63,11 +63,12 @@ Once installed, you can open any supported image or video file by **right-clicki
 - **Optical Flow Visualization:** Automatic color coding for 2-channel flow fields (e.g., `.flo` files or "RG" channel selection). Includes dynamic contrast stretching via the histogram to visualize subtle motions.
 - **Smart Raw Inheritance:** Automatically inherits parameters (resolution, dtype) between similar raw files while gracefully falling back to resolution guessing on mismatches.
 - **Drag and Drop:** Drag images directly onto the application window to load them instantly.
-- **Interactive Zoom & Pan:** Smooth, mouse-based zooming and panning centered around the cursor.
+- **Interactive Zoom & Pan:** Smooth, mouse-based zooming and panning centered around the cursor. Supports **Native Trackpad Gestures** (Pinch-to-Zoom) on macOS.
 - **Multi-Window Interface:** Open multiple independent windows (`Ctrl+N`) with a robust lifecycle management to prevent crashes.
 
 ### 3. Real-Time Analysis & Metadata
 - **Live Info Pane:** Scrub rows, columns, and data types with immediate, frame-by-frame visual feedback. No more debounce delays.
+- **Channel Selector:** Isolate specific channels (R, G, B, A) or view combinations (RG) for multi-channel images via a dropdown toolbar.
 - **Live Histogram:** A dockable histogram updates in real-time. Performance-optimized to skip processing when the pane is hidden.
 - **Interactive Contrast Stretching:** Drag the histogram bars or apply global stretches (Min-Max, 5%-95% percentiles).
 - **Math Transforms:** Apply complex mathematical operations to image data using NumPy expressions (e.g., `np.log(x)`) via a dedicated smart-resizing pane.
@@ -92,7 +93,8 @@ Once installed, you can open any supported image or video file by **right-clicki
 - **Keyboard Navigation:** Use `Left/Right` arrow keys to step backward/forward frame-by-frame.
 
 ### 6. 3D Visualization (Point Cloud)
-- **3D Surface View:** Visualize any 2D image as a 3D terrain where pixel intensity represents height.
+- **3D Surface View:** Visualize any single-channel 2D image as a 3D terrain where pixel intensity represents height.
+- **Live Synchronization:** The 3D view updates instantly when you apply math transforms or reload images.
 - **Hardware Acceleration:** Uses OpenGL for smooth interaction even with large datasets.
 - **Interaction:**
   - **Rotate:** Left-click drag.
