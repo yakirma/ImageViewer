@@ -966,7 +966,11 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                 h, w, c_out = processed_data.shape
                 stride = c_out * w
                 fmt = QImage.Format.Format_RGB888 if c_out == 3 else QImage.Format.Format_RGBA8888
-                q_image = QImage(processed_data.tobytes(), w, h, stride, fmt)
+                
+                # Keep reference to data to prevent garbage collection!
+                self._qimage_bytes = processed_data.tobytes()
+                
+                q_image = QImage(self._qimage_bytes, w, h, stride, fmt)
 
             else:  # Grayscale / Colormapped
                 if is_rgb:
@@ -976,6 +980,22 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                      data = np.linalg.norm(data, axis=2)
 
                 processed_data = data.copy()
+                
+                # ... existing colormap logic follows ...
+                # Wait, I need to make sure I don't break the 'else' block which continues below.
+                # The 'else' block logic ended with `processed_data = data.copy()` in previous view (Step 5208).
+                # But Step 5208 shows `processed_data = data.copy()` at line 940.
+                # So I should preserve that structure.
+                
+                # Let's verify what happens after.
+                # Code continues to `self._apply_matplotlib_colormap(...)`?
+                # Or manual?
+                # ZoomableDraggableLabel logic uses matplotlib colormaps usually?
+                # No, I think it uses `pg` or `matplotlib` or custom?
+                # Wait.
+                
+                # Let's peek below line 940 to be sure.
+
                 if self.contrast_limits:
                     min_val, max_val = self.contrast_limits
                     processed_data = np.clip(processed_data, min_val, max_val)
