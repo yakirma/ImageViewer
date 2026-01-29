@@ -11,42 +11,24 @@ ImageViewer is a powerful, cross-platform desktop application for viewing and an
 
 ---
 
-## Installation & Usage
+## Installation
 
-### Method 1: Pre-built Installer (Recommended)
+**[Download the latest release for your OS here](https://github.com/yakirma/ImageViewer/releases)**
 
-1.  **Download the latest release** for your operating system.
-2.  **Install/Run:**
-    -   **macOS:**
-        1.  Open the `.dmg` file.
-        2.  Drag the **ImageViewer** icon to the **Applications** folder shortcut.
-        3.  Open "Applications" and double-click **ImageViewer**.
-    -   **Windows:**
-        1.  Right-click the `.zip` file and select **Extract All...**.
-        2.  Open the extracted folder.
-        3.  Double-click `ImageViewer.exe` to launch.
-    -   **Linux:**
-        1.  Extract the archive: `tar -xzf ImageViewer_Linux.tar.gz`
-        2.  Navigate to the folder: `cd ImageViewer`
-        3.  Run the executable: `./ImageViewer`
+### macOS
+1.  Download the `.dmg` file.
+2.  Open it and drag **ImageViewer** to your **Applications** folder.
+3.  Open "Applications", find **ImageViewer**, and double-click to launch.
 
-### Method 2: Running from Source (Development)
+### Windows
+1.  Download the `ImageViewer_Setup.exe`.
+2.  Run the installer.
+3.  Launch **ImageViewer** from your Start Menu or Desktop.
 
-1.  **Clone the repository:**
-    ```sh
-    git clone https://github.com/yakirma/ImageViewer.git
-    cd ImageViewer
-    ```
-
-2.  **Install dependencies:**
-    ```sh
-    pip install -r requirements.txt
-    ```
-
-3.  **Run the application:**
-    ```sh
-    python main.py
-    ```
+### Linux
+1.  Download the `.deb` package (for Debian/Ubuntu) or `.tar.gz`.
+2.  **Debian/Ubuntu:** `sudo dpkg -i ImageViewer_Linux.deb`
+3.  **Other:** Extract the tarball and run the executable directly.
 
 ---
 
@@ -118,50 +100,4 @@ ImageViewer is a powerful, cross-platform desktop application for viewing and an
 
 ---
 
-## Building from Source
 
-### Prerequisites
-
-- **Python 3.10+** (Ensure it's added to your system PATH).
-- **Recommended:** Create a virtual environment (`venv` or `conda`).
-- **Dependencies:** `pip install -r requirements.txt`
-
-### Building on Windows
-
-1.  **Install Python:** Download from [python.org](https://www.python.org/downloads/). **Important:** Check "Add Python to PATH" during installation.
-2.  **Run Build Script:** Double-click `build.bat`.
-    *   *Note:* If running from a network share (e.g., Parallels `\\Mac\Home`), the script effectively handles the path.
-    *   If you see "Python was not found", ensure Python is installed and in your PATH.
-
-### Building on macOS / Linux
-
-To create standalone executables for your platform, run the unified build script:
-
-```sh
-./build.sh
-```
-
-**What it does:**
-- **macOS:** Creates a `.dmg` installer in `dist/` (requires `hdiutil`).
-- **Windows:**
-    - Creates `ImageViewer_Setup.exe` if `makensis` (NSIS) is installed.
-    - Fallback: Creates `.zip` archive.
-- **Linux:**
-    - Creates `.deb` package if `dpkg-deb` is installed.
-    - Fallback: Creates `.tar.gz` archive.
-
-### Installer Prerequisites
-
-To generate the `.exe` (Windows) or `.deb` (Linux) installers, you need the respective tools installed. If missing, the script falls back to creating Zip/Tar archives.
-
-#### Windows (NSIS)
-1.  Download **NSIS** from [nsis.sourceforge.io](https://nsis.sourceforge.io/Download).
-2.  Install it (standard settings are fine).
-3.  **Important:** Ensure `makensis` is enabled in your PATH (the installer usually does this, or adds a "Start NSIS" shortcut).
-    *   *Note for Git Bash users:* You might need to add the NSIS path (e.g., `/c/Program Files (x86)/NSIS`) to your environment variables if `makensis` command is not found.
-
-#### Linux
-*   Ensure `dpkg-deb` is installed (standard on Debian/Ubuntu):
-    ```sh
-    sudo apt-get install dpkg
-    ```
