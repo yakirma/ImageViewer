@@ -1335,41 +1335,51 @@ class ImageViewer(QMainWindow):
         
         # Handle NPZ key paths (format: "file.npz#key_name")
         npz_key_to_switch = None
+        actual_file_path = file_path  # The actual file on disk
         if '#' in file_path:
             actual_file, key_name = file_path.rsplit('#', 1)
             npz_key_to_switch = key_name
-            file_path = actual_file
+            actual_file_path = actual_file
         
+        # Store the original path (with NPZ key if present) for overlay tracking
         self.current_file_path = file_path
         
         # Clear overlays for files other than the current one
-        overlays_to_remove = [path for path in self.overlay_alphas.keys() if path != file_path]
+        # For NPZ files, only clear overlays that don't share the same base file
+        overlays_to_remove = []
+        for path in self.overlay_alphas.keys():
+            # Extract base file path for comparison
+            base_path = path.rsplit('#', 1)[0] if '#' in path else path
+            current_base = file_path.rsplit('#', 1)[0] if '#' in file_path else file_path
+            if base_path != current_base:
+                overlays_to_remove.append(path)
+        
         for path in overlays_to_remove:
             del self.overlay_alphas[path]
             if path in self.overlay_cache:
                 del self.overlay_cache[path]
         
-        # Update File Explorer Path
+        # Update File Explorer Path (use actual file on disk)
         if self.file_explorer_pane.isVisible():
-             self.file_explorer_pane.set_root_path(file_path)
+             self.file_explorer_pane.set_root_path(actual_file_path)
 
         # Determine if it's a raw file
-        _, ext = os.path.splitext(file_path)
+        _, ext = os.path.splitext(actual_file_path)
         is_raw = ext.lower() in self.image_handler.raw_extensions
         
         # Get File Size
-        if os.path.exists(file_path):
-             file_size = os.path.getsize(file_path)
+        if os.path.exists(actual_file_path):
+             file_size = os.path.getsize(actual_file_path)
         else:
              file_size = 0
 
         # [REFINEMENT] Inherit settings only if target file has no explicit settings (filename or history)
         if is_raw and override_settings:
-            basename = os.path.basename(file_path)
+            basename = os.path.basename(actual_file_path)
             has_explicit = bool(re.search(r"_(\d+)x(\d+)", basename))
             if not has_explicit:
                 history = settings.load_raw_history()
-                if file_path in history:
+                if actual_file_path in history:
                     has_explicit = True
             
             if has_explicit:
@@ -1379,7 +1389,7 @@ class ImageViewer(QMainWindow):
         # Check resolution for raw files BEFORE attempting load
         if is_raw and not override_settings: # Only guess/check history if no explicit override_settings provided
              # This uses the new method which returns (0,0) instead of raising
-             width, height, dtype_raw = self.image_handler.parse_resolution(file_path)
+             width, height, dtype_raw = self.image_handler.parse_resolution(actual_file_path)
              
              if width == 0 or height == 0:
                  # Logic for missing resolution (formerly in except block)
@@ -1486,7 +1496,7 @@ class ImageViewer(QMainWindow):
         # Proceed to load image (Standard or Raw with Resolution or Override)
         try:     
             # If override_settings is passed (from History, Guess, or Explorer Inheritance), use it.
-            self.image_handler.load_image(file_path, override_settings=override_settings)
+            self.image_handler.load_image(actual_file_path, override_settings=override_settings)
 
             self.info_action.setEnabled(self.image_handler.is_raw)
             self.info_pane.set_raw_mode(self.image_handler.is_raw)
@@ -1534,9 +1544,9 @@ class ImageViewer(QMainWindow):
             self.overlay_cache.clear()
             self._update_overlays() 
     
-            self.recent_files = settings.add_to_recent_files(self.recent_files, file_path)
+            self.recent_files = settings.add_to_recent_files(self.recent_files, actual_file_path)
             self._update_recent_files_menu()
-            self.image_label.set_overlay_text(file_path)
+            self.image_label.set_overlay_text(actual_file_path)
                 
             # Save override to history if successful (and if it was a missing resolution file)
             # Logic: If we used override_settings, we should save it? 
@@ -1544,9 +1554,9 @@ class ImageViewer(QMainWindow):
             # If we passed override settings, we don't necessarily update history unless it was "missing".
             # But implementation plan says "update history on success".
             # Let's check:
-            w, h, _ = self.image_handler.parse_resolution(file_path)
+            w, h, _ = self.image_handler.parse_resolution(actual_file_path)
             if (w == 0 or h == 0) and override_settings:
-                  settings.update_raw_history(file_path, override_settings)
+                  settings.update_raw_history(actual_file_path, override_settings)
 
             # Update sticky settings if it's a raw file
             if self.image_handler.is_raw:
@@ -1607,7 +1617,7 @@ class ImageViewer(QMainWindow):
         except Exception as e:
             if is_raw and override_settings:
                 # Transform/Inheritance caused a mismatch? Fallback to guessing.
-                self.open_file(file_path, override_settings=None, maintain_view_state=maintain_view_state)
+                self.open_file(actual_file_path, override_settings=None, maintain_view_state=maintain_view_state)
                 return
             
             QMessageBox.critical(self, "Error", f"Error opening image:\n{e}")
