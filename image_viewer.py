@@ -801,7 +801,9 @@ class ImageViewer(QMainWindow):
         self.montage_widget.repaint()
         
         # Update thumbnail pane strictly
-        self._refresh_thumbnail_pane()
+        # self._refresh_thumbnail_pane() # REMOVED: This causes a feedback loop where unselecting an item (which updates montage) rebuilding the thumbnail pane and potentially resetting selection.
+        # The thumbnail selection drives the montage, not vice versa.
+        pass
 
     def _set_active_montage_label(self, label):
         if self.active_label:
@@ -1409,6 +1411,8 @@ class ImageViewer(QMainWindow):
                      # Update channel options based on loaded image
                      self.update_channel_options()
                      
+                     self._refresh_thumbnail_pane()
+                     
                  except Exception as e:
                      pass
                      
@@ -1517,6 +1521,9 @@ class ImageViewer(QMainWindow):
                  self.playback_timer.stop()
                  
             self.update_channel_options()
+
+            # Refresh thumbnail pane to show the new image
+            self._refresh_thumbnail_pane()
 
         except Exception as e:
             if is_raw and override_settings:
@@ -1795,28 +1802,8 @@ class ImageViewer(QMainWindow):
             self.display_montage(selected_files)
 
     def _update_thumbnail_pane_for_single_image(self):
-        """Populate the thumbnail pane with the current single image"""
-        if not self.thumbnail_pane or not self.image_label.current_pixmap:
-            return
-        
-        # Clear existing thumbnails
-        for item in self.thumbnail_pane.thumbnail_items:
-            self.thumbnail_pane.thumbnail_layout.removeWidget(item)
-            item.deleteLater()
-        self.thumbnail_pane.thumbnail_items.clear()
-        
-        # Add thumbnail for the current image
-        from widgets import ThumbnailItem
-        if self.current_file_path:
-            item = ThumbnailItem(self.current_file_path, self.image_label.current_pixmap)
-            item.clicked.connect(lambda event, i=item: self.thumbnail_pane._on_thumbnail_clicked(i, event))
-            item.overlay_changed.connect(lambda alpha, path=self.current_file_path: self.thumbnail_pane.overlay_changed.emit(path, alpha))
-            self.thumbnail_pane.thumbnail_items.append(item)
-            self.thumbnail_pane.thumbnail_layout.addWidget(item)
-            
-            # Set as focused and selected
-            self.thumbnail_pane._set_focused_item(0)
-            self.thumbnail_pane._select_single(0)
+        """Deprecated: Use _refresh_thumbnail_pane instead to show all windows."""
+        self._refresh_thumbnail_pane()
 
     def _refresh_thumbnail_pane(self):
         """Refresh thumbnail pane to show ONLY images from the current window"""
@@ -1849,19 +1836,24 @@ class ImageViewer(QMainWindow):
         if not self.thumbnail_pane or not self.thumbnail_pane.thumbnail_items:
             return
         
-        # Get current window's viewed files
-        current_files = set()
-        if self.stacked_widget.currentWidget() == self.montage_widget:
-            current_files = {label.file_path for label in self.montage_labels if hasattr(label, 'file_path')}
-        elif self.current_file_path:
-            current_files = {self.current_file_path}
+        # Only force selection if we are in Single View mode (to highlight current)
+        # In Montage view, we should respect the ThumbnailPane's own selection state 
+        # because the user uses it to DRIVE the montage. "What is selected in thumbnail = What is shown in Montage".
+        # We shouldn't invert it to "What is shown in Montage = Force Selected in Thumbnail" constantly, 
+        # or it creates a feedback loop where you can't deselect.
         
-        # Update selection state for each thumbnail (visual only, no signal emission)
-        for item in self.thumbnail_pane.thumbnail_items:
-            is_selected = item.file_path in current_files
-            item.set_selected(is_selected)
+        if self.stacked_widget.currentWidget() != self.montage_widget and self.current_file_path:
+             # Single view: Sync selection to current file
+             # But be careful not to annoyingly clear other selections if user is multi-selecting for a future operation?
+             # For now, let's just ensure current is selected.
+             for item in self.thumbnail_pane.thumbnail_items:
+                 if item.file_path == self.current_file_path:
+                     item.set_selected(True)
         
-        # Update Select All checkbox state manually without triggering signals
+        # In Montage mode -> DO NOTHING. 
+        # The ThumbnailPane selection drives the Montage (via signal), not vice versa.
+        
+        # Update Select All checkbox state manually check
         selected_count = sum(1 for item in self.thumbnail_pane.thumbnail_items if item.is_selected)
         total_count = len(self.thumbnail_pane.thumbnail_items)
         

@@ -1570,21 +1570,47 @@ class ThumbnailPane(QDockWidget):
         current_index = self.focused_index if self.focused_index != -1 else 0
 
         # Only handle specific navigation and selection keys
-        if key in (Qt.Key.Key_Down, Qt.Key.Key_Up, Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+        if key in (Qt.Key.Key_Down, Qt.Key.Key_Up, Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
             new_index = current_index
             
-            # Arrow keys: just move focus, don't change selection
-            if key == Qt.Key.Key_Down:
+            # Simple Grid/List navigation
+            if key in (Qt.Key.Key_Down, Qt.Key.Key_Right):
                 new_index = min(current_index + 1, len(self.thumbnail_items) - 1)
-            elif key == Qt.Key.Key_Up:
+            elif key in (Qt.Key.Key_Up, Qt.Key.Key_Left):
                 new_index = max(current_index - 1, 0)
 
-            # Move focus without changing selection
+            modifiers = event.modifiers()
+            is_shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+
+            # Move focus
             if new_index != current_index:
                 self._set_focused_item(new_index)
-            # Enter/Return/Space: toggle selection of focused item
+                
+                if is_shift:
+                     # Extend selection
+                     anchor = self.last_selection_anchor if self.last_selection_anchor != -1 else current_index
+                     self._select_range(anchor, new_index)
+                     self._emit_selection_change()
+                else:
+                     # Just move focus, unless we decide to follow selection?
+                     # Standard behavior: Arrows move focus, Space selects.
+                     # BUT user asked for "Shift+Arrows".
+                     # Usually Arrows without shift simply move focus in file browsers (requiring space to select),
+                     # OR they Select Single.
+                     # "I want it to work with ... shift+arrows".
+                     # Let's make arrows Select Single if no modifier?
+                     # That leads to fast browsing.
+                     self._select_single(new_index)
+                     self.last_selection_anchor = new_index
+                     self._emit_selection_change()
+                     
+            # Enter/Return/Space: Toggle
             elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
-                self._toggle_selection(current_index)
+                if modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier):
+                     self._toggle_selection(current_index)
+                else:
+                     self._select_single(current_index)
+                self.last_selection_anchor = current_index
                 self._emit_selection_change()
         else:
             # Pass all other keys to parent (ImageViewer) for global shortcuts
@@ -1594,46 +1620,72 @@ class ThumbnailPane(QDockWidget):
         # Ignore passed windows list, get fresh list from QApplication
         windows = []
         for widget in QApplication.topLevelWidgets():
-             # We can't import ImageViewer here due to circular import, check by class name
-             if widget.__class__.__name__ == 'ImageViewer' and widget.isVisible():
+             if widget.__class__.__name__ == 'ImageViewer':
                  windows.append(widget)
 
+        # 1. Capture current accumulated selection (file paths)
+        # We use a set of paths because widget instances will be destroyed
+        selected_paths = {item.file_path for item in self.thumbnail_items if item.is_selected}
+        
+        # 2. Clear all existing items
         for item in self.thumbnail_items:
             self.thumbnail_layout.removeWidget(item)
             item.deleteLater()
         self.thumbnail_items.clear()
 
-        # Sort windows by title or ID to have consistent order? 
-        # For now, simplistic iteration.
+        # 3. Re-populate from current windows
         for window in windows:
             if window.image_label.current_pixmap and window.current_file_path:
                 pixmap = window.image_label.current_pixmap
                 file_path = window.current_file_path
+                
+                # Create new item
                 item = ThumbnailItem(file_path, pixmap)
                 item.clicked.connect(lambda event, i=item: self._on_thumbnail_clicked(i, event))
-                item.overlay_changed.connect(lambda alpha, path=file_path: self.overlay_changed.emit(path, alpha))
+                item.overlay_changed.connect(lambda alpha, p=file_path: self.overlay_changed.emit(p, alpha))
+                
+                # Restore selection state
+                if file_path in selected_paths:
+                    item.set_selected(True)
+                    
                 self.thumbnail_items.append(item)
                 self.thumbnail_layout.addWidget(item)
 
+        # 4. Handle focus
         if self.thumbnail_items:
-            self._set_focused_item(0)
-
+             # If we had a focused index, try to keep it, otherwise 0
+             if self.focused_index >= len(self.thumbnail_items):
+                 self.focused_index = len(self.thumbnail_items) - 1
+             
+             if self.focused_index == -1:
+                 self.focused_index = 0
+                 
+             self._set_focused_item(self.focused_index)
+        
+    # (Resuming actual content for replacement)
+    
     def _on_thumbnail_clicked(self, item, event):
+        if item not in self.thumbnail_items:
+            return
         index = self.thumbnail_items.index(item)
         self._handle_selection(index, event.modifiers())
 
     def _handle_selection(self, index, modifiers):
         self._set_focused_item(index)
 
-        is_shift = modifiers & Qt.KeyboardModifier.ShiftModifier
-        is_ctrl = modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier)
+        is_shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+        is_ctrl = bool(modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier))
 
         if is_shift:
             anchor = self.last_selection_anchor if self.last_selection_anchor != -1 else index
             self._select_range(anchor, index)
-        else:
-            # Default behavior: toggle selection (like Ctrl+Click)
+        elif is_ctrl:
+            # Toggle (Cmd/Ctrl + Click)
             self._toggle_selection(index)
+            self.last_selection_anchor = index
+        else:
+            # Default: Select Single (Exclusive)
+            self._select_single(index)
             self.last_selection_anchor = index
 
         self._emit_selection_change()
