@@ -278,10 +278,16 @@ class ImageHandler:
         total_elements = raw_data.size
         
         channels = 1
+        print(f"DEBUG: w={width} h={height} expected={expected_pixels} size={total_elements}")
         if total_elements > expected_pixels:
              # Check if exact multiple
              if total_elements % expected_pixels == 0:
                  channels = total_elements // expected_pixels
+                 print(f"DEBUG: calculated channels={channels}")
+             else:
+                 print(f"DEBUG: size mismatch mod={total_elements % expected_pixels}")
+        else:
+             print("DEBUG: total_elements <= expected_pixels")
         
         if channels > 1:
              # Try to reshape into (H, W, C)
