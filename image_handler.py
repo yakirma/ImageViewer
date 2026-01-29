@@ -284,6 +284,7 @@ class ImageHandler:
                  channels = total_elements // expected_pixels
         
         if channels > 1:
+             print(f"DEBUG: Multi-channel path. Channels={channels}")
              # Try to reshape into (H, W, C)
              try:
                  raw_data = raw_data.reshape((height, width, channels))
@@ -295,17 +296,16 @@ class ImageHandler:
                      self.color_format = "RGBA"
                  elif channels == 2:
                      # 2 Channel raw could be Flow or just 2-channel?
-                     # Standard viewer treats 2-channel as Grayscale (Mag) or Flow.
-                     # Leave defaults or set to "Custom"? 
-                     # self.color_format = "Custom" # Info pane doesn't sport custom yet.
                      pass 
                  else:
                      # Multi-channel
                      pass
-             except ValueError:
+             except ValueError as e:
+                 print(f"DEBUG: Multi-channel reshape failed: {e}")
                  # Reshape failed? Fallback?
                  pass
         else:
+             print(f"DEBUG: Single-channel path. Channels={channels}")
              # Single channel reshape
              try:
                  raw_data = raw_data.reshape((height, width))
