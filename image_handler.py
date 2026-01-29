@@ -4,6 +4,12 @@ import numpy as np
 from PIL import Image
 import cv2
 from utils import read_flow, flow_to_color
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pass
+
 
 class ImageHandler:
     def __init__(self):

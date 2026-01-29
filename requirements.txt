@@ -6,3 +6,4 @@ pyqtgraph
 opencv-python
 PyOpenGL
 pyinstaller
+pillow-heif
