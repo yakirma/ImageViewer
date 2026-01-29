@@ -987,15 +987,12 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
 
                 processed_data = data.copy()
                 
+                # Check for unexpected multi-channel data (e.g. 16 channels from raw misread)
+                if processed_data.ndim == 3 and processed_data.shape[2] not in [3, 4]:
+                     # Collapse to mean to allow visualization instead of crashing
+                     processed_data = np.mean(processed_data, axis=2)
+
                 # ... existing colormap logic follows ...
-                # Wait, I need to make sure I don't break the 'else' block which continues below.
-                # The 'else' block logic ended with `processed_data = data.copy()` in previous view (Step 5208).
-                # But Step 5208 shows `processed_data = data.copy()` at line 940.
-                # So I should preserve that structure.
-                
-                # Let's verify what happens after.
-                # Code continues to `self._apply_matplotlib_colormap(...)`?
-                # Or manual?
                 # ZoomableDraggableLabel logic uses matplotlib colormaps usually?
                 # No, I think it uses `pg` or `matplotlib` or custom?
                 # Wait.
