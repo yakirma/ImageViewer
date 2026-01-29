@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QFi
 from PyQt6.QtCore import Qt, QTimer, QEvent, QSize, pyqtSignal, QPoint
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QColor, QPalette
 from image_viewer import ImageViewer
+from single_instance import SingleInstance
 
 # Define Custom Application Class at module level
 class ImageViewerApp(QApplication):
@@ -42,12 +43,34 @@ if __name__ == "__main__":
     app.setApplicationName("ImageViewer")
     app.setWindowIcon(QIcon("assets/app_icon.png"))
 
+    # Single instance check
+    single_instance = SingleInstance('ImageViewer')
+    
+    if not single_instance.check_and_connect():
+        # Secondary instance: send files to primary and exit
+        if len(sys.argv) > 1:
+            single_instance.send_files(sys.argv[1:])
+        sys.exit(0)
+    
+    # Primary instance: continue as normal
     # Central list to manage open windows (optional, but kept for consistency)
     open_windows = []
 
     # Create the first window
     viewer = ImageViewer(window_list=open_windows)
     viewer.show()
+    
+    # Connect signal to handle files from secondary instances
+    def handle_received_files(files):
+        """Open files received from secondary instances in new windows"""
+        for file_path in files:
+            if os.path.isfile(file_path):
+                # Create new window for each file
+                new_viewer = ImageViewer(window_list=open_windows)
+                new_viewer.show()
+                QTimer.singleShot(100, lambda f=file_path, v=new_viewer: v.open_file(f))
+    
+    single_instance.files_received.connect(handle_received_files)
 
     # Check for file arguments (CLI support)
     # Note: On macOS "Open With", FileOpen event handles it.
