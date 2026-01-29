@@ -919,28 +919,34 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                         
                         # Process Alpha channel (if present)
                         if channels == 4:
-                            # Alpha usually shouldn't be contrast stretched? 
-                            # Or should it? For transparency, probably keep original 0-255?
-                            # If float 0-1, scale to 0-255.
-                            # If raw float32, data might be 0-1?
-                            # User generated file has 0 or 1 floats?
-                            # Assuming data already normalized or we use raw?
-                            # If float, we need to know range.
-                            # BUT contrast logic above assumes data in min_val-max_val range.
-                            # If alpha is also same range?
-                            # Let's assume we copy alpha directly but cast to uint8 properly.
                             alpha = data[..., 3]
                             if alpha.dtype.kind == 'f':
-                                # Check range? If <= 1.0 assume 0-1 -> 0-255
                                 if alpha.max() <= 1.0:
                                      alpha_u8 = (alpha * 255).astype(np.uint8)
                                 else:
                                      alpha_u8 = np.clip(alpha, 0, 255).astype(np.uint8)
                             else:
                                 alpha_u8 = np.clip(alpha, 0, 255).astype(np.uint8)
-                            stretched_channels.append(alpha_u8)
                             
-                        processed_data = np.stack(stretched_channels, axis=-1).astype(np.uint8)
+                            # Manual Blending (Simple Arithmetic)
+                            # Flatten alpha to 0.0-1.0
+                            alpha_f = alpha_u8.astype(np.float32) / 255.0
+                            
+                            # Background color (e.g. dark gray for visibility)
+                            bg = 40.0 
+                            
+                            # Blend RGB channels
+                            # Result = RGB * Alpha + BG * (1 - Alpha)
+                            blended_channels = []
+                            for i in range(3):
+                                comp = stretched_channels[i].astype(np.float32)
+                                blended = (comp * alpha_f) + (bg * (1.0 - alpha_f))
+                                blended_channels.append(np.clip(blended, 0, 255).astype(np.uint8))
+                                
+                            processed_data = np.stack(blended_channels, axis=-1)
+                        else:
+                            processed_data = np.stack(stretched_channels, axis=-1).astype(np.uint8)
+
                     else:
                         processed_data = np.zeros_like(data, dtype=np.uint8)
                 else:
