@@ -963,20 +963,9 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                     processed_data = np.ascontiguousarray(processed_data)
 
                 if c_out == 4:
-                    # Convert RGBA to BGRA (ARGB32 expects BGRA in memory on little endian)
-                    # 0xAARRGGBB -> Memory: BB GG RR AA
-                    # Wait, ARGB32 0xAARRGGBB.
-                    # Little Endian: Byte 0=BB, Byte 1=GG, Byte 2=RR, Byte 3=AA.
-                    # My data is [R, G, B, A].
-                    # I need [B, G, R, A].
-                    
-                    # Swap R and B axes
-                    # This creates a copy/view.
-                    # We need actual shuffle.
-                    # Use [2, 1, 0, 3] mapping.
-                    bgra = processed_data[..., [2, 1, 0, 3]].copy()
-                    processed_data = bgra # Replace reference
-                    
+                    # Use ARGB32 (Native) to avoid potential stride/rendering artifacts on some platforms
+                    # ARGB32 expects BGRA byte order
+                    processed_data = processed_data[..., [2, 1, 0, 3]].copy()
                     fmt = QImage.Format.Format_ARGB32
                 else:
                     fmt = QImage.Format.Format_RGB888
