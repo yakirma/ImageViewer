@@ -909,7 +909,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             # Determine mode: standard RGB or Colormapped (single channel)
             # If RGB and map is 'gray', show as RGB.
             # If RGB and map is NOT 'gray', extract Ch0 and map it.
-            is_rgb = (data.ndim == 3 and data.shape[2] == 3)
+            is_rgb = (data.ndim == 3 and data.shape[2] in [3, 4])
             treat_as_rgb = is_rgb and (self.colormap == 'gray')
 
             if treat_as_rgb:  # Color Image
