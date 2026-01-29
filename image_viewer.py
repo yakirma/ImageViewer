@@ -2091,9 +2091,11 @@ class ImageViewer(QMainWindow):
         """Invalidate the cache for a specific file path and refresh overlays.
            Call this when the source image appearance (colormap/contrast) changes.
         """
-        if file_path in self.overlay_cache:
-            del self.overlay_cache[file_path]
-            self._update_overlays()
+        # Remove all cache entries where this file_path is the source
+        pairs_to_remove = [(src, tgt) for (src, tgt) in self.overlay_cache.keys() if src == file_path]
+        for pair in pairs_to_remove:
+            del self.overlay_cache[pair]
+        self._update_overlays()
 
     def _on_overlay_changed(self, file_path, alpha):
         # file_path is the SOURCE of the overlay
@@ -2118,31 +2120,29 @@ class ImageViewer(QMainWindow):
         if not self.active_label or not self.active_label.current_pixmap:
             return
 
-        print(f"DEBUG _update_overlays: active_label.file_path = '{getattr(self.active_label, 'file_path', 'NO FILE_PATH')}'")
-        print(f"DEBUG _update_overlays: overlay_alphas = {list(self.overlay_alphas.keys())}")
-
         overlays_to_draw = []
         target_size = self.active_label.current_pixmap.size()
-        
-        # Get the active label's file path
         active_path = getattr(self.active_label, 'file_path', None)
+        
+        if not active_path:
+            self.active_label.set_overlay(None)
+            return
 
-        for path, alpha in self.overlay_alphas.items():
-            # Only apply overlays that are for OTHER images (not the active one)
-            if alpha > 0 and path != active_path:
-                if path not in self.overlay_cache:
-                    # Find the source window with this image and use its current_pixmap (includes all modifications)
+        # Only apply overlays where the active_path is the TARGET
+        for (source_path, target_path), alpha in self.overlay_alphas.items():
+            if alpha > 0 and target_path == active_path:
+                pair = (source_path, target_path)
+                if pair not in self.overlay_cache:
+                    # Find source pixmap
                     source_pixmap = None
                     for win in self.window_list:
                         try:
-                            # Check if this window has the overlay image loaded in single view
-                            if getattr(win, 'current_file_path', None) == path and win.image_label and win.image_label.current_pixmap:
+                            if getattr(win, 'current_file_path', None) == source_path and win.image_label and win.image_label.current_pixmap:
                                 source_pixmap = win.image_label.current_pixmap
                                 break
-                            # Also check montage labels
                             if hasattr(win, 'montage_labels'):
                                 for label in win.montage_labels:
-                                    if hasattr(label, 'file_path') and label.file_path == path and label.current_pixmap:
+                                    if hasattr(label, 'file_path') and label.file_path == source_path and label.current_pixmap:
                                         source_pixmap = label.current_pixmap
                                         break
                                 if source_pixmap:
@@ -2151,126 +2151,24 @@ class ImageViewer(QMainWindow):
                             pass
                     
                     if source_pixmap:
-                        # Use the already-processed pixmap from the source window
                         scaled_pixmap = source_pixmap.scaled(target_size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                        self.overlay_cache[path] = scaled_pixmap
-                    else:
-                        # Fallback: load raw image if no source window found
-                        try:
-                            handler = ImageHandler()
-                            handler.load_image(path)
-                            if handler.original_image_data is not None:
-                                height, width = handler.original_image_data.shape[:2]
-                                data = handler.original_image_data
-                            
-                                # Retrieve state from source window
-                                target_cmap = 'gray'
-                                target_limits = None
-                            for win in self.window_list:
-                                try:
-                                    # Skip windows in Montage Mode as their current_file_path might be stale/ambiguous
-                                    if win.stacked_widget.currentWidget() == win.montage_widget:
-                                        continue
-                                        
-                                    if getattr(win, 'current_file_path', None) == path and win.active_label:
-                                        target_cmap = win.active_label.colormap
-                                        target_limits = win.active_label.contrast_limits
-                                        break
-                                except: pass
+                        self.overlay_cache[pair] = scaled_pixmap
+               
+                if pair in self.overlay_cache:
+                    overlays_to_draw.append((self.overlay_cache[pair], alpha))
 
-                            # Normalization
-                            if data.dtype != np.uint8:
-                                data = data.astype(np.float32)
-
-                            if len(data.shape) == 2: # Grayscale processing
-                                if target_limits:
-                                    min_v, max_v = target_limits
-                                    if max_v > min_v:
-                                        norm_data = (data - min_v) / (max_v - min_v)
-                                        norm_data = np.clip(norm_data, 0, 1)
-                                    else:
-                                        norm_data = np.zeros_like(data, dtype=np.float32)
-                                else:
-                                    # Auto-Contrast
-                                    dmin, dmax = np.min(data), np.max(data)
-                                    if dmax > dmin:
-                                        norm_data = (data - dmin) / (dmax - dmin)
-                                    else:
-                                        norm_data = np.zeros_like(data, dtype=np.float32)
-                                
-                                # Apply Colormap
-                                if target_cmap != 'gray':
-                                    try:
-                                        colored_data = cm.get_cmap(target_cmap)(norm_data)
-                                        # colored_data is (H, W, 4) float 0..1
-                                        # Convert to RGB (H, W, 3)
-                                        data = (colored_data[:, :, :3] * 255).astype(np.uint8)
-                                    except Exception as e:
-                                        print(f"Colormap error: {e}")
-                                        data = (norm_data * 255).astype(np.uint8)
-                                else:
-                                    data = (norm_data * 255).astype(np.uint8)
-
-                            else: # RGB Image
-                                # Apply Contrast Limits or Auto-Contrast
-                                if target_limits:
-                                     min_v, max_v = target_limits
-                                     if max_v > min_v:
-                                          norm_data = (data - min_v) / (max_v - min_v)
-                                          norm_data = np.clip(norm_data, 0, 1)
-                                          data = (norm_data * 255).astype(np.uint8)
-                                     else:
-                                          data = np.zeros_like(data, dtype=np.uint8)
-                                else:
-                                     # Auto-Contrast (Global Min/Max)
-                                     dmin, dmax = np.min(data), np.max(data)
-                                     if dmax > dmin:
-                                          if data.dtype == np.uint8 and dmin == 0 and dmax == 255:
-                                               pass # Already full range
-                                          else:
-                                               norm_data = (data - dmin) / (dmax - dmin)
-                                               data = (norm_data * 255).astype(np.uint8)
-                                     else:
-                                          if data.max() <= 1.0: 
-                                              data = (data * 255).astype(np.uint8)
-                                          else:
-                                              # Fallback cast
-                                              data = data.astype(np.uint8)
-
-                                q_img = QImage(data.data, width, height, 3 * width, QImage.Format.Format_RGB888)
-                            
-                            # Scaling
-                            # We must match the target_size exactly
-                            # Ensure data is contiguous
-                            if not data.flags['C_CONTIGUOUS']:
-                                data = np.ascontiguousarray(data)
-
-                            # QImage reference safety: Keep 'data' alive during QImage lifespan
-                            # Using partial function or just ensuring scope is sufficient here as QPixmap.fromImage copies
-                            q_img = None 
-                            if len(data.shape) == 2:
-                                q_img = QImage(data.data, width, height, width, QImage.Format.Format_Grayscale8)
-                            else:
-                                q_img = QImage(data.data, width, height, 3 * width, QImage.Format.Format_RGB888)
-                            
-                            # Explicit copy to QPixmap to detach from numpy buffer
-                            scaled_pixmap = QPixmap.fromImage(q_img).scaled(target_size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                            self.overlay_cache[path] = scaled_pixmap
-                        except Exception as e:
-                            print(f"Error loading overlay {path}: {e}")
-                            continue
-
-                if path in self.overlay_cache:
-                    overlays_to_draw.append((self.overlay_cache[path], alpha))
-
-        if self.active_label:
-            self.active_label.set_overlays(overlays_to_draw)
-        
-        # Also update all montage labels if in montage mode
-        if self.montage_labels:
-            for label in self.montage_labels:
-                if label != self.active_label: # Active already updated
-                    label.set_overlays(overlays_to_draw)
+        if overlays_to_draw:
+            combined = QPixmap(target_size)
+            combined.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(combined)
+            painter.drawPixmap(0, 0, self.active_label.current_pixmap)
+            for overlay_pixmap, alpha in overlays_to_draw:
+                painter.setOpacity(alpha)
+                painter.draw Pixmap(0, 0, overlay_pixmap)
+            painter.end()
+            self.active_label.set_overlay(combined)
+        else:
+            self.active_label.set_overlay(None)
 
     def closeEvent(self, event):
         """Remove window from the list when closed."""
