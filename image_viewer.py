@@ -2093,12 +2093,16 @@ class ImageViewer(QMainWindow):
             self._update_overlays()
 
     def _on_overlay_changed(self, file_path, alpha):
+        print(f"DEBUG: Overlay changed for path='{file_path}', alpha={alpha}")
         self.overlay_alphas[file_path] = alpha
         self._update_overlays()
 
     def _update_overlays(self):
         if not self.active_label or not self.active_label.current_pixmap:
             return
+
+        print(f"DEBUG _update_overlays: active_label.file_path = '{getattr(self.active_label, 'file_path', 'NO FILE_PATH')}'")
+        print(f"DEBUG _update_overlays: overlay_alphas = {list(self.overlay_alphas.keys())}")
 
         overlays_to_draw = []
         target_size = self.active_label.current_pixmap.size()
