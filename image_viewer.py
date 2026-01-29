@@ -1518,7 +1518,6 @@ class ImageViewer(QMainWindow):
             # Update Info Pane for ALL images
             # Use getattr to safely access color_format with fallback, in case loader didn't set it (legacy/error)
             fmt = getattr(self.image_handler, 'color_format', 'Grayscale')
-            print(f"DEBUG: Updating Info Pane with Color Format: {fmt}")
             self.info_pane.update_info(self.image_handler.width, self.image_handler.height,
                                        self.image_handler.dtype, self.image_handler.dtype_map,
                                        file_size=file_size,
