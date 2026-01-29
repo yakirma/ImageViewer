@@ -736,18 +736,35 @@ class ImageViewer(QMainWindow):
         override_settings = getattr(self, '_temp_montage_override', None)
         
         for file_path in file_paths:
+            # Handle NPZ key paths (format: "file.npz#key_name")
+            npz_key_to_load = None
+            actual_file_path = file_path
+            if '#' in file_path:
+                actual_file_path, npz_key_to_load = file_path.rsplit('#', 1)
+            
             temp_handler = ImageHandler()
             
             # Smart Override: Only apply raw settings if the file itself is raw
             # This prevents trying to read a PNG using raw dimensions/settings
             current_override = override_settings
             if current_override:
-                _, ext = os.path.splitext(file_path)
+                _, ext = os.path.splitext(actual_file_path)
                 if ext.lower() not in temp_handler.raw_extensions:
                     current_override = None
 
             try:
-                temp_handler.load_image(file_path, override_settings=current_override)
+                temp_handler.load_image(actual_file_path, override_settings=current_override)
+                
+                # If this is an NPZ file with a specific key, switch to that key
+                if npz_key_to_load and hasattr(temp_handler, 'npz_keys'):
+                    if npz_key_to_load in temp_handler.npz_keys and temp_handler.npz_keys[npz_key_to_load]:
+                        temp_handler.original_image_data = temp_handler.npz_data[npz_key_to_load]
+                        temp_handler.current_npz_key = npz_key_to_load
+                        # Update dimensions
+                        if temp_handler.original_image_data.ndim == 2:
+                            temp_handler.height, temp_handler.width = temp_handler.original_image_data.shape
+                        elif temp_handler.original_image_data.ndim == 3:
+                            temp_handler.height, temp_handler.width = temp_handler.original_image_data.shape[:2]
             except:
                 # Fallback if load fails (e.g. missing resolution and no override)
                 continue
@@ -1863,10 +1880,12 @@ class ImageViewer(QMainWindow):
                 self.thumbnail_pane.block_populate = False
             return
         
-        # Rebuild montage with selected files
+        # Handle selections: single file/key or multiple
         if len(selected_files) == 1:
+            # Single selection - use open_file which handles NPZ keys
             self.open_file(selected_files[0])
         else:
+            # Multiple selection - pass to display_montage which also handles NPZ keys
             self.display_montage(selected_files)
         
         # Unblock populate
