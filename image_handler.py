@@ -282,6 +282,21 @@ class ImageHandler:
         
         print(f"DEBUG: w={width} h={height} size={total_elements} channels={channels}")
 
+        # Heuristic: If we detected 16 channels of uint8, it's very likely float32 RGBA (4 bytes * 4 channels = 16 bytes)
+        # This fixes loading .raw files that are actually float32 RGBA without explicit extension/settings
+        if channels == 16 and container == np.uint8:
+            try:
+                raw_data_f32 = raw_data.view(np.float32)
+                # Check if size matches
+                if raw_data_f32.size == width * height * 4:
+                    raw_data = raw_data_f32
+                    channels = 4
+                    self.dtype = np.float32
+                    self.color_format = "RGBA"
+                    print("Heuristic: Re-interpreted 16-channel uint8 as 4-channel float32 RGBA")
+            except Exception as heuristic_e:
+                print(f"Heuristic failed: {heuristic_e}")
+
         if channels > 1:
              try:
                  # Reshape to (H, W, C)
