@@ -2106,9 +2106,13 @@ class ImageViewer(QMainWindow):
 
         overlays_to_draw = []
         target_size = self.active_label.current_pixmap.size()
+        
+        # Get the active label's file path
+        active_path = getattr(self.active_label, 'file_path', None)
 
         for path, alpha in self.overlay_alphas.items():
-            if alpha > 0:
+            # Only apply overlays that are for OTHER images (not the active one)
+            if alpha > 0 and path != active_path:
                 if path not in self.overlay_cache:
                     # Find the source window with this image and use its current_pixmap (includes all modifications)
                     source_pixmap = None
