@@ -866,10 +866,10 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self.apply_colormap()
 
     def apply_colormap(self, is_new_image=False):
-        if self.original_data is None:
-            return
-
         data = self.original_data
+        if data is None: return
+        processed_data = None
+        q_image = None
         
         if self.colormap == "flow":
             # If data is 2-channel, convert to RGB using flow_to_color
