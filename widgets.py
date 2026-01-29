@@ -2664,6 +2664,8 @@ class PointCloudViewer(QDialog):
         if gl is None: return
         
         if data is None: return
+        processed_data = None
+        q_image = None
         
         # Ensure single channel
         if data.ndim == 3:
