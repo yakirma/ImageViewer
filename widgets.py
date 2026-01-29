@@ -1623,10 +1623,7 @@ class ThumbnailPane(QDockWidget):
         """Populate thumbnail pane from persistent gallery"""
         # Don't populate if blocked (during selection-driven view changes)
         if hasattr(self, 'block_populate') and self.block_populate:
-            print("DEBUG: populate() blocked by block_populate flag")
             return
-        
-        print("DEBUG: populate() called - rebuilding thumbnails")
         
         # 1. Update gallery with images from all windows
         for widget in QApplication.topLevelWidgets():
@@ -1686,27 +1683,18 @@ class ThumbnailPane(QDockWidget):
         is_shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
         is_ctrl = bool(modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier))
 
-        print(f"DEBUG: index={index}, is_shift={is_shift}, is_ctrl={is_ctrl}, modifiers={modifiers}")
-
         if is_shift:
             anchor = self.last_selection_anchor if self.last_selection_anchor != -1 else index
             self._select_range(anchor, index)
-            print(f"DEBUG: Range selection from {anchor} to {index}")
         elif is_ctrl:
             # Toggle (Cmd/Ctrl + Click)
-            old_state = self.thumbnail_items[index].is_selected
             self._toggle_selection(index)
-            new_state = self.thumbnail_items[index].is_selected
-            print(f"DEBUG: Toggle click - was {old_state}, now {new_state}")
             self.last_selection_anchor = index
         else:
             # Default: Select Single (Exclusive)
             self._select_single(index)
-            print(f"DEBUG: Single selection of index {index}")
             self.last_selection_anchor = index
 
-        selected = [i for i, item in enumerate(self.thumbnail_items) if item.is_selected]
-        print(f"DEBUG: Selected indices after handling: {selected}")
         self._emit_selection_change()
 
     def _toggle_selection(self, index):
@@ -1723,17 +1711,7 @@ class ThumbnailPane(QDockWidget):
 
     def _emit_selection_change(self):
         selected_files = [item.file_path for item in self.thumbnail_items if item.is_selected]
-        print(f"DEBUG: _emit_selection_change() - emitting {len(selected_files)} files: {[os.path.basename(f) for f in selected_files]}")
-        
-        if len(selected_files) == 0:
-            import traceback
-            print("DEBUG: Stack trace for 0-file selection:")
-            traceback.print_stack()
-        
         self.selection_changed.emit(selected_files)
-        print(f"DEBUG: _emit_selection_change() - signal emitted, checking state after...")
-        selected_after = [item.file_path for item in self.thumbnail_items if item.is_selected]
-        print(f"DEBUG: After emit, {len(selected_after)} still selected")
         
         # Update Select All checkbox state (block signals to prevent loop)
         self.select_all_cb.blockSignals(True)
