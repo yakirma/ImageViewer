@@ -215,8 +215,10 @@ class ImageHandler:
                 # Set color format to display in info pane
                 if self.original_image_data.ndim == 3:
                     self.color_format = "RGB"
+                    print(f"DEBUG: Detected Standard Image RGB. Shape: {self.original_image_data.shape}")
                 else:
                     self.color_format = "Grayscale"
+                    print(f"DEBUG: Detected Standard Image Grayscale. Shape: {self.original_image_data.shape}")
         except Exception:
              raise
 
