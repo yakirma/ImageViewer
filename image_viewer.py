@@ -367,28 +367,62 @@ class ImageViewer(QMainWindow):
             self.channel_combo.blockSignals(False)
             return
 
-        # Check dimensions
-        if image.ndim == 2:
-            self.channel_combo.addItems(["Gray"])
-        elif image.ndim == 3:
-            channels = image.shape[2]
-            if channels == 3:
-                # Standard RGB
-                self.channel_combo.addItems(["RGB", "R", "G", "B", "RG"])
-            elif channels == 4:
-                # RGBA
-                self.channel_combo.addItems(["RGBA", "RGB", "RG", "R", "G", "B", "A"])
-            elif channels == 2:
-                # RG
-                self.channel_combo.addItems(["RG", "R", "G"])
-            else:
-                self.channel_combo.addItem(f"{channels} Channels")
+        # Check if this is an NPZ file with multiple keys
+        if hasattr(self.image_handler, 'npz_keys') and len(self.image_handler.npz_keys) > 1:
+            from PyQt6.QtGui import QStandardItemModel, QStandardItem, QColor
+            model = QStandardItemModel()
+            for key in self.image_handler.npz_keys.keys():
+                item = QStandardItem(key)
+                is_valid = self.image_handler.npz_keys[key]
+                if not is_valid:
+                    item.setEnabled(False)
+                    item.setForeground(QColor('gray'))  # Gray out invalid keys
+                model.appendRow(item)
+            self.channel_combo.setModel(model)
+            
+            # Select current key
+            if hasattr(self.image_handler, 'current_npz_key'):
+                try:
+                    index = list(self.image_handler.npz_keys.keys()).index(self.image_handler.current_npz_key)
+                    self.channel_combo.setCurrentIndex(index)
+                except ValueError:
+                    pass
+        else:
+            # Standard channel options for regular images
+            if image.ndim == 2:
+                self.channel_combo.addItems(["Gray"])
+            elif image.ndim == 3:
+                channels = image.shape[2]
+                if channels == 3:
+                    # Standard RGB
+                    self.channel_combo.addItems(["RGB", "R", "G", "B", "RG"])
+                elif channels == 4:
+                    # RGBA
+                    self.channel_combo.addItems(["RGBA", "RGB", "RG", "R", "G", "B", "A"])
+                elif channels == 2:
+                    # RG
+                    self.channel_combo.addItems(["RG", "R", "G"])
+                else:
+                    self.channel_combo.addItem(f"{channels} Channels")
         
         self.channel_combo.blockSignals(False)
 
     def apply_channel_selection(self, image_data):
         """Slice image data based on selected channel option."""
         selection = self.channel_combo.currentText()
+        
+        # Handle NPZ key selection
+        if hasattr(self.image_handler, 'npz_keys') and selection in self.image_handler.npz_keys:
+            if self.image_handler.npz_keys[selection]:  # Valid key
+                self.image_handler.original_image_data = self.image_handler.npz_data[selection]
+                self.image_handler.current_npz_key = selection
+                # Update dimensions
+                if self.image_handler.original_image_data.ndim == 2:
+                    self.image_handler.height, self.image_handler.width = self.image_handler.original_image_data.shape
+                elif self.image_handler.original_image_data.ndim == 3:
+                    self.image_handler.height, self.image_handler.width = self.image_handler.original_image_data.shape[:2]
+                return self.image_handler.original_image_data
+        
         if image_data is None or image_data.ndim < 3:
             return image_data
             

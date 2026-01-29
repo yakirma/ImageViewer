@@ -39,6 +39,12 @@ class ImageHandler:
             ".u10": "uint10", ".u12": "uint12", ".u14": "uint14", # Often stored in 16-bit
             ".rgb": np.uint8, ".rgba": np.uint8, ".bgr": np.uint8, ".bgra": np.uint8
         }
+        
+        # NPZ file support
+        self.npz_keys = {}  # {key: is_valid_image}
+        self.current_npz_key = None
+        self.npz_file_path = None
+        self.npz_data = None
 
     def is_single_channel_image(self):
         if self.original_image_data is None:
@@ -55,7 +61,9 @@ class ImageHandler:
              self.video_cap.release()
              self.video_cap = None
 
-        if ext_lower in self.video_extensions:
+        if ext_lower == '.npz':
+            self._load_npz_file(file_path)
+        elif ext_lower in self.video_extensions:
              self._load_video(file_path)
         elif ext_lower in self.flow_extensions:
              self._load_optical_flow(file_path)
@@ -121,6 +129,62 @@ class ImageHandler:
                 raise ValueError("Failed to read flow file")
         except Exception:
              raise
+
+    def _load_npz_file(self, file_path):
+        """Load NPZ file and extract image arrays."""
+        try:
+            npz_file = np.load(file_path)
+            
+            # Store available keys and their validity
+            self.npz_keys = {}
+            for key in npz_file.files:
+                arr = npz_file[key]
+                self.npz_keys[key] = self._is_valid_image_array(arr)
+            
+            # If only one array, load it directly
+            if len(npz_file.files) == 1:
+                key = npz_file.files[0]
+                self.original_image_data = npz_file[key]
+                self.current_npz_key = key
+            else:
+                # Load first valid key
+                valid_key_found = False
+                for key in npz_file.files:
+                    if self.npz_keys[key]:
+                        self.original_image_data = npz_file[key]
+                        self.current_npz_key = key
+                        valid_key_found = True
+                        break
+                
+                if not valid_key_found:
+                    raise ValueError(f"No valid image arrays found in NPZ file: {file_path}")
+            
+            # Store reference for switching keys later
+            self.npz_file_path = file_path
+            self.npz_data = npz_file
+            
+            # Set dimensions
+            if self.original_image_data is not None:
+                if self.original_image_data.ndim == 2:
+                    self.height, self.width = self.original_image_data.shape
+                elif self.original_image_data.ndim == 3:
+                    self.height, self.width = self.original_image_data.shape[:2]
+                self.dtype = self.original_image_data.dtype
+        except Exception:
+            raise
+    
+    def _is_valid_image_array(self, arr):
+        """Check if array can be displayed as an image."""
+        if not isinstance(arr, np.ndarray):
+            return False
+        if arr.ndim not in [2, 3]:
+            return False
+        if arr.ndim == 3 and arr.shape[2] not in [2, 3, 4]:
+            return False
+        # Check that array has reasonable dimensions
+        if arr.shape[0] < 1 or arr.shape[1] < 1:
+            return False
+        return True
 
     def _load_standard_image(self, file_name):
         try:
