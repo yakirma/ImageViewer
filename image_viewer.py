@@ -1518,10 +1518,14 @@ class ImageViewer(QMainWindow):
             # Update Info Pane for ALL images
             # Use getattr to safely access color_format with fallback, in case loader didn't set it (legacy/error)
             fmt = getattr(self.image_handler, 'color_format', 'Grayscale')
+            
+            # Block signals to prevent _on_parameter_change from triggering a reload loop
+            self.info_pane.blockSignals(True)
             self.info_pane.update_info(self.image_handler.width, self.image_handler.height,
                                        self.image_handler.dtype, self.image_handler.dtype_map,
                                        file_size=file_size,
                                        color_format=fmt)
+            self.info_pane.blockSignals(False)
             
             # If not visible and not previously hidden by user preference interaction (handled elsewhere),
             # we generally leave visibility as is or default to hidden if it's annoying?
