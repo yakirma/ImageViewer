@@ -2114,14 +2114,19 @@ class ImageViewer(QMainWindow):
                 self._update_overlays()
 
     def _update_overlays(self):
+        print("DEBUG: _update_overlays called")
         if not self.active_label or not self.active_label.current_pixmap:
+            print("DEBUG: No active label or pixmap")
             return
 
         overlays_to_draw = []
         target_size = self.active_label.current_pixmap.size()
         active_path = getattr(self.active_label, 'file_path', None)
+        print(f"DEBUG: Active Path: {active_path}")
+        print(f"DEBUG: Overlay Alphas Keys: {list(self.overlay_alphas.keys())}")
         
         if not active_path:
+            print("DEBUG: No active_path")
             self.active_label.set_overlays([])
             return
 
@@ -2132,6 +2137,8 @@ class ImageViewer(QMainWindow):
                 if pair not in self.overlay_cache:
                     # Find source pixmap
                     source_pixmap = None
+                    
+                    # 1. Search Open Windows
                     for win in self.window_list:
                         try:
                             if getattr(win, 'current_file_path', None) == source_path and win.image_label and win.image_label.current_pixmap:
@@ -2146,6 +2153,10 @@ class ImageViewer(QMainWindow):
                                     break
                         except:
                             pass
+                    
+                    # 2. Fallback: Search Thumbnail Gallery (Recent History)
+                    if not source_pixmap and hasattr(self, 'thumbnail_pane') and source_path in self.thumbnail_pane.gallery_images:
+                         source_pixmap = self.thumbnail_pane.gallery_images[source_path]
                     
                     if source_pixmap:
                         scaled_pixmap = source_pixmap.scaled(target_size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
