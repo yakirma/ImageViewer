@@ -1069,7 +1069,7 @@ class ImageViewer(QMainWindow):
         if self.sender() is not self.active_label: return
 
             
-            self.zoom_status_label.setText(f"Zoom: {int(scale_factor * 100)}%")
+        self.zoom_status_label.setText(f"Zoom: {int(scale_factor * 100)}%")
 
     def reapply_raw_parameters(self, raw_settings):
         # Renamed argument to raw_settings to avoid shadowing global settings module if imported
