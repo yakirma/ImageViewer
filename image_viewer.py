@@ -1062,24 +1062,11 @@ class ImageViewer(QMainWindow):
                     self.resizeDocks([dock], [saved_width], Qt.Orientation.Horizontal)
 
 
-        if self.active_label:
-            zoom_factor = 10 ** ((value / 1000.0) - 2.0)
-            if abs(self.active_label._get_effective_scale_factor() - zoom_factor) > 1e-5:
-                # Use setter which updates shared state if active
-                self.active_label.zoom_scale = zoom_factor
 
-    def _on_shared_zoom_changed(self, multiplier):
-        # Triggered when shared state changes (e.g. via mouse wheel on image)
-        if self.active_label and not self.zoom_slider.isSliderDown():
-             zoom = self.active_label._get_effective_scale_factor()
-             if zoom > 0:
-                 val = (np.log10(zoom) + 2.0) * 1000.0
 
 
     def _on_image_label_zoom_changed(self, scale_factor):
         if self.sender() is not self.active_label: return
-        if scale_factor > 0:
-            slider_value = int((np.log10(scale_factor) + 2.0) * 1000.0)
 
             
             self.zoom_status_label.setText(f"Zoom: {int(scale_factor * 100)}%")
