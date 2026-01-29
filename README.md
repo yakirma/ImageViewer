@@ -25,10 +25,8 @@ ImageViewer is a powerful, cross-platform desktop application for viewing and an
 2.  Run the installer.
 3.  Launch **ImageViewer** from your Start Menu or Desktop.
 
-### Linux
-1.  Download the `.deb` package (for Debian/Ubuntu) or `.tar.gz`.
-2.  **Debian/Ubuntu:** `sudo dpkg -i ImageViewer_Linux.deb`
-3.  **Other:** Extract the tarball and run the executable directly.
+## Usage
+Once installed, you can open any supported image or video file by **right-clicking** it and selecting **Open With > ImageViewer**.
 
 ---
 
