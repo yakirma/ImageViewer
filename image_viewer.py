@@ -755,14 +755,73 @@ class ImageViewer(QMainWindow):
                 if ext.lower() not in temp_handler.raw_extensions:
                     current_override = None
                 else:
-                    # Check if target file has explicit resolution in name (e.g. _10x10)
-                    # If so, we should NOT apply the override (which belongs to a different file)
+                    # Check if target file has explicit resolution in name
                     basename = os.path.basename(actual_file_path)
-                    if re.search(r"_(\d+)x(\d+)", basename):
+                    if re.search(r"[\-_](\d+)x(\d+)", basename):
                         current_override = None
+                    # [NEW] Check if file size matches the override settings
+                    # This prevents forcing small dimensions (e.g. 10x10) onto large files
+                    # or mismatching non-square settings.
+                    elif current_override and os.path.exists(actual_file_path):
+                         try:
+                             fsize = os.path.getsize(actual_file_path)
+                             ow = current_override.get('width', 0)
+                             oh = current_override.get('height', 0)
+                             odtype = current_override.get('dtype', np.uint8)
+                             
+                             if isinstance(odtype, str):
+                                 pass # parsing hard here without handler, skip or trust?
+                             else:
+                                 bpp = np.dtype(odtype).itemsize
+                                 # Calculate expected channels effectively?
+                                 # If 10x10 RGBA -> 4 channels. 
+                                 # But override might not say channels explicitly if it was raw_settings dict?
+                                 # raw_settings usually has 'width', 'height', 'dtype', 'color_format'
+                                 c_fmt = current_override.get('color_format', 'Grayscale')
+                                 ch = 4 if 'RGBA' in c_fmt else (3 if 'RGB' in c_fmt else 1)
+                                 
+                                 expected_size = ow * oh * bpp * ch
+                                 
+                                 # Allow some tolerance or exact match?
+                                 # Raw files are usually exact.
+                                 if fsize != expected_size:
+                                     # Mismatch - unlikely this override belongs to this file
+                                     current_override = None
+                         except:
+                             pass
 
             try:
                 temp_handler.load_image(actual_file_path, override_settings=current_override)
+                # ... (rest of loading) ...
+
+# ... (jumping to _update_overlays fix) ...
+
+                    # 1. Search Open Windows
+                    for win in self.window_list:
+                        try:
+                            # Check main image label
+                            if getattr(win, 'current_file_path', None) == source_path and win.image_label:
+                                # Ensure we don't use a downsampled proxy
+                                label = win.image_label
+                                if label.current_pixmap and getattr(label, '_proxy_scale', 1.0) == 1.0:
+                                    source_pixmap = label.current_pixmap
+                                    break
+                            
+                            # Check montage labels
+                            if hasattr(win, 'montage_labels'):
+                                for label in win.montage_labels:
+                                    if hasattr(label, 'file_path') and label.file_path == source_path and label.current_pixmap:
+                                         if getattr(label, '_proxy_scale', 1.0) == 1.0:
+                                            source_pixmap = label.current_pixmap
+                                            break
+                                if source_pixmap:
+                                    break
+                        except:
+                            pass
+                    
+                    if not source_pixmap:
+                        # 2. Fallback: Load from disk
+                        # ...
                 
                 # If this is an NPZ file with a specific key, switch to that key
                 if npz_key_to_load and hasattr(temp_handler, 'npz_keys'):
@@ -2178,19 +2237,12 @@ class ImageViewer(QMainWindow):
                                       if source_path in history:
                                           override = history[source_path]
                              
+                             # print(f"DEBUG: Overlay disk load for {source_path}. Override: {override}")
                              temp_handler.load_image(source_path, override_settings=override)
                              
                              if temp_handler.original_image_data is not None:
-                                  # Create pixmap. We need to apply colormap... this is complex.
-                                  # If we load raw data, it's just data. We need to render it to a pixmap.
-                                  # We can use a temporary label to reuse the rendering logic?
-                                  # Or just simple gray/rgb conversion?
-                                  # Given the user wants "original image", we should probably apply default rendering.
-                                  
-                                  # Re-using ZoomableDraggableLabel logic is best to get consistent "image"
-                                  # But that requires a widget.
-                                  # Let's simple-render for now:
                                   data = temp_handler.original_image_data
+                                  # print(f"DEBUG: Loaded overlay data shape: {data.shape}")
                                   if data.ndim == 2:
                                       h, w = data.shape
                                       # Normalize to uint8
@@ -2206,6 +2258,9 @@ class ImageViewer(QMainWindow):
                                           h, w, _ = data.shape
                                           qimg = QImage(data.data, w, h, 4*w, QImage.Format.Format_RGBA8888)
                                           source_pixmap = QPixmap.fromImage(qimg)
+                        except Exception as e:
+                             print(f"DEBUG: Overlay disk load failed: {e}")
+                             pass
                         except:
                              pass
                     
