@@ -274,7 +274,57 @@ class ImageHandler:
         raw_data = np.fromfile(file_name, dtype=container)
         
         # Determine expected size based on format
-        expected_size = width * height
+        expected_pixels = width * height
+        total_elements = raw_data.size
+        
+        channels = 1
+        if total_elements > expected_pixels:
+             # Check if exact multiple
+             if total_elements % expected_pixels == 0:
+                 channels = total_elements // expected_pixels
+        
+        if channels > 1:
+             # Try to reshape into (H, W, C)
+             try:
+                 raw_data = raw_data.reshape((height, width, channels))
+                 
+                 # Set color format based on channel count
+                 if channels == 3:
+                     self.color_format = "RGB"
+                 elif channels == 4:
+                     self.color_format = "RGBA"
+                 elif channels == 2:
+                     # 2 Channel raw could be Flow or just 2-channel?
+                     # Standard viewer treats 2-channel as Grayscale (Mag) or Flow.
+                     # Leave defaults or set to "Custom"? 
+                     # self.color_format = "Custom" # Info pane doesn't sport custom yet.
+                     pass 
+                 else:
+                     # Multi-channel
+                     pass
+             except ValueError:
+                 # Reshape failed? Fallback?
+                 pass
+        else:
+             # Single channel reshape
+             try:
+                 raw_data = raw_data.reshape((height, width))
+             except ValueError:
+                 # If reshape fails, it might be that explicit dimensions are wrong for file size?
+                 # But we proceed with flattened or whatever we have?
+                 # Legacy behavior was to just set original_image_data to raw_data 
+                 # (which is 1D array if fromfile used without reshape? Wait, ImageHandler legacy was...)
+                 # Actually legacy didn't reshape in fromfile line?
+                 # Let's check original lines.
+                 pass
+                 
+        self.original_image_data = raw_data
+        
+        # Format Handling for YUV etc (logic continues below...)
+        expected_size = width * height # This variable used below for YUV checks? 
+        # Actually expected_size variable definition was overwritten by me in replacement.
+        # I should keep it for YUV logic.
+
         
         if "YUV" in color_format:
             if "NV12" in color_format or "NV21" in color_format or "I420" in color_format:

@@ -372,7 +372,7 @@ class InfoPane(QDockWidget):
         self.layout.addRow("Height:", self.height_spinbox)
 
         self.color_format_combo = QComboBox()
-        self.color_format_combo.addItems(["Grayscale", "RGB", "Bayer GRBG", "Bayer RGGB", "Bayer BGGR", "Bayer GBRG", 
+        self.color_format_combo.addItems(["Grayscale", "RGB", "RGBA", "Bayer GRBG", "Bayer RGGB", "Bayer BGGR", "Bayer GBRG", 
                                           "YUV NV12", "YUV NV21", "YUV YUYV", "YUV UYVY", "YUV I420"])
         self.color_format_combo.currentTextChanged.connect(self._on_parameter_change)
         self.layout.addRow("Format:", self.color_format_combo)
