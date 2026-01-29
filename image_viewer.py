@@ -2164,7 +2164,7 @@ class ImageViewer(QMainWindow):
             painter.drawPixmap(0, 0, self.active_label.current_pixmap)
             for overlay_pixmap, alpha in overlays_to_draw:
                 painter.setOpacity(alpha)
-                painter.draw Pixmap(0, 0, overlay_pixmap)
+                painter.drawPixmap(0, 0, overlay_pixmap)
             painter.end()
             self.active_label.set_overlay(combined)
         else:
