@@ -90,6 +90,8 @@ class ImageHandler:
         self.video_frame_count = int(self.video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.width = int(self.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.color_format = "RGB" # Videos opened as RGB via OpenCV usually
+        
         
         # Load first frame
         self.seek_frame(0)
@@ -219,6 +221,7 @@ class ImageHandler:
              raise
 
     def _load_raw_image(self, file_name, override_settings=None):
+        self.color_format = "Grayscale" # Default for raw
         color_format = "Grayscale"
         
         if override_settings:
@@ -226,6 +229,7 @@ class ImageHandler:
             height = override_settings['height']
             dtype_str = override_settings['dtype']
             color_format = override_settings.get('color_format', "Grayscale")
+            self.color_format = color_format
             
             if isinstance(dtype_str, type) or isinstance(dtype_str, np.dtype):
                 dtype_val = np.dtype(dtype_str)
