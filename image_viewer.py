@@ -34,7 +34,10 @@ from widgets import ZoomableDraggableLabel, InfoPane, MathTransformPane, ZoomSet
 from image_handler import ImageHandler
 import settings
 import sys
-import requests
+try:
+    import requests
+except ImportError:
+    requests = None
 
 __version__ = "1.0.6"
 
@@ -42,6 +45,9 @@ class CheckForUpdates(QThread):
     update_available = pyqtSignal(str, str) # version, url
 
     def run(self):
+        if requests is None:
+            return
+
         try:
             repo = "yakirma/ImageViewer"
             url = f"https://api.github.com/repos/{repo}/releases/latest"
