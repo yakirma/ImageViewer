@@ -9,24 +9,33 @@ from single_instance import SingleInstance
 
 # Define Custom Application Class at module level
 class ImageViewerApp(QApplication):
+    def __init__(self, argv):
+        super().__init__(argv)
+        self.file_buffer = []
+        self.open_timer = QTimer()
+        self.open_timer.setSingleShot(True)
+        self.open_timer.timeout.connect(self._flush_file_buffer)
+
     def event(self, event):
         if event.type() == QEvent.Type.FileOpen:
-            # Handle macOS FileOpen event (Open With...)
             file_path = event.file()
             if file_path:
-                # Open immediately without delay to avoid flashes
-                self.open_file_event(file_path)
+                self.file_buffer.append(file_path)
+                self.open_timer.start(50)  # Wait 50ms for more files
             return True
         return super().event(event)
         
-    def open_file_event(self, file_path):
-        # Access the global viewer instance or window list
-        # Since we are in the App class, we need a reference to the windows.
-        # We can find top level widgets.
+    def _flush_file_buffer(self):
+        if not self.file_buffer:
+            return
+            
+        files = list(self.file_buffer)
+        self.file_buffer.clear()
+        
         top_widgets = self.topLevelWidgets()
         for widget in top_widgets:
             if isinstance(widget, ImageViewer):
-                widget.open_file(file_path)
+                widget.open_files(files)
                 widget.raise_()
                 widget.activateWindow()
                 return
@@ -62,30 +71,18 @@ if __name__ == "__main__":
     
     # Connect signal to handle files from secondary instances
     def handle_received_files(files):
-        """Open files received from secondary instances in new windows"""
-        for file_path in files:
-            if os.path.isfile(file_path):
-                # Create new window for each file
-                new_viewer = ImageViewer(window_list=open_windows)
-                new_viewer.show()
-                QTimer.singleShot(100, lambda f=file_path, v=new_viewer: v.open_file(f))
+        """Open files received from secondary instances in the primary window"""
+        if files:
+            viewer.open_files(files)
+            viewer.raise_()
+            viewer.activateWindow()
     
     single_instance.files_received.connect(handle_received_files)
 
     # Check for file arguments (CLI support)
-    # Note: On macOS "Open With", FileOpen event handles it.
-    # Terminal args are handled here.
     if len(sys.argv) > 1:
         file_paths = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
         if file_paths:
-            # Open first file in primary window
-            viewer.open_file(file_paths[0])
-            
-            # Open additional files in new windows
-            for additional_file in file_paths[1:]:
-                if os.path.exists(additional_file):
-                    new_viewer = ImageViewer(window_list=open_windows)
-                    new_viewer.show()
-                    new_viewer.open_file(additional_file)
+            viewer.open_files(file_paths)
 
     sys.exit(app.exec())

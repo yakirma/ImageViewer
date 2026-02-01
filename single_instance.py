@@ -46,8 +46,19 @@ class SingleInstance(QObject):
         self.server.newConnection.connect(self._on_new_connection)
         
         if not self.server.listen(self.app_id):
-            print(f"Warning: Could not start single instance server: {self.server.errorString()}")
-            self.is_primary = True  # Proceed anyway
+            # Another process might have won the race to listen.
+            # Try connecting one last time.
+            socket = QLocalSocket()
+            socket.connectToServer(self.app_id)
+            if socket.waitForConnected(500):
+                socket.disconnectFromServer()
+                self.is_primary = False
+                return False
+            
+            # If even connection fails, we are in a weird state (e.g. permission error)
+            # Proceed as primary for usability, but it's a fallback.
+            print(f"Warning: Could not start single instance server or connect: {self.server.errorString()}")
+            self.is_primary = True
             return True
         
         self.is_primary = True

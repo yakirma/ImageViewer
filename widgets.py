@@ -3,7 +3,8 @@ import time
 import numpy as np
 import re
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QPointF, QEvent, QObject, QTimer, QRectF, QSettings, QSortFilterProxyModel, QDir, QRegularExpression, QItemSelectionModel, QSize
-from PyQt6.QtGui import QPixmap, QPainter, QNativeGestureEvent, QDoubleValidator, QKeyEvent, QImage, QMouseEvent, QColor, QIcon, QFileSystemModel
+from PyQt6.QtGui import QPixmap, QPainter, QNativeGestureEvent, QDoubleValidator, QKeyEvent, QImage, QMouseEvent, QColor, QIcon, QFileSystemModel, QRadialGradient, QPen, QBrush
+from PyQt6.QtGui import QMatrix4x4
 from PyQt6.QtWidgets import (
     QApplication,
     QLabel,
@@ -198,28 +199,47 @@ class HistogramWidget(QWidget):
             self.data = None
             return
 
-        self.data = data.astype(np.float64)
-
-        if len(self.data.shape) == 3 and self.data.shape[2] == 3:  # RGB
+        # Ensure we work with float64 for precision/finite checks
+        working_data = data.astype(np.float64)
+        
+        # We want self.data to be a 1D array of finite values for percentile calculations
+        # But we also need to draw histograms for channels if RGB.
+        
+        if working_data.ndim == 3 and working_data.shape[2] == 3:  # RGB
             colors = [(255, 0, 0, 150), (0, 255, 0, 150), (0, 0, 255, 150)]
+            # Calculate luminance for the overall "self.data" used in contrast/percentiles
+            lum = np.dot(working_data[..., :3], [0.2989, 0.5870, 0.1140])
+            self.data = lum[np.isfinite(lum)] # Only keep finite for percentiles
+            
             for i in range(3):
-                channel_data = self.data[..., i].flatten()
-                y, x = np.histogram(channel_data, bins=256, range=(0, 256))
-                hist = self.plot_widget.plot(x, y, stepMode="center", fillLevel=0, brush=colors[i])
-                self.histograms.append(hist)
-            # Use luminance for percentile calculations
-            self.data = np.dot(self.data[..., :3], [0.2989, 0.5870, 0.1140])
+                channel_data = working_data[..., i].flatten()
+                channel_finite = channel_data[np.isfinite(channel_data)]
+                if channel_finite.size > 0:
+                    y, x = np.histogram(channel_finite, bins=256)
+                    hist = self.plot_widget.plot(x, y, stepMode="center", fillLevel=0, brush=colors[i])
+                    self.histograms.append(hist)
         else:  # Grayscale
-            self.data = self.data.flatten()
-            y, x = np.histogram(self.data, bins=256)
-            hist = self.plot_widget.plot(x, y, stepMode="center", fillLevel=0, brush=(200, 200, 200, 150))
-            self.histograms.append(hist)
+            flat_data = working_data.flatten()
+            self.data = flat_data[np.isfinite(flat_data)]
+            if self.data.size > 0:
+                y, x = np.histogram(self.data, bins=256)
+                hist = self.plot_widget.plot(x, y, stepMode="center", fillLevel=0, brush=(200, 200, 200, 150))
+                self.histograms.append(hist)
 
-        min_val, max_val = np.min(self.data), np.max(self.data)
-        if min_val < max_val:
+        if self.data is None or self.data.size == 0:
+            return
+
+        # Double check self.data is finite (should be from logic above, but be defensive)
+        finite_data = self.data[np.isfinite(self.data)]
+        if finite_data.size == 0:
+            return
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            min_val = np.nanmin(finite_data)
+            max_val = np.nanmax(finite_data)
+            
+        if np.isfinite(min_val) and np.isfinite(max_val) and min_val < max_val:
             self.plot_widget.setXRange(min_val, max_val, padding=0.05)
-            # Do NOT set bounds here. If we are looking at visible area, global contrast might be outside.
-            # self.region.setBounds([min_val, max_val]) 
             if new_image:
                 self.region.setRegion([min_val, max_val])
 
@@ -236,9 +256,18 @@ class HistogramWidget(QWidget):
 
     def set_region_to_percentile(self, min_percent, max_percent):
         if self.data is not None and self.data.size > 0:
-            min_val = np.percentile(self.data, min_percent)
-            max_val = np.percentile(self.data, max_percent)
-            self.region.setRegion([min_val, max_val])
+            # self.data is filtered for finite values in update_histogram,
+            # but we filter again to be 100% sure we don't trigger internal warnings.
+            finite_data = self.data[np.isfinite(self.data)]
+            if finite_data.size == 0:
+                return
+
+            with np.errstate(divide='ignore', invalid='ignore'):
+                min_val = np.nanpercentile(finite_data, min_percent)
+                max_val = np.nanpercentile(finite_data, max_percent)
+                
+            if np.isfinite(min_val) and np.isfinite(max_val):
+                self.region.setRegion([min_val, max_val])
 
     def _apply_custom_values(self):
         try:
@@ -260,7 +289,7 @@ class MathTransformPane(QDockWidget):
 
     def __init__(self, parent=None):
         super().__init__("Math", parent)
-        self.setMinimumWidth(100)
+        self.setMinimumWidth(200)
         self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
 
         self.content_widget = QWidget()
@@ -272,6 +301,7 @@ class MathTransformPane(QDockWidget):
         self.expression_input.lineEdit().setPlaceholderText("Enter math expression (e.g., x+1, np.log(x))")
         self.expression_input.setMinimumWidth(50)
         self.expression_input.lineEdit().returnPressed.connect(self._on_apply)
+        self.expression_input.textActivated.connect(self._on_apply)
         self.expression_input.lineEdit().setClearButtonEnabled(True)
         # Deferred connection of editTextChanged is handled at end of __init__ or after error_label creation
         
@@ -290,9 +320,6 @@ class MathTransformPane(QDockWidget):
         
         self.layout.addWidget(self.expression_input)
 
-        self.apply_button = QPushButton("Apply Transform")
-        self.apply_button.clicked.connect(self._on_apply)
-        self.layout.addWidget(self.apply_button)
 
         self.error_label = QLabel("")
         self.error_label.setStyleSheet("color: red;")
@@ -303,7 +330,7 @@ class MathTransformPane(QDockWidget):
 
         self.setWidget(self.content_widget)
 
-    def _on_apply(self):
+    def _on_apply(self, _=None):
         expression = self.expression_input.currentText()
         if expression:
             self.error_label.clear()
@@ -344,7 +371,7 @@ class InfoPane(QDockWidget):
     def __init__(self, parent=None):
         super().__init__("Info", parent)
         self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
-        self.setMinimumWidth(100)
+        self.setMinimumWidth(200)
 
         self.content_widget = QWidget()
         self.content_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
@@ -908,14 +935,24 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             if treat_as_rgb:  # Color Image
                 channels = data.shape[2]
                 if self.contrast_limits:
-                    min_val, max_val = self.contrast_limits
+                    # Sanitize contrast limits: if not finite, fallback to defaults
+                    raw_min, raw_max = self.contrast_limits
+                    min_val = raw_min if np.isfinite(raw_min) else 0.0
+                    max_val = raw_max if np.isfinite(raw_max) else 255.0
+
                     if max_val > min_val:
                         stretched_channels = []
                         # Process RGB channels with contrast
-                        for i in range(3):
-                            channel = data[..., i].astype(np.float32)
-                            stretched = 255 * (channel - min_val) / (max_val - min_val)
-                            stretched_channels.append(np.clip(stretched, 0, 255))
+                        with np.errstate(divide='ignore', invalid='ignore'):
+                            for i in range(3):
+                                channel = data[..., i].astype(np.float32)
+                                # Handle non-finite values (inf/nan) by clipping them to the limits before math
+                                safe_channel = np.clip(channel, min_val, max_val)
+                                # Also handle any remaining NaNs (if min/max were bad)
+                                safe_channel = np.nan_to_num(safe_channel, nan=min_val)
+                                
+                                stretched = 255 * (safe_channel - min_val) / (max_val - min_val)
+                                stretched_channels.append(np.clip(stretched, 0, 255))
                         
                         # Process Alpha channel (if present)
                         if channels == 4:
@@ -999,17 +1036,39 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                 
                 # Let's peek below line 940 to be sure.
 
-                if self.contrast_limits:
-                    min_val, max_val = self.contrast_limits
-                    processed_data = np.clip(processed_data, min_val, max_val)
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    if self.contrast_limits:
+                        # Sanitize contrast limits: if not finite, fallback to defaults
+                        raw_min, raw_max = self.contrast_limits
+                        min_val = raw_min if np.isfinite(raw_min) else 0.0
+                        max_val = raw_max if np.isfinite(raw_max) else 255.0
 
-                min_val, max_val = np.min(processed_data), np.max(processed_data)
-                if min_val == max_val:
-                    norm_data = np.zeros_like(processed_data, dtype=float)
-                else:
-                    norm_data = (processed_data - min_val) / (max_val - min_val)
+                        # Use a copy to avoid modifying original_data
+                        processed_data = np.clip(processed_data, min_val, max_val)
+                        # Replace NaNs with min_val
+                        processed_data = np.nan_to_num(processed_data, nan=min_val)
 
-                colored_data = cm.get_cmap(self.colormap)(norm_data)
+                    # Use nanmin/nanmax to be ultra-safe with any remaining non-finite values
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        # COMPLETELY sanitize processed_data for normalization
+                        # Replace non-finite with 0 to prevent internal subtract warnings
+                        safe_proc = np.nan_to_num(processed_data, nan=0.0, posinf=0.0, neginf=0.0)
+                        
+                        if safe_proc.size > 0:
+                            curr_min = np.nanmin(safe_proc)
+                            curr_max = np.nanmax(safe_proc)
+                        else:
+                            curr_min = curr_max = 0.0
+                    
+                    if curr_min == curr_max or not np.isfinite(curr_min) or not np.isfinite(curr_max):
+                        norm_data = np.zeros_like(processed_data, dtype=float)
+                    else:
+                        with np.errstate(divide='ignore', invalid='ignore'):
+                            norm_data = (safe_proc - curr_min) / (curr_max - curr_min)
+                        # Final safety clamp
+                        norm_data = np.nan_to_num(norm_data, nan=0.0, posinf=1.0, neginf=0.0)
+
+                    colored_data = cm.get_cmap(self.colormap)(norm_data)
                 image_data_8bit = (colored_data[:, :, :3] * 255).astype(np.uint8)
                 processed_data = image_data_8bit # Fix: Update processed_data to hold the 3D RGB array
                 h, w, _ = image_data_8bit.shape
@@ -1159,21 +1218,19 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
 
     def get_view_state(self):
         """Returns a dictionary containing the current view state (zoom, pan, contrast, colormap)."""
-    def get_view_state(self):
-        """Returns a dictionary containing the current view state (zoom, pan, contrast, colormap)."""
-        # effective_scale is relative to the PIXMAP (which might be a proxy).
-        # We need to Normalize it to be relative to the ORIGINAL IMAGE.
-        # ScaleProxy = ScaleOriginal * ProxyFactor
-        # ScaleOriginal = ScaleProxy / ProxyFactor
-        scale_vs_original = self._get_effective_scale_factor()
-        if self._proxy_scale > 0:
-            scale_vs_original /= self._proxy_scale
+        # Relative zoom is scale factor / fit_scale
+        relative_zoom = 1.0
+        if self._fit_scale > 0:
+            if self.shared_state:
+                relative_zoom = self.shared_state.zoom_multiplier
+            else:
+                relative_zoom = self._scale_factor / self._fit_scale
 
         return {
             'colormap': self.colormap,
             'contrast_limits': self.contrast_limits,
-            'scale_factor': scale_vs_original,
-            'offset': self._get_effective_offset()
+            'relative_zoom': relative_zoom,
+            'relative_pan': self._get_effective_offset() # QPointF
         }
 
     def set_view_state(self, state):
@@ -1194,35 +1251,21 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                 self.contrast_limits = None
                 self.apply_colormap()
 
-        # Apply Zoom
-        if 'scale_factor' in state:
-            desired_scale_vs_original = state['scale_factor']
-            
-            # Convert back to Scale vs Proxy (which is what effective_scale expects)
-            # ScaleProxy = ScaleOriginal * ProxyFactor
-            desired_effective_scale = desired_scale_vs_original
-            if self._proxy_scale > 0:
-                 desired_effective_scale *= self._proxy_scale
-
+        # Apply Zoom (Relative)
+        if 'relative_zoom' in state:
+            relative_zoom = state['relative_zoom']
             if self.shared_state:
-                 # Shared state uses a multiplier relative to fit_scale
-                 if self._fit_scale > 0:
-                     internal_factor = desired_effective_scale / self._fit_scale
-                     # Clamp multiplier
-                     internal_factor = max(0.01, min(100.0, internal_factor))
-                     self.shared_state.zoom_multiplier = internal_factor
+                self.shared_state.zoom_multiplier = relative_zoom
             else:
-                 # Single view uses absolute scale factor
-                 self._scale_factor = desired_effective_scale
-                 self.zoom_factor_changed.emit(self._get_effective_scale_factor())
+                self.update_fit_scale()
+                self._scale_factor = self._fit_scale * relative_zoom
+        
+        # Apply Pan (Relative to Fit which is offset 0,0)
+        if 'relative_pan' in state:
+            self.pan_pos = state['relative_pan']
 
-        # Apply Pan (Offset)
-        if 'offset' in state:
-            new_offset = state['offset']
-            if self.shared_state:
-                self.shared_state.offset = new_offset
-            else:
-                self._pixmap_offset = new_offset
+        self.zoom_factor_changed.emit(self._get_effective_scale_factor())
+        self.view_changed.emit()
 
         self.view_changed.emit()
         self.update()
@@ -1367,6 +1410,10 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
     
     def dropEvent(self, event):
         urls = event.mimeData().urls()
@@ -1375,8 +1422,8 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             if os.path.exists(file_path):
                 # Try to find load_image in the window hierarchy
                 window = self.window()
-                if hasattr(window, 'load_image'):
-                    window.load_image(file_path)
+                if hasattr(window, 'open_file'):
+                    window.open_file(file_path)
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -1559,10 +1606,11 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
 
 
 class ThumbnailItem(QWidget):
-    clicked = pyqtSignal(QEvent)
+    clicked = pyqtSignal(QMouseEvent)
     overlay_changed = pyqtSignal(float)
+    remove_requested = pyqtSignal()
 
-    def __init__(self, file_path, pixmap, parent=None):
+    def __init__(self, file_path, pixmap, removable=True, parent=None):
         super().__init__(parent)
         self.file_path = file_path
         self.is_selected = False
@@ -1592,11 +1640,33 @@ class ThumbnailItem(QWidget):
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, 100)
         self.slider.setValue(0)
+        self.slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.slider.setToolTip("Overlay Opacity")
         self.slider.valueChanged.connect(self._on_slider_changed)
         layout.addWidget(self.slider)
 
         self.setLayout(layout)
+
+        # Remove Button (Top Right)
+        self.removable = removable
+        self.remove_btn = QPushButton("×", self)
+        self.remove_btn.setFixedSize(20, 20)
+        self.remove_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(128, 128, 128, 150);
+                color: white;
+                border-radius: 10px;
+                font-weight: bold;
+                font-size: 14px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 0, 0, 200);
+            }
+        """)
+        self.remove_btn.move(135, 5) # Top right corner
+        self.remove_btn.clicked.connect(self.remove_requested.emit)
+        self.remove_btn.setVisible(self.removable)
 
     def _on_slider_changed(self, value):
         self.overlay_changed.emit(value / 100.0)
@@ -1655,22 +1725,56 @@ class ThumbnailPane(QDockWidget):
 
         self.main_widget = QWidget()
         self.main_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
+        self.main_widget.setAcceptDrops(True) # Ensure main widget accepts drops
         self.main_layout = QVBoxLayout(self.main_widget)
         
-        # Add Select All checkbox
+        # Header layout (Select All + Refresh)
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 5, 0)
+        
         self.select_all_cb = QCheckBox("Select All")
         self.select_all_cb.setTristate(True)  # Allow indeterminate state
         self.select_all_cb.stateChanged.connect(self._on_select_all_changed)
-        self.main_layout.addWidget(self.select_all_cb)
+        header_layout.addWidget(self.select_all_cb)
+        
+        header_layout.addStretch()
+        
+        self.refresh_btn = QPushButton("🗘")
+        self.refresh_btn.setFixedSize(24, 24)
+        self.refresh_btn.setToolTip("Refresh Gallery (Prune closed images)")
+        self.refresh_btn.setFlat(True)
+        self.refresh_btn.setStyleSheet("""
+            QPushButton { 
+                border: none; 
+                font-size: 16px; 
+                color: #555;
+            }
+            QPushButton:hover { 
+                background-color: rgba(0,0,0,0.1); 
+                border-radius: 4px;
+                color: #000;
+            }
+        """)
+        self.refresh_btn.clicked.connect(self.populate)
+        header_layout.addWidget(self.refresh_btn)
+        
+        self.main_layout.addLayout(header_layout)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setAcceptDrops(True)
+        self.scroll_area.setFocusPolicy(Qt.FocusPolicy.WheelFocus)
+        self.scroll_area.viewport().setAcceptDrops(True) # Explicitly accept on viewport
+        self.scroll_area.viewport().setFocusPolicy(Qt.FocusPolicy.WheelFocus)
         self.scroll_content = QWidget()
+        self.scroll_content.setAcceptDrops(True)
         self.thumbnail_layout = QVBoxLayout(self.scroll_content)
         self.thumbnail_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.scroll_area.setWidget(self.scroll_content)
 
         self.scroll_area.installEventFilter(self)
+        self.scroll_area.viewport().installEventFilter(self)
+        self.scroll_content.installEventFilter(self)
 
         self.main_layout.addWidget(self.scroll_area)
         self.setWidget(self.main_widget)
@@ -1681,6 +1785,13 @@ class ThumbnailPane(QDockWidget):
         
         # Persistent gallery: {file_path: pixmap}
         self.gallery_images = {}
+        # Metadata for gallery images: {file_path: {"is_manual": bool}}
+        self.gallery_meta = {} # Deprecated, using manual_paths
+        self.manual_paths = set()
+        self.removed_paths = set()
+        
+        # Enable Drag and Drop
+        self.setAcceptDrops(True)
 
     def showEvent(self, event):
         """Refresh thumbnail pane contents when shown"""
@@ -1690,12 +1801,59 @@ class ThumbnailPane(QDockWidget):
             self.parent()._refresh_thumbnail_pane()
 
     def eventFilter(self, source, event):
-        if source == self.scroll_area and event.type() == QEvent.Type.KeyPress:
-            key = event.key()
-            if key in [Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Space]:
-                self.keyPressEvent(event)
-                return True
+        if event.type() == QEvent.Type.KeyPress:
+            if source in (self.scroll_area, self.scroll_area.viewport(), self.scroll_content) or isinstance(source, ThumbnailItem):
+                key = event.key()
+                if key in [Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right, 
+                           Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter,
+                           Qt.Key.Key_Delete, Qt.Key.Key_Backspace]:
+                    self.keyPressEvent(event)
+                    return True
         return super().eventFilter(source, event)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if urls:
+            paths = [u.toLocalFile() for u in urls if u.toLocalFile()]
+            self.add_files(paths)
+
+    def add_files(self, file_paths):
+        if not file_paths:
+            return
+
+        from image_handler import ImageHandler
+        temp_handler = ImageHandler()
+        supported_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.webp', '.heic', '.heif'] + \
+                             temp_handler.raw_extensions + temp_handler.video_extensions
+        
+        added_any = False
+        for path in file_paths:
+            if os.path.isfile(path) and path not in self.gallery_images:
+                _, ext = os.path.splitext(path)
+                if ext.lower() in supported_extensions:
+                    # Generate thumbnail
+                    try:
+                        if temp_handler.load_image(path):
+                            pixmap = self._generate_pixmap_from_array(temp_handler.original_image_data)
+                            if pixmap:
+                                self.gallery_images[path] = pixmap
+                                self.manual_paths.add(path)
+                                if path in self.removed_paths:
+                                    self.removed_paths.remove(path)
+                                added_any = True
+                    except Exception as e:
+                        print(f"Error generating thumbnail for {path}: {e}")
+
+        if added_any:
+            self.populate()
 
     def keyPressEvent(self, event: QKeyEvent):
         if not self.thumbnail_items:
@@ -1705,7 +1863,7 @@ class ThumbnailPane(QDockWidget):
         key = event.key()
         current_index = self.focused_index if self.focused_index != -1 else 0
 
-        # Only handle specific navigation and selection keys
+        # 1. Navigation and selection keys
         if key in (Qt.Key.Key_Down, Qt.Key.Key_Up, Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
             new_index = current_index
             
@@ -1728,14 +1886,6 @@ class ThumbnailPane(QDockWidget):
                      self._select_range(anchor, new_index)
                      self._emit_selection_change()
                 else:
-                     # Just move focus, unless we decide to follow selection?
-                     # Standard behavior: Arrows move focus, Space selects.
-                     # BUT user asked for "Shift+Arrows".
-                     # Usually Arrows without shift simply move focus in file browsers (requiring space to select),
-                     # OR they Select Single.
-                     # "I want it to work with ... shift+arrows".
-                     # Let's make arrows Select Single if no modifier?
-                     # That leads to fast browsing.
                      self._select_single(new_index)
                      self.last_selection_anchor = new_index
                      self._emit_selection_change()
@@ -1748,15 +1898,86 @@ class ThumbnailPane(QDockWidget):
                      self._select_single(current_index)
                 self.last_selection_anchor = current_index
                 self._emit_selection_change()
+        
+        # 2. Deletion keys
+        elif key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            # Only remove if items are removable
+            self.remove_selected_items()
+            
         else:
             # Pass all other keys to parent (ImageViewer) for global shortcuts
             super().keyPressEvent(event)
 
+    def remove_selected_items(self):
+        """Remove selected items from the gallery and add them to the removed filter."""
+        # Filter for removable items only
+        selected_items = [item for item in self.thumbnail_items 
+                          if item.is_selected and item.removable]
+        if not selected_items:
+            return
+            
+        for item in selected_items:
+            self.remove_item(item.file_path, refresh=False)
+
+        # Update sidebar
+        self.populate()
+        
+        # If gallery is now TRULY empty (no removable or synced items), clear viewer
+        if not self.gallery_images:
+             if self.parent() and hasattr(self.parent(), 'display_montage'):
+                 self.parent().display_montage([], is_manual=False)
+        else:
+            # Otherwise, just sync the viewer to whatever is left selected 
+            # (e.g. non-removable items that were part of the selection)
+            self._emit_selection_change() 
+
+    def remove_item(self, path, refresh=True):
+        """Remove a single item from the gallery."""
+        self.removed_paths.add(path)
+        if path in self.gallery_images:
+            del self.gallery_images[path]
+        if path in self.manual_paths:
+            self.manual_paths.remove(path)
+            
+        if refresh:
+            self.populate()
+            self._emit_selection_change()
+            
+            # If gallery is now empty, clear main viewer
+            if not self.gallery_images:
+                if self.parent() and hasattr(self.parent(), 'display_montage'):
+                    self.parent().display_montage([])
+
+    def unremove_files(self, file_paths):
+        """Explicitly restore files to the sidebar if they were previously removed."""
+        if not file_paths:
+            return
+        
+        changed = False
+        for path in file_paths:
+            if path in self.removed_paths:
+                self.removed_paths.remove(path)
+                changed = True
+        
+        if changed:
+            self.populate()
+
+    def add_to_manual_paths(self, file_paths):
+        """Mark files as manually added (removable)."""
+        if not file_paths:
+            return
+        for path in file_paths:
+            self.manual_paths.add(path)
+        self.populate()
+
     def populate(self, windows=None):
-        """Populate thumbnail pane from persistent gallery"""
+        """Populate thumbnail pane from persistent gallery and open windows."""
         # Don't populate if blocked (during selection-driven view changes)
         if hasattr(self, 'block_populate') and self.block_populate:
             return
+        
+        # 0. Track paths found in currently open windows
+        seen_in_windows = set()
         
         # 1. Update gallery with images from all windows
         for widget in QApplication.topLevelWidgets():
@@ -1767,6 +1988,7 @@ class ThumbnailPane(QDockWidget):
                         for label in widget.montage_labels:
                             if hasattr(label, 'file_path') and label.current_pixmap and label.file_path:
                                 self.gallery_images[label.file_path] = label.current_pixmap
+                                seen_in_windows.add(label.file_path)
                     elif widget.image_label.current_pixmap and widget.current_file_path:
                         # Single image mode: add to gallery
                         # Check if this is an NPZ file with multiple keys
@@ -1776,18 +1998,34 @@ class ThumbnailPane(QDockWidget):
                                 if widget.image_handler.npz_keys[key]:  # Only valid keys
                                     # Create a unique identifier for this NPZ key
                                     npz_key_path = f"{widget.current_file_path}#{key}"
+                                    seen_in_windows.add(npz_key_path)
                                     # Get or generate pixmap for this key
                                     if key == widget.image_handler.current_npz_key:
                                         # Current key - use existing pixmap
                                         self.gallery_images[npz_key_path] = widget.image_label.current_pixmap
                                     else:
                                         # Other keys - generate thumbnail
-                                        pixmap = self._generate_npz_key_pixmap(widget.image_handler.npz_data[key])
+                                        pixmap = self._generate_pixmap_from_array(widget.image_handler.npz_data[key])
                                         if pixmap:
                                             self.gallery_images[npz_key_path] = pixmap
                         else:
                             # Regular file
                             self.gallery_images[widget.current_file_path] = widget.image_label.current_pixmap
+                            seen_in_windows.add(widget.current_file_path)
+
+        # 1.5 Prune "synced" images that are no longer in any window
+        # (Rule: If it's NOT manual and NOT in a window, it's stale)
+        stale_paths = []
+        for path in list(self.gallery_images.keys()):
+            if path not in self.manual_paths and path not in seen_in_windows:
+                stale_paths.append(path)
+        
+        for path in stale_paths:
+            if path in self.gallery_images:
+                del self.gallery_images[path]
+            # Also clean up from removed_paths if it's no longer even synced
+            if path in self.removed_paths:
+                self.removed_paths.remove(path)
         
         # 2. Capture current selection
         selected_paths = {item.file_path for item in self.thumbnail_items if item.is_selected}
@@ -1799,10 +2037,18 @@ class ThumbnailPane(QDockWidget):
         self.thumbnail_items.clear()
 
         # 4. Create thumbnail items from gallery
-        from widgets import ThumbnailItem
         for file_path, pixmap in self.gallery_images.items():
-            item = ThumbnailItem(file_path, pixmap)
+            if file_path in self.removed_paths:
+                continue
+            
+            # Removable IF it was manually added 
+            # (Rule 1 & 2: Added to main pane or sidebar directly)
+            is_removable = file_path in self.manual_paths
+                
+            item = ThumbnailItem(file_path, pixmap, removable=is_removable)
+            item.installEventFilter(self)
             item.clicked.connect(lambda event, i=item: self._on_thumbnail_clicked(i, event))
+            item.remove_requested.connect(lambda p=file_path: self.remove_item(p))
             item.overlay_changed.connect(lambda alpha, p=file_path: self.overlay_changed.emit(p, alpha))
             
             # Restore selection
@@ -1820,8 +2066,8 @@ class ThumbnailPane(QDockWidget):
                  self.focused_index = 0
              self._set_focused_item(self.focused_index)
     
-    def _generate_npz_key_pixmap(self, array_data):
-        """Generate a QPixmap for an NPZ key's array data."""
+    def _generate_pixmap_from_array(self, array_data):
+        """Generate a QPixmap for a numpy array's data (used for thumbnails)."""
         try:
             import numpy as np
             from PyQt6.QtGui import QImage, QPixmap
@@ -2375,7 +2621,6 @@ class FileExplorerPane(QDockWidget):
         super().showEvent(event)
         # Ensure focus goes to tree when shown so selection is "active" (e.g. blue not gray)
         self.tree_view.setFocus()
-        self._select_first_item()
 
     def set_supported_extensions(self, extensions):
         """Set filename filters for the file system model.
@@ -2452,13 +2697,13 @@ class FileExplorerPane(QDockWidget):
         
         # Manually trigger selection update if we are not waiting for directory loaded
         # (Though usually QFileSystemModel loads async so directoryLoaded will fire)
-        self._select_first_item()
+        self._restore_selection()
 
     def _on_directory_loaded(self, path):
          if os.path.normpath(path) == os.path.normpath(self.root_path):
-             self._select_first_item()
+             self._restore_selection()
 
-    def _select_first_item(self):
+    def _restore_selection(self):
         root_index = self.tree_view.rootIndex()
         
         # Try to select the target path (context-aware up)
@@ -2475,13 +2720,11 @@ class FileExplorerPane(QDockWidget):
                         self.tree_view.setFocus()
                     return
 
-        # Fallback to first item
-        if self.proxy_model.rowCount(root_index) > 0:
-            first_index = self.proxy_model.index(0, 0, root_index)
-            if first_index.isValid():
-                self.tree_view.setCurrentIndex(first_index)
-                self.tree_view.selectionModel().select(first_index, QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows)
-                self.tree_view.scrollTo(first_index)
+                    if self.isVisible():
+                        self.tree_view.setFocus()
+                    return
+
+        # Fallback to first item REMOVED to prevent auto-selection
                 # If the explorer is active, make sure the tree is focused for visual clarity
                 if self.isVisible():
                     self.tree_view.setFocus()
@@ -2661,13 +2904,16 @@ class FileExplorerPane(QDockWidget):
             QMessageBox.critical(self, "Error", f"Failed to create video: {e}")
         finally:
             progress.close()
+
+
+
 class CustomGLViewWidget(gl.GLViewWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents)
+    sig_double_click = pyqtSignal(object) # Emit pos
+    def mouseDoubleClickEvent(self, event):
+        self.sig_double_click.emit(event.pos())
+        super().mouseDoubleClickEvent(event)
 
     def mouseMoveEvent(self, event):
-        # Disable Right Button Drag (PyQtGraph uses this for Zoom)
         if event.buttons() & Qt.MouseButton.RightButton:
             event.ignore()
             return
@@ -2687,15 +2933,72 @@ class CustomGLViewWidget(gl.GLViewWidget):
                 return True
         return super().event(event)
 
+    def orbit(self, az, el):
+        """
+        Orbit the camera around the center point.
+        Overridden to allow unrestricted elevation range (no clamping).
+        """
+        self.opts['azimuth'] += az
+        self.opts['elevation'] += el
+        self.update()
+
 
 class PointCloudViewer(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("3D Point Cloud Viewer")
         self.resize(800, 600)
-        
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Header Controls
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(10, 5, 10, 5)
+        
+        self.reset_btn = QPushButton("Reset View")
+        self.reset_btn.setToolTip("Reset Camera Position")
+        self.reset_btn.clicked.connect(self.reset_view)
+        header_layout.addWidget(self.reset_btn)
+        
+        header_layout.addStretch()
+        
+        self.colormap_mode = "viridis"
+        self.colormap_btn = QPushButton("🎨 Color")
+        self.colormap_btn.setToolTip("Toggle Colormap (Color/Gray/Albedo)")
+        self.colormap_btn.clicked.connect(self.toggle_colormap)
+        header_layout.addWidget(self.colormap_btn)
+        
+        header_layout.addSpacing(10)
+        
+        # Lighting Sliders
+        # Light X (Horizontal)
+        header_layout.addWidget(QLabel("☀️↔️"))
+        self.light_x_slider = QSlider(Qt.Orientation.Horizontal)
+        self.light_x_slider.setRange(-100, 100)
+        self.light_x_slider.setValue(0)
+        self.light_x_slider.setFixedWidth(80)
+        self.light_x_slider.setToolTip("Light Source Horizontal Position")
+        header_layout.addWidget(self.light_x_slider)
+        
+        # Light Y (Vertical)
+        header_layout.addWidget(QLabel("☀️↕️"))
+        self.light_y_slider = QSlider(Qt.Orientation.Vertical)
+        self.light_y_slider.setRange(-100, 100)
+        self.light_y_slider.setValue(0) # Center (Directly above)
+        self.light_y_slider.setFixedHeight(80)
+        self.light_y_slider.setToolTip("Light Source Vertical Position")
+        header_layout.addWidget(self.light_y_slider)
+        
+        # Z-Scale Slider (Depth Exaggeration)
+        header_layout.addWidget(QLabel("🏔️"))
+        self.z_scale_slider = QSlider(Qt.Orientation.Vertical)
+        self.z_scale_slider.setRange(1, 300) # 1% to 300% of Width
+        self.z_scale_slider.setValue(50) # Default to 50% width
+        self.z_scale_slider.setFixedHeight(80)
+        self.z_scale_slider.setToolTip("Vertical Exaggeration (Depth Scale)")
+        header_layout.addWidget(self.z_scale_slider)
+        
+        self.layout.addLayout(header_layout)
         
         if gl is None:
             self.layout.addWidget(QLabel("Error: PyOpenGL or pyqtgraph.opengl not available."))
@@ -2705,26 +3008,22 @@ class PointCloudViewer(QDialog):
         self.view_widget.opts['distance'] = 200
         self.layout.addWidget(self.view_widget)
         
-        # Controls Overlay
-        controls_layout = QHBoxLayout()
-        controls_layout.setContentsMargins(10, 10, 10, 10)
+        # Navigation Features
+        self.view_widget.sig_double_click.connect(self.handle_double_click)
+        self.view_widget.sig_double_click.connect(self.handle_double_click)
         
-        self.reset_btn = QPushButton("Reset View")
-        self.reset_btn.clicked.connect(self.reset_view)
-        controls_layout.addWidget(self.reset_btn)
-        
-        controls_layout.addStretch()
-        
-        # We wrap controls in a widget to overlay or just put at bottom? 
-        # Bottom is easier.
-        self.layout.addLayout(controls_layout)
-        
+        # State
+        self.last_data = None
         self.scatter = None
+        self.base_colors = None
+        self.normals = None
+        self.pos = None
 
-    def set_data(self, data):
+    def set_data(self, data, reset_view=False):
         if gl is None: return
         
         if data is None: return
+        self.last_data = data
         processed_data = None
         q_image = None
         
@@ -2735,62 +3034,274 @@ class PointCloudViewer(QDialog):
             
         h, w = data.shape
         
-        # Downsample for performance (target ~100k points max usually good for Python/GL)
-        target_points = 50000
-        total_points = h * w
-        step = 1
-        if total_points > target_points:
-            step = int(np.sqrt(total_points / target_points))
-            
-        sub_data = data[::step, ::step]
+        # No Limit / Downsampling (User requested full resolution)
+        sub_data = data
         sh, sw = sub_data.shape
         
-        # Create grid
-        # Center the grid
-        y = np.linspace(-sh/2, sh/2, sh)
-        x = np.linspace(-sw/2, sw/2, sw)
+        # Create grid normalized to standard range (max dimension = 100)
+        VIEW_SCALE = 100.0
+        max_dim = max(sh, sw)
+        scale_factor = VIEW_SCALE / max_dim
+        
+        y = np.linspace(sh/2, -sh/2, sh) * scale_factor
+        x = -np.linspace(-sw/2, sw/2, sw) * scale_factor
         xv, yv = np.meshgrid(x, y)
         
         # Flatten
         z_vals = sub_data.flatten()
         
-        # Normalize Z for better view scaling (e.g. proportional to X/Y?)
-        # User said "values interpreted as depth map". 
-        # Usually depth values are in same units as X/Y or arbitrary.
-        # Let's keep raw values but maybe center them?
-        z_vals = z_vals - np.mean(z_vals)
+        # Identify valid points (ignore 0, NaN, Inf)
+        valid_mask = (z_vals != 0) & np.isfinite(z_vals)
+        if not np.any(valid_mask):
+             # Fallback if everything is filtered
+             valid_mask = np.ones_like(z_vals, dtype=bool)
+             
+        # Filtered data for robust scaling calculations
+        z_valid = z_vals[valid_mask]
+        if z_valid.size == 0:
+             z_valid = np.array([0.0])
         
-        # Scale Z to be visible? If Data is 0..1 (float) and W is 1000, flat.
-        # If Data is 0..255 and W is 1000, ok.
-        # Let's verify range.
-        z_min, z_max = z_vals.min(), z_vals.max()
-        z_range = z_max - z_min
-        if z_range == 0: z_range = 1
+        # Calculate percentiles for robust scaling (5% to 95%) using ONLY valid data
+        with np.errstate(divide='ignore', invalid='ignore'):
+            z_p5, z_p95 = np.nanpercentile(z_valid, [5, 95])
+            
+        # Ensure percentiles are finite
+        if not np.isfinite(z_p5): z_p5 = 0.0
+        if not np.isfinite(z_p95): z_p95 = 1.0
         
-        # Optional: Auto-scale Z to match aspect ratio of Width? 
-        # For now, keep raw values to preserve physical meaning if any.
+        z_range = z_p95 - z_p5
+        if z_range <= 0: z_range = 1.0
         
-        pos = np.vstack((xv.flatten(), yv.flatten(), z_vals)).transpose()
+        # 1. Compute Normals for Lighting (on FULL grid to maintain structure)
+        # To make lighting visible even for flat data, we use a relative Z scale 
+        # (e.g. scale Z so it has meaningful gradients relative to X/Y steps)
+        # We use the percentile range to ensure scaling is robust to outliers.
         
-        # Color mapping
-        # Normalize for colormap
-        norm_z = (z_vals - z_min) / z_range
-        # Use matplotlib colormap (viridis)
-        # viridis returns RGBA floats 0..1
-        colors = cm.viridis(norm_z) 
+        # FIX: Previous proportional scaling failed because Z units (meters) != XY units (pixels).
+        # We decouple the raw range. The Slider now controls "Z Visual Range as % of View Width".
+        # scale_factor scales max_dim (XY) to 100.
+        # So we want Z to be (slider_value / 100.0) * 100.0 = slider_value.
+        z_norm_range = float(self.z_scale_slider.value())
         
+        # SANITIZE for np.gradient: fill inf/nan with z_p5 
+        # Gradient on non-finite values triggers RuntimeWarnings
+        clean_sub_data = sub_data.copy()
+        clean_sub_data[~np.isfinite(clean_sub_data)] = z_p5
+        
+        with np.errstate(divide='ignore', invalid='ignore'):
+             visual_z = (clean_sub_data - z_p5) / z_range * z_norm_range
+             dzdy, dzdx = np.gradient(visual_z)
+             
+        # Normalize Z for actual point positions (use the same robust scaling)
+        # We use nanmean subtract on the scaled version to keep it centered
+        z_vals_scaled = (z_vals - z_p5) / z_range * z_norm_range
+        z_vals_centered = z_vals_scaled - np.nanmean(z_vals_scaled[valid_mask])
+        
+        all_pos = np.vstack((xv.flatten(), yv.flatten(), z_vals_centered)).transpose()
+
+        
+        # For gradients, we need to adjust for the X/Y step size if we want true geometric normals
+        # However, for visualization, using the normalized visual_z coordinates for gradients 
+        # good relative depth effect regardless of resolution.
+        # X-axis is flipped (Decreasing), so dz/dx is proportional to -dzdx (array gradient).
+        # Normal X is -dz/dx. So Normal X is proportional to -(-dzdx) = +dzdx.
+        nx = dzdx.flatten()
+        # Flip Y-normal sign because our Y-axis is decreasing (Top to Bottom)
+        ny = dzdy.flatten() 
+        nz = np.ones_like(nx) * scale_factor
+        
+        mag = np.sqrt(nx**2 + ny**2 + nz**2)
+        # Add epsilon to prevent division by zero/NaN normals
+        mag[mag == 0] = 1e-8
+        all_normals = np.stack([nx/mag, ny/mag, nz/mag], axis=1)
+        
+        # 2. Base Colors (on FULL grid)
+        norm_z = np.clip((z_vals - z_p5) / z_range, 0, 1)
+        
+        if self.colormap_mode == "gray":
+            all_colors = np.stack([norm_z, norm_z, norm_z, np.ones_like(norm_z)], axis=1)
+        elif self.colormap_mode == "albedo":
+            all_colors = np.array([[0.6, 0.6, 0.6, 1.0]] * len(norm_z))
+        elif self.colormap_mode == "normals":
+            # Map normals [-1, 1] to [0, 1] for RGB
+            # all_normals is already shape (N, 3)
+            rgb_normals = (all_normals + 1.0) / 2.0
+            all_colors = np.hstack([rgb_normals, np.ones((len(rgb_normals), 1))])
+        else:
+            all_colors = cm.viridis(norm_z)
+            
+        # 3. Apply Validity Mask to filter out 0, NaN, Inf
+        self.pos = all_pos[valid_mask]
+        self.normals = all_normals[valid_mask]
+        self.base_colors = all_colors[valid_mask]
+            
         if self.scatter:
             self.view_widget.removeItem(self.scatter)
             self.scatter = None
             
-        self.scatter = gl.GLScatterPlotItem(pos=pos, color=colors, size=2, pxMode=True)
-        self.view_widget.addItem(self.scatter)
+        # Initial draw with lighting
+        self.update_lighting()
         
-        # Reset Camera to fit
-        self.reset_view()
+        # Reset Camera ONLY IF requested (e.g. first time or manual reset)
+        if reset_view:
+            self.reset_view()
+
+    def update_lighting(self):
+        """Update point colors based on light direction."""
+        if self.base_colors is None or self.normals is None:
+            return
+            
+        # Cartesian Lighting: Project 2D slider pos onto 3D hemisphere
+        # Invert both directions as requested
+        lx = self.light_x_slider.value() / 100.0
+        ly = -self.light_y_slider.value() / 100.0
+        
+        # Calculate Z component (height of light above surface)
+        # sphere equation: x^2 + y^2 + z^2 = 1 => z = sqrt(1 - x^2 - y^2)
+        r2 = lx*lx + ly*ly
+        if r2 > 1.0:
+            # Normalize to unit circle edge if outside
+            mag = np.sqrt(r2)
+            lx /= mag
+            ly /= mag
+            lz = 0.0 # Horizon
+        else:
+            lz = np.sqrt(1.0 - r2)
+            
+        light_vec = np.array([lx, ly, lz])
+        
+        # Dot product for diffuse lighting
+        # Use simple dot (not absolute) to create realistic shadows on the far side
+        dot = np.sum(self.normals * light_vec, axis=1)
+        
+        # Apply shading to RGB components
+        shaded_colors = self.base_colors.copy()
+        
+        # If in normals mode, shading might be distracting, but let's keep it subtle
+        shading_strength = 0.5 if self.colormap_mode == "normals" else 0.8
+        ambient = 0.5 if self.colormap_mode == "normals" else 0.2
+        
+        # Improve contrast: allow shading to go darker
+        shading = np.clip(dot, 0, 1) * shading_strength + ambient
+        
+        shaded_colors[:, :3] *= shading[:, np.newaxis]
+        
+        if self.scatter:
+            self.scatter.setData(color=shaded_colors)
+        else:
+            # key fix: glOptions='opaque' prevents additive blending (summing to white)
+            self.scatter = gl.GLScatterPlotItem(pos=self.pos, color=shaded_colors, size=2, pxMode=True, glOptions='opaque')
+            self.view_widget.addItem(self.scatter)
 
     def reset_view(self):
         if gl is None: return
-        # Simple reset
-        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=45, azimuth=45)
+        # Reset to "Image POV": Top-down view looking at the XY plane (-90 az rotates "up" correctly usually)
+        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=-90, azimuth=90)
+        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=-90, azimuth=90)
+        
+        # Reset Lighting
+        self.light_x_slider.setValue(0)
+        self.light_y_slider.setValue(0)
+        
+        # Reset Depth Scale
+        self.z_scale_slider.setValue(50)
+        
+        
         # Ideally we compute optimal distance based on bounds
+
+    def toggle_colormap(self):
+        """Toggle between Viridis, Grayscale, Albedo, and Normals."""
+        if self.colormap_mode == "viridis":
+            self.colormap_mode = "gray"
+            self.colormap_btn.setText("⚪ Gray")
+        elif self.colormap_mode == "gray":
+            self.colormap_mode = "albedo"
+            self.colormap_btn.setText("⬜ Albedo")
+        elif self.colormap_mode == "albedo":
+            self.colormap_mode = "normals"
+            self.colormap_btn.setText("🌈 Normals")
+        else:
+            self.colormap_mode = "viridis"
+            self.colormap_btn.setText("🔥 Viridis")
+        
+        if self.last_data is not None:
+            self.set_data(self.last_data)
+            self.update_lighting()
+
+        if self.last_data is not None:
+            self.set_data(self.last_data)
+            self.update_lighting()
+            
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+            
+    def handle_double_click(self, pos):
+        """Center the view on the clicked point."""
+        if self.pos is None or len(self.pos) == 0:
+            return
+            
+        # Get View Matrices
+        # We try to use the view_widget's internal matrices if possible, or approximate projection
+        w = self.view_widget.width()
+        h = self.view_widget.height()
+        
+        # Normalized Device Coordinates (NDC) of click
+        # QPoint origin is top-left. OpenGL NDC is center, Y up.
+        nx = 2.0 * pos.x() / w - 1.0
+        ny = 1.0 - 2.0 * pos.y() / h
+        
+        try:
+             # Getting matrices from the widget's internal state
+             # projectionMatrix() requires optional args in some versions of pyqtgraph/opengl
+             pMatrix = self.view_widget.projectionMatrix(None, (0, 0, w, h)) 
+             vMatrix = self.view_widget.viewMatrix()
+             
+             if pMatrix is None or vMatrix is None:
+                 print("Error: Matrices are None")
+                 return
+
+             mvp = pMatrix * vMatrix
+             
+             # Project all points? 50k points is fast in numpy.
+             # self.pos is (N, 3)
+             
+             if self.pos is None:
+                  print("Error: self.pos is None in double click")
+                  return
+             
+             # Construct 4x4 MVP matrix as numpy array
+             mvp_data = np.array(mvp.data()).reshape(4, 4)
+             
+             # Homogeneous coordinates
+             points_4d = np.hstack([self.pos, np.ones((len(self.pos), 1))])
+             
+             # Transform
+             clip_coords = points_4d @ mvp_data
+             
+             # Perspective divide
+             w_coords = clip_coords[:, 3]
+             w_coords[w_coords == 0] = 1e-6
+             
+             ndc_x = clip_coords[:, 0] / w_coords
+             ndc_y = clip_coords[:, 1] / w_coords
+             # Z depth can be used for occlusion checking if needed
+             
+             # Check distance to click (nx, ny)
+             dist_sq = (ndc_x - nx)**2 + (ndc_y - ny)**2
+             
+             # Find minimum distance
+             if len(dist_sq) > 0:
+                 min_idx = np.argmin(dist_sq)
+                 min_dist = dist_sq[min_idx]
+                 
+                 # Threshold (e.g. within ~5% of screen size)
+                 if min_dist < 0.05:
+                     target_point = self.pos[min_idx]
+                     
+                     # Center view on this point
+                     self.view_widget.opts['center'] = pg.Vector(*target_point)
+                     self.view_widget.update()
+                 
+        except Exception as e:
+            print(f"Error handling double click: {e}")

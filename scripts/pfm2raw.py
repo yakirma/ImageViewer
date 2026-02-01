@@ -2,6 +2,8 @@ import numpy as np
 import argparse
 import math
 
+from matplotlib import pyplot as plt
+
 
 # ----------------------------
 # PFM reader
@@ -24,6 +26,9 @@ def read_pfm(filename):
         shape = (height, width, 3) if color else (height, width)
         data = np.reshape(data, shape)
         data = np.flipud(data)
+
+        plt.imshow(data)
+        plt.show()
 
         return data
 
@@ -111,8 +116,7 @@ def main():
 
     disp = read_pfm(args.input)
 
-    max_val = disp[np.isfinite(disp)].max()
-    disp[~np.isfinite(disp)] = max_val
+    disp[~np.isfinite(disp)] = 0.
     disp = disp.astype(np.float32)
     h, w = disp.shape
 

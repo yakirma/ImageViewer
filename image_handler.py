@@ -78,6 +78,7 @@ class ImageHandler:
             self._load_raw_image(file_path, override_settings)
         else:
             self._load_standard_image(file_path)
+        return True
 
     def _load_video(self, file_path):
         self.video_cap = cv2.VideoCapture(file_path)
@@ -551,7 +552,12 @@ class ImageHandler:
         if context_dict:
             safe_dict.update(context_dict)
             
-        transformed_data = eval(expression, {"__builtins__": {}}, safe_dict)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            transformed_data = eval(expression, {"__builtins__": {}}, safe_dict)
+            
+            # If the result contains NaNs (e.g. from 0/0), convert them to Inf as requested
+            if isinstance(transformed_data, np.ndarray) and np.issubdtype(transformed_data.dtype, np.floating):
+                transformed_data[np.isnan(transformed_data)] = np.inf
 
         if not isinstance(transformed_data, np.ndarray):
             raise ValueError("Expression must return a NumPy array.")
