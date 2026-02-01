@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QSpinBox,
     QToolButton,
+    QProgressBar,
 )
 import matplotlib.cm as cm
 
@@ -127,6 +128,13 @@ class ImageViewer(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0) # Indeterminate
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedWidth(200)
+        self.progress_bar.setVisible(False)
+        self.status_bar.addPermanentWidget(self.progress_bar)
+
         self.zoom_status_label = QLabel("Zoom: 100%")
         self.status_bar.addPermanentWidget(self.zoom_status_label)
 
@@ -1199,9 +1207,27 @@ class ImageViewer(QMainWindow):
     def reapply_raw_parameters(self, raw_settings):
         # Renamed argument to raw_settings to avoid shadowing global settings module if imported
         try:
+            self.progress_bar.setVisible(True)
+            QApplication.processEvents()
             self.image_handler.load_image(self.current_file_path, override_settings=raw_settings)
             if self.active_label:
                 self.active_label.set_data(self.image_handler.original_image_data)
+            
+            # Update channel selector (e.g. if format changed from Raw to Bayer RGB)
+            self.update_channel_selector(self.image_handler.original_image_data)
+            
+            # Ensure colormap is 'gray' if image is RGB to allowing RGB display in Label
+            # Otherwise it might treat it as single channel (Channel 0) if colormap is actively set to something else
+            data = self.image_handler.original_image_data
+            if data.ndim == 3 and data.shape[2] in [3, 4]:
+                if self.colormap_combo.currentText() != "gray" and self.colormap_combo.currentText() != "flow":
+                     self.colormap_combo.blockSignals(True)
+                     self.colormap_combo.setCurrentText("gray")
+                     self.colormap_combo.blockSignals(False)
+                     # Force active label update
+                     if self.active_label:
+                         self.active_label.set_colormap("gray")
+
             self.update_histogram_data(new_image=True)
             
             # Save to history if this file lacks explicit resolution
@@ -1214,6 +1240,8 @@ class ImageViewer(QMainWindow):
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error applying parameters:\n{e}")
+        finally:
+             self.progress_bar.setVisible(False)
 
     def apply_math_transform(self, expression, from_update=False):
         self.current_math_expression = expression
@@ -1655,6 +1683,8 @@ class ImageViewer(QMainWindow):
         # Proceed to load image (Standard or Raw with Resolution or Override)
         try:     
             # If override_settings is passed (from History, Guess, or Explorer Inheritance), use it.
+            self.progress_bar.setVisible(True)
+            QApplication.processEvents()
             self.image_handler.load_image(actual_file_path, override_settings=override_settings)
 
             # Success - store metadata for Info Pane
@@ -1732,6 +1762,7 @@ class ImageViewer(QMainWindow):
             if self.histogram_action.isChecked():
                 self.histogram_window.repaint()
 
+
             # Configure Video UI
             if self.image_handler.is_video:
                  self.video_toolbar.show()
@@ -1783,6 +1814,9 @@ class ImageViewer(QMainWindow):
             self.info_pane.set_raw_mode(False)
 
             self.histogram_action.setEnabled(False)
+        
+        finally:
+            self.progress_bar.setVisible(False)
 
     def save_view(self):
         if self.active_label and self.active_label.current_pixmap:
