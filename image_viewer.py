@@ -36,7 +36,7 @@ import settings
 import sys
 import requests
 
-__version__ = "1.0.5"
+__version__ = "1.0.6"
 
 class CheckForUpdates(QThread):
     update_available = pyqtSignal(str, str) # version, url
@@ -312,6 +312,11 @@ class ImageViewer(QMainWindow):
         file_menu.addSeparator()
         self.recent_files_menu = file_menu.addMenu("Recent Files")
         self._update_recent_files_menu()
+
+        help_menu = menu_bar.addMenu("&Help")
+        about_action = QAction("&About", self)
+        about_action.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(about_action)
 
         toolbar = QToolBar("Main Toolbar")
         self.addToolBar(toolbar)
@@ -1867,6 +1872,28 @@ class ImageViewer(QMainWindow):
         
         finally:
             self.progress_bar.setVisible(False)
+
+    def show_about_dialog(self):
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("About ImageViewer")
+        msg_box.setText(f"<h3>ImageViewer</h3>Version {__version__}")
+        msg_box.setInformativeText("A modern, high-performance image viewer for scientific and standard formats.<br><br>Created by Yakirma.")
+        
+        # Add GitHub Link
+        github_url = "https://github.com/yakirma/ImageViewer"
+        msg_box.setDetailedText(f"Source Code: {github_url}")
+        
+        # Add a clickable button/link to GitHub? 
+        # DetailedText provides a hidden text area, but for a link we might want a button.
+        # Let's add a button to visit GitHub.
+        
+        visit_btn = msg_box.addButton("Visit GitHub", QMessageBox.ButtonRole.ActionRole)
+        msg_box.addButton(QMessageBox.StandardButton.Ok)
+        
+        msg_box.exec()
+        
+        if msg_box.clickedButton() == visit_btn:
+            QDesktopServices.openUrl(QUrl(github_url))
 
     def save_view(self):
         if self.active_label and self.active_label.current_pixmap:
