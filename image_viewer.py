@@ -1213,8 +1213,8 @@ class ImageViewer(QMainWindow):
             if self.active_label:
                 self.active_label.set_data(self.image_handler.original_image_data)
             
-            # Update channel selector (e.g. if format changed from Raw to Bayer RGB)
-            self.update_channel_selector(self.image_handler.original_image_data)
+            # Update channel options (e.g. if format changed from Raw to Bayer RGB)
+            self.update_channel_options()
             
             # Ensure colormap is 'gray' if image is RGB to allowing RGB display in Label
             # Otherwise it might treat it as single channel (Channel 0) if colormap is actively set to something else
