@@ -7,3 +7,4 @@ opencv-python
 PyOpenGL
 pyinstaller
 pillow-heif
+requests
