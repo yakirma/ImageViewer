@@ -3,8 +3,8 @@ import time
 import re
 
 import numpy as np
-from PyQt6.QtCore import Qt, QEvent, QPoint, QPointF, QTimer
-from PyQt6.QtGui import QAction, QPixmap, QImage, QIcon
+from PyQt6.QtCore import Qt, QEvent, QPoint, QPointF, QTimer, QThread, pyqtSignal, QUrl
+from PyQt6.QtGui import QAction, QPixmap, QImage, QIcon, QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -34,6 +34,36 @@ from widgets import ZoomableDraggableLabel, InfoPane, MathTransformPane, ZoomSet
 from image_handler import ImageHandler
 import settings
 import sys
+import requests
+
+__version__ = "1.0.5"
+
+class CheckForUpdates(QThread):
+    update_available = pyqtSignal(str, str) # version, url
+
+    def run(self):
+        try:
+            repo = "yakirma/ImageViewer"
+            url = f"https://api.github.com/repos/{repo}/releases/latest"
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                latest_version_str = data['tag_name'].lstrip('v')
+                html_url = data['html_url']
+                
+                # Semantic version comparison
+                # Parse "1.0.4" -> (1, 0, 4)
+                def parse_version(v):
+                    return tuple(map(int, (v.split("."))))
+
+                local_ver = parse_version(__version__)
+                remote_ver = parse_version(latest_version_str)
+
+                if remote_ver > local_ver:
+                    self.update_available.emit(latest_version_str, html_url)
+        except Exception as e:
+            print(f"Update check failed: {e}")
+
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -135,8 +165,28 @@ class ImageViewer(QMainWindow):
         self.progress_bar.setVisible(False)
         self.status_bar.addPermanentWidget(self.progress_bar)
 
+
         self.zoom_status_label = QLabel("Zoom: 100%")
         self.status_bar.addPermanentWidget(self.zoom_status_label)
+        
+        self._check_for_updates()
+
+    def _check_for_updates(self):
+        self.update_checker = CheckForUpdates()
+        self.update_checker.update_available.connect(self._on_update_available)
+        self.update_checker.start()
+
+    def _on_update_available(self, version, url):
+        # Create a clickable message
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Update Available")
+        msg_box.setText(f"A new version ({version}) is available!")
+        msg_box.setInformativeText(f"Current version: {__version__}\n\nDo you want to view the release page?")
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        msg_box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        
+        if msg_box.exec() == QMessageBox.StandardButton.Yes:
+            QDesktopServices.openUrl(QUrl(url))
 
 
     def _get_percentiles_from_limits(self, data, limits):
