@@ -260,7 +260,7 @@ class ImageViewer(QMainWindow):
         open_button = QPushButton("Open Image")
         open_button.clicked.connect(self.open_image_dialog)
 
-        drag_drop_label = QLabel("(or drag and drop an image file here)")
+        drag_drop_label = QLabel("(Drag & Drop files here or Paste [Ctrl+V] from Clipboard)")
         drag_drop_label.setStyleSheet("color: gray; font-style: italic;")
         drag_drop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
