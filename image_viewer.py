@@ -1220,6 +1220,7 @@ class ImageViewer(QMainWindow):
                 dock_width = dock.sizeHint().width()
         else:
             dock_width = dock.width()
+            self._dock_sizes[dock_name] = dock_width
         
         # Save current sizes of other docks
         for d in other_docks:
