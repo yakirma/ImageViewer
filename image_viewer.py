@@ -566,7 +566,12 @@ class ImageViewer(QMainWindow):
             return
         
         # 1. Get the base data (original or current video frame)
-        data = self.image_handler.original_image_data
+        is_montage = (self.stacked_widget.currentWidget() == self.montage_widget)
+        
+        if is_montage and self.active_label and self.active_label.pristine_data is not None:
+             data = self.active_label.pristine_data
+        else:
+             data = self.image_handler.original_image_data
         
         if data is None:
             return
@@ -610,7 +615,12 @@ class ImageViewer(QMainWindow):
         
         # 5. Set Data to Label (as pristine base)
         # Pass both the display data (sliced_data) and the raw values (inspection_data)
-        self.image_label.set_data(sliced_data, reset_view=reset_view, is_pristine=True, inspection_data=inspection_data)
+        # For Montage, we do NOT want to overwrite 'pristine_data' because it's the only source of the full (multi-channel) image
+        update_pristine = not is_montage
+        
+        # If active_label is different from self.image_label (ie. Montage), use it
+        target_label = self.active_label if self.active_label else self.image_label
+        target_label.set_data(sliced_data, reset_view=reset_view, is_pristine=update_pristine, inspection_data=inspection_data)
         
         # Safeguard: If we are displaying RGB data, ensure colormap is gray 
         # (otherwise it might extract channel 0 if colormap is stuck on something else and is_rgb logic fails)
@@ -618,14 +628,14 @@ class ImageViewer(QMainWindow):
              self.colormap_combo.blockSignals(True)
              self.colormap_combo.setCurrentText("gray")
              self.colormap_combo.blockSignals(False)
-             self.image_label.set_colormap("gray")
+             target_label.set_colormap("gray")
         
         # 6. Apply Math Transform if exists
         if self.current_math_expression:
             self.apply_math_transform(self.current_math_expression, from_update=True)
         
         # 7. Trigger repaint and histogram update
-        self.image_label.repaint()
+        target_label.repaint()
         self.update_histogram_data()
         
         # 8. Update 3D View if open
