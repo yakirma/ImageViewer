@@ -461,14 +461,23 @@ class ImageViewer(QMainWindow):
         self.channel_combo.blockSignals(True)
         self.channel_combo.clear()
         
-        image = self.image_handler.original_image_data
+        image = None
+        # Prefer active label data if available
+        if self.active_label and self.active_label.original_data is not None:
+             image = self.active_label.original_data
+        elif self.image_handler.original_image_data is not None:
+             image = self.image_handler.original_image_data
+        
         if image is None:
             self.channel_combo.addItem("Default")
             self.channel_combo.blockSignals(False)
             return
 
-        # Check if this is an NPZ file with multiple keys
-        if hasattr(self.image_handler, 'npz_keys') and len(self.image_handler.npz_keys) > 1:
+        # Check if this is an NPZ file with multiple keys (FIXME: Need to track NPZ keys per label)
+        # For now, fallback to image handler if active label matches handler
+        is_handler_source = (image is self.image_handler.original_image_data)
+        
+        if is_handler_source and hasattr(self.image_handler, 'npz_keys') and len(self.image_handler.npz_keys) > 1:
             from PyQt6.QtGui import QStandardItemModel, QStandardItem, QColor
             model = QStandardItemModel()
             for key in self.image_handler.npz_keys.keys():
@@ -1087,6 +1096,7 @@ class ImageViewer(QMainWindow):
         self.histogram_window.region_changed.connect(self.set_contrast_limits)
 
         self.colormap_combo.setEnabled(True)
+        self.update_channel_options()
         
         # Sync the colormap combo box with the active label's current colormap
         self.colormap_combo.blockSignals(True)
