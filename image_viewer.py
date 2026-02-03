@@ -1,6 +1,9 @@
 import os
-import time
+import sys
 import re
+import shutil
+import tempfile
+from datetime import datetime
 
 import numpy as np
 from PyQt6.QtCore import Qt, QEvent, QPoint, QPointF, QTimer, QThread, pyqtSignal, QUrl
@@ -1888,63 +1891,74 @@ class ImageViewer(QMainWindow):
     def paste_from_clipboard(self):
         clipboard = QApplication.clipboard()
         mime_data = clipboard.mimeData()
+        
+        # Determine focus target
+        focus_widget = QApplication.focusWidget()
+        is_thumbnail_focused = False
+        if self.thumbnail_pane and focus_widget:
+            # Check if focus is inside thumbnail pane
+            if self.thumbnail_pane.isAncestorOf(focus_widget) or focus_widget == self.thumbnail_pane:
+                is_thumbnail_focused = True
+
+        paths_to_add = []
 
         if mime_data.hasUrls():
             urls = mime_data.urls()
             if urls:
-                file_path = urls[0].toLocalFile()
-                if os.path.isfile(file_path):
-                    self.open_file(file_path)
-                    return
+                paths_to_add = [u.toLocalFile() for u in urls if u.toLocalFile() and os.path.isfile(u.toLocalFile())]
 
-        if mime_data.hasImage():
+        elif mime_data.hasImage():
             qimage = clipboard.image()
             if not qimage.isNull():
                 try:
-                    # Convert to RGBA8888 for consistent handling
-                    qimage = qimage.convertToFormat(QImage.Format.Format_RGBA8888)
-                    
-                    width = qimage.width()
-                    height = qimage.height()
-                    ptr = qimage.bits()
-                    ptr.setsize(qimage.sizeInBytes())
-                    
-                    # Create numpy array from the data
-                    arr = np.frombuffer(ptr, dtype=np.uint8).reshape((height, width, 4))
-                    
-                    # Update ImageHandler
-                    self.image_handler.original_image_data = arr.copy() # Copy to own data
-                    self.image_handler.width = width
-                    self.image_handler.height = height
-                    self.image_handler.dtype = np.uint8
-                    self.image_handler.color_format = "RGBA"
-                    self.image_handler.is_raw = False
-                    self.image_handler.is_video = False
-                    
-                    # Reset internal state
-                    self.files_in_current_folder = []
-                    self.current_file_index = -1
-                    self.current_file_path = "Clipboard"
-                    
-                    # Update UI
-                    self.update_image_display(reset_view=True)
-                    self.setWindowTitle(f"ImageViewer - Clipboard Image")
-                    
-                    # Synthesize basic info for info pane if needed
-                    self.info_pane.update_info(
-                        self.image_handler.width,
-                        self.image_handler.height,
-                        self.image_handler.dtype,
-                        self.image_handler.dtype_map,
-                        file_size=0,
-                        color_format=self.image_handler.color_format
-                    )
-                    
+                    # Save to temp file
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    temp_dir = tempfile.gettempdir()
+                    temp_path = os.path.join(temp_dir, f"Clipboard_{timestamp}.png")
+                    qimage.save(temp_path, "PNG")
+                    paths_to_add = [temp_path]
                 except Exception as e:
-                    QMessageBox.warning(self, "Paste Error", f"Failed to paste image: {e}")
+                    QMessageBox.warning(self, "Paste Error", f"Failed to save clipboard image: {e}")
+                    return
+        else:
+             QMessageBox.information(self, "Paste", "Clipboard does not contain an image or valid file.")
+             return
+
+        if not paths_to_add:
             return
-        
-        QMessageBox.information(self, "Paste", "Clipboard does not contain an image or valid file.")
+
+        # Action Logic
+        if is_thumbnail_focused:
+            # Add to thumbnail pane logic
+            self.thumbnail_pane.add_files(paths_to_add)
+        else:
+            # Main View Logic
+            current_has_image = (self.image_handler.original_image_data is not None)
+            
+            if current_has_image and len(paths_to_add) > 0:
+                # Add to Montage
+                current_paths = []
+                if self.stacked_widget.currentWidget() == self.montage_widget:
+                     current_paths = [label.file_path for label in self.montage_labels if hasattr(label, 'file_path') and label.file_path]
+                elif self.current_file_path:
+                     current_paths = [self.current_file_path]
+                
+                # Combine unique paths
+                new_montage_paths = []
+                # Keep order
+                seen = set()
+                for p in current_paths + paths_to_add:
+                    if p not in seen:
+                        new_montage_paths.append(p)
+                        seen.add(p)
+                
+                self.display_montage(new_montage_paths)
+            else:
+                # Open first file (standard behavior)
+                if len(paths_to_add) == 1:
+                    self.open_file(paths_to_add[0])
+                else:
+                    self.open_files(paths_to_add)
 
     def show_about_dialog(self):
         msg_box = QMessageBox(self)
