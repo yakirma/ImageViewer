@@ -257,6 +257,7 @@ class ImageViewer(QMainWindow):
         font = title_label.font()
         font.setPointSize(24)
         title_label.setFont(font)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         open_button = QPushButton("Open Image")
         open_button.clicked.connect(self.open_image_dialog)
 
