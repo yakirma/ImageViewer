@@ -1931,7 +1931,14 @@ class ImageViewer(QMainWindow):
                     self.setWindowTitle(f"ImageViewer - Clipboard Image")
                     
                     # Synthesize basic info for info pane if needed
-                    self.info_pane.update_info(self.image_handler)
+                    self.info_pane.update_info(
+                        self.image_handler.width,
+                        self.image_handler.height,
+                        self.image_handler.dtype,
+                        self.image_handler.dtype_map,
+                        file_size=0,
+                        color_format=self.image_handler.color_format
+                    )
                     
                 except Exception as e:
                     QMessageBox.warning(self, "Paste Error", f"Failed to paste image: {e}")
