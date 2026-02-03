@@ -4,7 +4,7 @@ import re
 
 import numpy as np
 from PyQt6.QtCore import Qt, QEvent, QPoint, QPointF, QTimer, QThread, pyqtSignal, QUrl
-from PyQt6.QtGui import QAction, QPixmap, QImage, QIcon, QDesktopServices
+from PyQt6.QtGui import QAction, QPixmap, QImage, QIcon, QDesktopServices, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
