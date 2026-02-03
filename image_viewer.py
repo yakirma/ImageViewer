@@ -312,6 +312,12 @@ class ImageViewer(QMainWindow):
         open_action = QAction(QIcon.fromTheme("document-open"), "&Open", self)
         open_action.triggered.connect(self.open_image_dialog)
         file_menu.addAction(open_action)
+        
+        paste_action = QAction("&Paste", self)
+        paste_action.setShortcut(QKeySequence.StandardKey.Paste)
+        paste_action.triggered.connect(self.paste_from_clipboard)
+        file_menu.addAction(paste_action)
+
         save_action = QAction("&Save View", self)
         save_action.triggered.connect(self.save_view)
         file_menu.addAction(save_action)
@@ -1878,6 +1884,60 @@ class ImageViewer(QMainWindow):
         
         finally:
             self.progress_bar.setVisible(False)
+
+    def paste_from_clipboard(self):
+        clipboard = QApplication.clipboard()
+        mime_data = clipboard.mimeData()
+
+        if mime_data.hasUrls():
+            urls = mime_data.urls()
+            if urls:
+                file_path = urls[0].toLocalFile()
+                if os.path.isfile(file_path):
+                    self.open_file(file_path)
+                    return
+
+        if mime_data.hasImage():
+            qimage = clipboard.image()
+            if not qimage.isNull():
+                try:
+                    # Convert to RGBA8888 for consistent handling
+                    qimage = qimage.convertToFormat(QImage.Format.Format_RGBA8888)
+                    
+                    width = qimage.width()
+                    height = qimage.height()
+                    ptr = qimage.bits()
+                    ptr.setsize(qimage.sizeInBytes())
+                    
+                    # Create numpy array from the data
+                    arr = np.frombuffer(ptr, dtype=np.uint8).reshape((height, width, 4))
+                    
+                    # Update ImageHandler
+                    self.image_handler.original_image_data = arr.copy() # Copy to own data
+                    self.image_handler.width = width
+                    self.image_handler.height = height
+                    self.image_handler.dtype = np.uint8
+                    self.image_handler.color_format = "RGBA"
+                    self.image_handler.is_raw = False
+                    self.image_handler.is_video = False
+                    
+                    # Reset internal state
+                    self.files_in_current_folder = []
+                    self.current_file_index = -1
+                    self.current_file_path = "Clipboard"
+                    
+                    # Update UI
+                    self.update_image_display(reset_view=True)
+                    self.setWindowTitle(f"ImageViewer - Clipboard Image")
+                    
+                    # Synthesize basic info for info pane if needed
+                    self.info_pane.update_info(self.image_handler)
+                    
+                except Exception as e:
+                    QMessageBox.warning(self, "Paste Error", f"Failed to paste image: {e}")
+            return
+        
+        QMessageBox.information(self, "Paste", "Clipboard does not contain an image or valid file.")
 
     def show_about_dialog(self):
         msg_box = QMessageBox(self)
