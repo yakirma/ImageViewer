@@ -562,7 +562,7 @@ class ImageViewer(QMainWindow):
 
     def update_image_display(self, reset_view=False):
         """Centralized method to update image display with channel selection and transforms."""
-        if not self.active_label or self.image_handler.original_image_data is None:
+        if not self.active_label:
             return
         
         # 1. Get the base data (original or current video frame)
