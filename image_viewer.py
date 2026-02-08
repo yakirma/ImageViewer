@@ -42,7 +42,7 @@ try:
 except ImportError:
     requests = None
 
-__version__ = "1.1.0"
+__version__ = "1.0.8"
 
 class CheckForUpdates(QThread):
     update_available = pyqtSignal(str, str) # version, url
