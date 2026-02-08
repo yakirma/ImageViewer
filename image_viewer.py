@@ -137,6 +137,7 @@ class ImageViewer(QMainWindow):
         self.setDockOptions(self.dockOptions() | QMainWindow.DockOption.AnimatedDocks | QMainWindow.DockOption.AllowNestedDocks)
 
         self.current_colormap = "gray"
+        self.overlay_mode = 0 # 0=Hidden, 1=Basename, 2=Full Path
         self.zoom_settings = {"zoom_speed": 1.1, "zoom_in_interp": "Nearest", "zoom_out_interp": "Smooth"}
 
         self._create_welcome_screen()
@@ -1135,23 +1136,24 @@ class ImageViewer(QMainWindow):
         is_montage = self.stacked_widget.currentWidget() == self.montage_widget
         
         # Helper to set text and visibility
-        def update_label(label, math_text, file_text):
+        def update_label(label, math_text, file_path_attr):
             if show_math_vars:
                 label.set_overlay_text(math_text)
                 label.overlay_label.show()
             else:
-                # If pane closed, revert to filename. 
-                # Preserving previous visibility state is tricky without tracking it.
-                # Standard behavior: Hide unless user explicitly enabled it via 'V' key?
-                # Or just update text and let user control visibility?
-                # User complaint: "names doesn't appear". 
-                # Assuming when pane closes, we might want to hide them if they were only shown FOR math.
-                # But if we hide unconditionally, we break 'V' toggle.
-                # Strategy: Update text. If transitioning from Open->Closed, hide IF text was math var?
-                # Let's just update text. And Force Hide if we define that math pane OPENING forced proper show.
-                # Actually, simply hiding is safer as default. User can press V to show filenames.
-                label.set_overlay_text(file_text)
-                label.overlay_label.hide()
+                mode = getattr(self, 'overlay_mode', 0)
+                if mode == 0:
+                    label.overlay_label.hide()
+                elif mode == 1:
+                    # Basename
+                    txt = os.path.basename(file_path_attr) if file_path_attr else ""
+                    label.set_overlay_text(txt)
+                    label.overlay_label.show()
+                elif mode == 2:
+                    # Full Path
+                    txt = file_path_attr if file_path_attr else ""
+                    label.set_overlay_text(txt)
+                    label.overlay_label.show()
 
         if is_montage:
              for i, label in enumerate(self.montage_labels):
@@ -1162,17 +1164,13 @@ class ImageViewer(QMainWindow):
                      math = f"x{i+1}"
                  
                  # File Text
-                 file_txt = getattr(label, 'file_path', "")
-                 file_txt = os.path.basename(file_txt) if file_txt else ""
-                 
-                 update_label(label, math, file_txt)
+                 file_path = getattr(label, 'file_path', "")
+                 update_label(label, math, file_path)
         else:
              if self.active_label:
-                 file_txt = getattr(self.active_label, 'file_path', "")
+                 file_path = getattr(self.active_label, 'file_path', "")
                  # If active_label is one of the montage labels (e.g. focused), use its path
-                 file_txt = os.path.basename(file_txt) if file_txt else ""
-                 
-                 update_label(self.active_label, "x", file_txt)
+                 update_label(self.active_label, "x", file_path)
 
     def toggle_histogram_window(self):
         # Histogram is a tool window, but let's see if we want to preserve window size here too.
@@ -2190,11 +2188,9 @@ class ImageViewer(QMainWindow):
                     self._apply_histogram_preset(0, 100, use_visible_only)
 
             if event.key() == Qt.Key.Key_V and event.modifiers() == Qt.KeyboardModifier.NoModifier:
-                if self.stacked_widget.currentWidget() == self.montage_widget:
-                    for label in self.montage_labels:
-                        label.toggle_overlay()
-                elif self.active_label:
-                    self.active_label.toggle_overlay()
+                # Cycle overlay mode: 0 (Hidden) -> 1 (Basename) -> 2 (Full Path) -> 0
+                self.overlay_mode = (getattr(self, 'overlay_mode', 0) + 1) % 3
+                self._update_overlay_labels()
                 return
 
         super().keyPressEvent(event)
