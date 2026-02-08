@@ -42,7 +42,7 @@ try:
 except ImportError:
     requests = None
 
-__version__ = "1.0.7"
+__version__ = "1.1.0"
 
 class CheckForUpdates(QThread):
     update_available = pyqtSignal(str, str) # version, url
@@ -369,6 +369,13 @@ class ImageViewer(QMainWindow):
         self.colormap_combo.currentTextChanged.connect(self.set_colormap)
         toolbar.addWidget(QLabel("Colormap:", self))
         toolbar.addWidget(self.colormap_combo)
+
+        # Show Colorbar Button
+        self.colorbar_action = QAction(QIcon(resource_path("assets/icons/colorbar.png")), "Colorbar", self)
+        self.colorbar_action.setToolTip("Show Colorbar Legend")
+        self.colorbar_action.setCheckable(True)
+        self.colorbar_action.toggled.connect(self.toggle_colorbar)
+        toolbar.addAction(self.colorbar_action)
         
         # Channel Selector
         self.channel_combo = QComboBox(self)
@@ -1430,6 +1437,16 @@ class ImageViewer(QMainWindow):
                  for win in self.window_list:
                      if hasattr(win, '_invalidate_overlay_cache'):
                          win._invalidate_overlay_cache(path)
+
+    def toggle_colorbar(self, checked):
+        if self.stacked_widget.currentWidget() == self.montage_widget:
+            for label in self.montage_labels:
+                label.show_colorbar = checked
+                label.update()
+        else:
+            if self.active_label:
+                self.active_label.show_colorbar = checked
+                self.active_label.update()
 
     def set_contrast_limits(self, min_val, max_val):
         # Apply only to the active label, ensuring independence in montage view

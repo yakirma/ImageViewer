@@ -3,7 +3,7 @@ import time
 import numpy as np
 import re
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QPointF, QEvent, QObject, QTimer, QRectF, QSettings, QSortFilterProxyModel, QDir, QRegularExpression, QItemSelectionModel, QSize
-from PyQt6.QtGui import QPixmap, QPainter, QNativeGestureEvent, QDoubleValidator, QKeyEvent, QImage, QMouseEvent, QColor, QIcon, QFileSystemModel, QRadialGradient, QPen, QBrush
+from PyQt6.QtGui import QPixmap, QPainter, QNativeGestureEvent, QDoubleValidator, QKeyEvent, QImage, QMouseEvent, QColor, QIcon, QFileSystemModel, QRadialGradient, QLinearGradient, QPen, QBrush
 from PyQt6.QtGui import QMatrix4x4
 from PyQt6.QtWidgets import (
     QApplication,
@@ -658,6 +658,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self.overlay_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         
         
+        self.show_colorbar = False # Toggle via external button
         self.overlays = [] # List of tuples: (QPixmap, opacity)
 
         # Debounce Timer for View Changed Signal (Histogram updates)
@@ -718,6 +719,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
 
     def _on_shared_view_changed(self):
         self.update()
+        self._update_overlay_position()
 
     def _on_shared_crosshair_changed(self):
         self.update()
@@ -1155,10 +1157,41 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
     def _update_overlay_position(self):
         if self.overlay_label.isVisible() and self.overlay_label.text():
             self.overlay_label.adjustSize()
-            # Position at top-center
-            x = (self.width() - self.overlay_label.width()) // 2
-            y = 20
-            self.overlay_label.move(x, y)
+            
+            w_label = self.overlay_label.width()
+            h_label = self.overlay_label.height()
+            w_widget = self.width()
+            h_widget = self.height()
+            
+            # Default to center of widget if no image
+            target_x = (w_widget - w_label) // 2
+            target_y = 20
+            
+            if self.current_pixmap:
+                offset = self._get_effective_offset()
+                scale = self._get_effective_scale_factor()
+                
+                # Image Center in Widget Coordinates
+                img_cx = w_widget / 2 + offset.x()
+                img_cy = h_widget / 2 + offset.y()
+                
+                # Visual dimensions
+                draw_scale = scale
+                if self._proxy_scale > 0:
+                     draw_scale = scale / self._proxy_scale
+                
+                vis_h = self.current_pixmap.height() * draw_scale
+                
+                # Image Top Y
+                img_top_y = img_cy - vis_h / 2
+                
+                # Target X: Center on Image
+                target_x = int(img_cx - w_label / 2)
+                
+                # Target Y: Top of Image + padding
+                target_y = int(img_top_y + 10)
+
+            self.overlay_label.move(target_x, target_y)
             self.overlay_label.raise_()
 
     def get_original_size(self):
@@ -1322,6 +1355,9 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         
         # Debounce the expensive view changed signal (histogram update)
         self._view_update_timer.start()
+        
+        # Update overlay position (keep it floating on image)
+        self._update_overlay_position()
 
     def wheelEvent(self, event):
         current_effective_scale = self._get_effective_scale_factor()
@@ -1386,7 +1422,10 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                 self._pixmap_offset += QPointF(delta)
                 self.update()
             self.drag_start_position = event.pos()
-            self.drag_start_position = event.pos()
+            
+            # Update overlay position (keep it floating on image)
+            self._update_overlay_position()
+            
             # self.view_changed.emit() # Removed for performance, moved to release
 
         if self.original_data is not None and self.current_pixmap is not None:
@@ -1603,6 +1642,83 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                 
                 painter.setPen(QColor(255, 255, 255))
                 painter.drawText(tooltip_x + text_padding, tooltip_y + text_padding + text_rect.height() - 2, text)
+
+        if self.show_colorbar and self.current_pixmap:
+            self.draw_colorbar(painter)
+
+    def draw_colorbar(self, painter):
+        if not self.original_data is not None:
+             return
+
+        # Dimensions regarding widget
+        bar_w = 20
+        bar_h = min(300, self.height() - 60)
+        padding = 20
+        
+        # Position: Right side, vertically centered
+        x = self.width() - bar_w - padding
+        y = (self.height() - bar_h) // 2
+        
+        # Draw Background (Semi-transparent)
+        bg_rect = QRectF(x - 5, y - 5, bar_w + 35, bar_h + 10) # Wider for text
+        painter.fillRect(bg_rect, QColor(0, 0, 0, 150))
+        
+        # Draw Gradient Bar
+        gradient = pyqtgraph_gradient = QRadialGradient() # Dummy, replaced below
+        
+        # Get Colormap colors
+        try:
+            # Create QLinearGradient
+            qn_gradient = QLinearGradient(x, y + bar_h, x, y) # Bottom to Top
+            
+            # Matplotlib Colormap
+            cmap_name = getattr(self, 'colormap', 'gray')
+            if cmap_name == 'gray':
+                 qn_gradient.setColorAt(0, QColor(0, 0, 0))
+                 qn_gradient.setColorAt(1, QColor(255, 255, 255))
+            else:
+                 # Sample colormap at 0, 0.25, 0.5, 0.75, 1
+                 cmap = cm.get_cmap(cmap_name)
+                 for i in range(11):
+                     pos = i / 10.0
+                     rgba = cmap(pos)
+                     color = QColor(int(rgba[0]*255), int(rgba[1]*255), int(rgba[2]*255))
+                     qn_gradient.setColorAt(pos, color)
+            
+            painter.fillRect(QRectF(x, y, bar_w, bar_h), QBrush(qn_gradient))
+            
+            # Draw Border
+            painter.setPen(QPen(QColor(200, 200, 200), 1))
+            painter.drawRect(QRectF(x, y, bar_w, bar_h))
+            
+            # Draw Text Limits (Min/Max)
+            min_val, max_val = 0.0, 1.0
+            if self.contrast_limits:
+                min_val, max_val = self.contrast_limits
+            elif self.original_data is not None:
+                min_val = np.min(self.original_data)
+                max_val = np.max(self.original_data)
+                
+            font = painter.font()
+            font.setPointSize(10)
+            painter.setFont(font)
+            painter.setPen(QColor(255, 255, 255))
+            
+            # Format numbers (scientific if too large/small)
+            def fmt(v):
+                if abs(v) > 10000 or (abs(v) < 0.01 and v != 0):
+                    return f"{v:.1e}"
+                return f"{v:.2f}"
+            
+            # Max (Top)
+            painter.drawText(QRectF(x - 45, y - 10, 40, 20), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, fmt(max_val))
+            
+            # Min (Bottom)
+            painter.drawText(QRectF(x - 45, y + bar_h - 10, 40, 20), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, fmt(min_val))
+
+        except Exception as e:
+            print(f"Error drawing colorbar: {e}")
+
 
 
 class ThumbnailItem(QWidget):
