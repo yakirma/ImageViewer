@@ -2,11 +2,12 @@ import os
 import sys
 import re
 import shutil
+import json
 import tempfile
 from datetime import datetime
 
 import numpy as np
-from PyQt6.QtCore import Qt, QEvent, QPoint, QPointF, QTimer, QThread, pyqtSignal, QUrl
+from PyQt6.QtCore import Qt, QEvent, QPoint, QPointF, QTimer, QThread, pyqtSignal, QUrl, QMimeData, QDir
 from PyQt6.QtGui import QAction, QPixmap, QImage, QIcon, QDesktopServices, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
@@ -42,7 +43,19 @@ try:
 except ImportError:
     requests = None
 
-__version__ = "1.0.8"
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (QPoint, QPointF)):
+            return [obj.x(), obj.y()]
+        return super(NumpyEncoder, self).default(obj)
+
+__version__ = "1.0.9"
 
 class CheckForUpdates(QThread):
     update_available = pyqtSignal(str, str) # version, url
@@ -323,9 +336,9 @@ class ImageViewer(QMainWindow):
         paste_action.triggered.connect(self.paste_from_clipboard)
         file_menu.addAction(paste_action)
 
-        save_action = QAction("&Save View", self)
-        save_action.triggered.connect(self.save_view)
-        file_menu.addAction(save_action)
+        export_action = QAction("&Export Current View to...", self)
+        export_action.triggered.connect(self.export_current_view)
+        file_menu.addAction(export_action)
         file_menu.addSeparator()
         self.recent_files_menu = file_menu.addMenu("Recent Files")
         self._update_recent_files_menu()
@@ -1944,10 +1957,41 @@ class ImageViewer(QMainWindow):
             if urls:
                 paths_to_add = [u.toLocalFile() for u in urls if u.toLocalFile() and os.path.isfile(u.toLocalFile())]
 
+        elif mime_data.hasText() and mime_data.text().startswith("IV_STATE:"):
+            # Handle View State Paste
+            try:
+                text = mime_data.text()
+                json_str = text[9:] # Strip prefix
+                state = json.loads(json_str)
+                
+                if self.active_label:
+                    # Convert percentiles back to limits based on target image
+                    if 'contrast_percentiles' in state and self.active_label.original_data is not None:
+                        new_limits = self._get_limits_from_percentiles(
+                            self.active_label.original_data, 
+                            state['contrast_percentiles']
+                        )
+                        state['contrast_limits'] = new_limits
+                    
+                    self.active_label.set_view_state(state)
+                    self._update_active_view(reset_histogram=False) # Update UI to reflect new state
+                    self.status_bar.showMessage("View Settings Pasted", 2000)
+                    return
+            except Exception as e:
+                print(f"Error pasting view state: {e}")
+                self.status_bar.showMessage("Paste Settings Failed", 2000)
+            return
+
         elif mime_data.hasImage():
             qimage = clipboard.image()
             if not qimage.isNull():
                 try:
+                    # Check if we should paste as new image or replace current
+                    # For now, let's keep the existing behavior of creating a temp file
+                    # BUT if we are pasting into an existing view, maybe we want to replace correctly?
+                    # The user asked for "paste image" support.
+                    # Existing logic saves to temp file and "opens" it.
+                    
                     # Save to temp file
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     temp_dir = tempfile.gettempdir()
@@ -1958,7 +2002,7 @@ class ImageViewer(QMainWindow):
                     QMessageBox.warning(self, "Paste Error", f"Failed to save clipboard image: {e}")
                     return
         else:
-             QMessageBox.information(self, "Paste", "Clipboard does not contain an image or valid file.")
+             self.status_bar.showMessage("Clipboard does not contain an image or valid file.", 3000)
              return
 
         if not paths_to_add:
@@ -2019,11 +2063,46 @@ class ImageViewer(QMainWindow):
         if msg_box.clickedButton() == visit_btn:
             QDesktopServices.openUrl(QUrl(github_url))
 
-    def save_view(self):
+
+    def export_current_view(self):
         if self.active_label and self.active_label.current_pixmap:
-            file_name, _ = QFileDialog.getSaveFileName(self, "Save Image", "", "PNG Image (*.png)")
+            # Default to user home directory
+            home_dir = QDir.homePath()
+            
+            # Default filename: use original filename if available
+            default_name = "image_export"
+            if hasattr(self.active_label, 'file_path') and self.active_label.file_path:
+                 base_name = os.path.splitext(os.path.basename(self.active_label.file_path))[0]
+                 default_name = f"{base_name}_export"
+            
+            initial_path = os.path.join(home_dir, default_name)
+
+            # Filters
+            filters = "Images (*.png *.tiff *.tif *.jpg *.jpeg *.bmp);;PNG (*.png);;TIFF (*.tiff *.tif);;JPEG (*.jpg *.jpeg);;BMP (*.bmp)"
+            
+            file_name, selected_filter = QFileDialog.getSaveFileName(self, "Export Current View", initial_path, filters)
+            
             if file_name:
-                self.active_label.current_pixmap.save(file_name, "png")
+                # auto-append extension if missing based on filter logic is usually handled by OS or we can enforce
+                # QImage.save usually detects by extension.
+                # If username types 'foo' and selected 'PNG', it might save as 'foo'.
+                # Let's trust QImage.save or ensure extension.
+                
+                # Simple check: if no extension, append one based on filter? 
+                # Or just let user responsible. User requested "suggest formats".
+                
+                # Check if file_name has extension
+                _, ext = os.path.splitext(file_name)
+                if not ext:
+                    # Try to infer from filter
+                    if "PNG" in selected_filter: ext = ".png"
+                    elif "TIFF" in selected_filter: ext = ".tiff"
+                    elif "JPEG" in selected_filter: ext = ".jpg"
+                    elif "BMP" in selected_filter: ext = ".bmp"
+                    else: ext = ".png" # Default
+                    file_name += ext
+                
+                self.active_label.current_pixmap.save(file_name)
 
     def update_status_bar(self, x_coord, y_coord):
         if self.sender() is not self.active_label: return
@@ -2132,8 +2211,17 @@ class ImageViewer(QMainWindow):
         # (e.g., standard Mac Meta, or remapped/VNC Mac Control, or standard Windows Control)
         is_cmd_or_ctrl = event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier)
 
-        # Copy View State
+        # Copy View State (Cmd+C) or Copy Image (Cmd+Shift+C)
         if event.key() == Qt.Key.Key_C and is_cmd_or_ctrl:
+            # Check for Shift -> Copy Image
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                if self.active_label and self.active_label.current_pixmap:
+                    clipboard = QApplication.clipboard()
+                    clipboard.setImage(self.active_label.current_pixmap.toImage())
+                    self.status_bar.showMessage("Image Copied to Clipboard", 2000)
+                return
+
+            # No Shift -> Copy View State
             if self.active_label:
                 state = self.active_label.get_view_state()
                 # Store percentiles for more robust pasting across different images
@@ -2142,28 +2230,24 @@ class ImageViewer(QMainWindow):
                         self.active_label.original_data, 
                         self.active_label.contrast_limits
                     )
-                ImageViewer.view_clipboard = state
-                self.status_bar.showMessage("View Copied (Percentiles + Relative Zoom)", 2000)
+                
+                try:
+                    # Serialize to JSON for System Clipboard
+                    json_str = json.dumps(state, cls=NumpyEncoder)
+                    
+                    mime_data = QMimeData()
+                    mime_data.setText(f"IV_STATE:{json_str}")
+                    # Note: We purposely do NOT set image data here to keep clipboard clean for state-only transfer.
+                    
+                    clipboard = QApplication.clipboard()
+                    clipboard.setMimeData(mime_data)
+                    self.status_bar.showMessage("View State Copied (JSON)", 2000)
+                except Exception as e:
+                    print(f"Error copying view state: {e}")
+                    self.status_bar.showMessage("Copy Failed", 2000)
             return
 
-        # Paste View State
-        if event.key() == Qt.Key.Key_V and is_cmd_or_ctrl:
-            if self.active_label and ImageViewer.view_clipboard:
-                # Use a copy of the clipboard state so we don't modify the original
-                state = ImageViewer.view_clipboard.copy()
-                
-                # Convert percentiles back to limits based on target image
-                if 'contrast_percentiles' in state and self.active_label.original_data is not None:
-                    new_limits = self._get_limits_from_percentiles(
-                        self.active_label.original_data, 
-                        state['contrast_percentiles']
-                    )
-                    state['contrast_limits'] = new_limits
-                
-                self.active_label.set_view_state(state)
-                self._update_active_view(reset_histogram=False) # Update UI to reflect new state
-                self.status_bar.showMessage("View Pasted", 2000)
-            return
+
 
         # Video Navigation
         if self.image_handler.is_video:

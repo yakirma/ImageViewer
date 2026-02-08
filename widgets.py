@@ -1271,8 +1271,8 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         if not state:
             return
 
-        # Apply Colormap (only if target is single channel/grayscale)
-        if 'colormap' in state and self.is_single_channel():
+        # Apply Colormap
+        if 'colormap' in state:
             self.set_colormap(state['colormap'])
 
         # Apply Contrast Limits
@@ -1295,7 +1295,11 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         
         # Apply Pan (Relative to Fit which is offset 0,0)
         if 'relative_pan' in state:
-            self.pan_pos = state['relative_pan']
+            pan = state['relative_pan']
+            if isinstance(pan, (list, tuple)) and len(pan) == 2:
+                self.pan_pos = QPointF(pan[0], pan[1])
+            else:
+                self.pan_pos = pan
 
         self.zoom_factor_changed.emit(self._get_effective_scale_factor())
         self.view_changed.emit()
