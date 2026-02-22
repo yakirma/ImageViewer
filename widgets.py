@@ -3561,7 +3561,7 @@ class PointCloudViewer(QDialog):
                      target_vec = pg.Vector(*target_pos[min_idx])
                      
                      # Explicitly set camera center
-                     self.view_widget.setCameraPosition(center=target_vec)
+                     self.view_widget.setCameraPosition(pos=target_vec)
                      self.view_widget.update()
                  else:
                      print(f"Clicked too far from any point. Min NDC dist_sq: {min_dist:.4f}")
