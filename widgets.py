@@ -3508,7 +3508,9 @@ class PointCloudViewer(QDialog):
         
         try:
              # Getting matrices from the widget's internal state
-             pMatrix = self.view_widget.projectionMatrix(region=(0, 0, w, h)) 
+             w = self.view_widget.width()
+             h = self.view_widget.height()
+             pMatrix = self.view_widget.projectionMatrix(region=(0, 0, w, h), viewport=(0, 0, w, h)) 
              vMatrix = self.view_widget.viewMatrix()
              
              if pMatrix is None or vMatrix is None:
