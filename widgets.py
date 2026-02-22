@@ -3407,7 +3407,7 @@ class PointCloudViewer(QDialog):
         light_vec = np.array([lx, ly, lz])
         
         # 1. Update Points (if applicable)
-        if self.normals is not None and len(self.normals) > 0:
+        if self.normals is not None and self.normals.ndim == 2 and self.normals.shape[0] > 0:
             # Dot product for diffuse lighting
             # Use simple dot (not absolute) to create realistic shadows on the far side
             dot = np.sum(self.normals * light_vec, axis=1)
@@ -3490,7 +3490,10 @@ class PointCloudViewer(QDialog):
             
     def handle_double_click(self, pos):
         """Center the view on the clicked point."""
-        if self.pos is None or len(self.pos) == 0:
+        render_mode = self.render_mode_combo.currentText()
+        target_pos = self.mesh_vertices if render_mode == "Surface" else self.pos
+        
+        if target_pos is None or len(target_pos) == 0:
             return
             
         # Get View Matrices
@@ -3530,7 +3533,7 @@ class PointCloudViewer(QDialog):
              mvp_data = np.array(m_data).T  # Transpose needed depending on column/row major layout expectations, PyQt6 .column() gives elements of column vectors
              
              # Homogeneous coordinates
-             points_4d = np.hstack([self.pos, np.ones((len(self.pos), 1))])
+             points_4d = np.hstack([target_pos, np.ones((len(target_pos), 1))])
              
              # Transform
              clip_coords = points_4d @ mvp_data
