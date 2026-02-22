@@ -522,7 +522,7 @@ class ImageViewer(QMainWindow):
         self.histogram_action.setEnabled(False)
         toolbar.addAction(self.histogram_action)
 
-        self.da3_action = QAction(QIcon.fromTheme("camera-photo"), "DA3 Depth", self)
+        self.da3_action = QAction(QIcon(resource_path("assets/icons/layers.png")), "DA3 Depth", self)
         self.da3_action.setToolTip("Generate Depth Map using Depth Anything V3")
         self.da3_action.triggered.connect(self.generate_da3_depth_map)
         toolbar.addAction(self.da3_action)
