@@ -3406,32 +3406,30 @@ class PointCloudViewer(QDialog):
             
         light_vec = np.array([lx, ly, lz])
         
-        # Dot product for diffuse lighting
-        # Use simple dot (not absolute) to create realistic shadows on the far side
-        dot = np.sum(self.normals * light_vec, axis=1)
-        
-        # Apply shading to RGB components
-        shaded_colors = self.base_colors.copy()
-        
-        # If in normals mode, shading might be distracting, but let's keep it subtle
-        shading_strength = 0.5 if self.colormap_mode == "normals" else 0.8
-        ambient = 0.5 if self.colormap_mode == "normals" else 0.2
-        
-        # Improve contrast: allow shading to go darker
-        shading = np.clip(dot, 0, 1) * shading_strength + ambient
-        
-        # Points
-        if self.base_colors is not None and len(self.base_colors) > 0:
-            shaded_points = self.base_colors.copy()
-            # If length doesn't match, or scatter isn't created, we handle below
-            if len(shading) == len(shaded_points):
-                 shaded_points[:, :3] *= shading[:, np.newaxis]
+        # 1. Update Points (if applicable)
+        if self.normals is not None and len(self.normals) > 0:
+            # Dot product for diffuse lighting
+            # Use simple dot (not absolute) to create realistic shadows on the far side
+            dot = np.sum(self.normals * light_vec, axis=1)
             
-            if self.scatter:
-                self.scatter.setData(color=shaded_points)
-            else:
-                self.scatter = gl.GLScatterPlotItem(pos=self.pos, color=shaded_points, size=2, pxMode=True, glOptions='opaque')
-                self.view_widget.addItem(self.scatter)
+            # If in normals mode, shading might be distracting, but let's keep it subtle
+            shading_strength = 0.5 if self.colormap_mode == "normals" else 0.8
+            ambient = 0.5 if self.colormap_mode == "normals" else 0.2
+            
+            # Improve contrast: allow shading to go darker
+            shading = np.clip(dot, 0, 1) * shading_strength + ambient
+            
+            if self.base_colors is not None and len(self.base_colors) > 0:
+                shaded_points = self.base_colors.copy()
+                # If length doesn't match, or scatter isn't created, we handle below
+                if len(shading) == len(shaded_points):
+                     shaded_points[:, :3] *= shading[:, np.newaxis]
+                
+                if self.scatter:
+                    self.scatter.setData(color=shaded_points)
+                else:
+                    self.scatter = gl.GLScatterPlotItem(pos=self.pos, color=shaded_points, size=2, pxMode=True, glOptions='opaque')
+                    self.view_widget.addItem(self.scatter)
 
         # Mesh / Surface
         render_mode = self.render_mode_combo.currentText()
