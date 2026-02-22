@@ -3532,7 +3532,7 @@ class PointCloudViewer(QDialog):
                  col = mvp.column(i)
                  m_data.append([col.x(), col.y(), col.z(), col.w()])
              
-             mvp_data = np.array(m_data).T  # Transpose needed depending on column/row major layout expectations, PyQt6 .column() gives elements of column vectors
+             mvp_data = np.array(m_data)  # Matrix where rows are columns of MVP (M^T)
              
              # Homogeneous coordinates
              points_4d = np.hstack([target_pos, np.ones((len(target_pos), 1))])
@@ -3558,7 +3558,7 @@ class PointCloudViewer(QDialog):
                  
                  # Threshold (e.g. within ~5% of screen size)
                  if min_dist < 0.05:
-                     target_point = self.pos[min_idx]
+                     target_point = target_pos[min_idx]
                      
                      # Center view on this point
                      self.view_widget.opts['center'] = pg.Vector(*target_point)
