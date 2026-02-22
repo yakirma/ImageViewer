@@ -3556,13 +3556,15 @@ class PointCloudViewer(QDialog):
                  min_idx = np.argmin(dist_sq)
                  min_dist = dist_sq[min_idx]
                  
-                 # Threshold (e.g. within ~5% of screen size)
-                 if min_dist < 0.05:
-                     target_point = target_pos[min_idx]
+                 # Threshold (e.g. within NDC distance of ~0.3)
+                 if min_dist < 0.1:
+                     target_vec = pg.Vector(*target_pos[min_idx])
                      
-                     # Center view on this point
-                     self.view_widget.opts['center'] = pg.Vector(*target_point)
+                     # Explicitly set camera center
+                     self.view_widget.setCameraPosition(center=target_vec)
                      self.view_widget.update()
+                 else:
+                     print(f"Clicked too far from any point. Min NDC dist_sq: {min_dist:.4f}")
                  
         except Exception as e:
             import traceback
