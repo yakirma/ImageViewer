@@ -37,7 +37,7 @@ def main():
         print(f"\\nBuild complete. Look for the '{APP_NAME}' application in the 'dist' directory.")
     except Exception as e:
         print(f"An error occurred during the build process: {e}")
-        return
+        sys.exit(1)
 
     # --- Packaging Step ---
     print(f"\\nStarting Packaging for {platform.system()}...")

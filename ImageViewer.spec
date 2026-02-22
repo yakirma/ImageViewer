@@ -1,8 +1,8 @@
+from PyInstaller.utils.hooks import copy_metadata
 import os
 import depth_anything_3
 
-da3_path = os.path.dirname(depth_anything_3.__file__)
-da3_configs = os.path.join(da3_path, 'configs')
+da3_path = depth_anything_3.__path__[0]
 
 a = Analysis(
     ['main.py'],
@@ -10,9 +10,9 @@ a = Analysis(
     binaries=[],
     datas=[
         ('assets/icons', 'assets/icons'),
-        (da3_configs, 'depth_anything_3/configs')
-    ],
-    hiddenimports=['requests', 'torch', 'torchvision', 'timm', 'imageio', 'omegaconf', 'addict', 'evo', 'depth_anything_3', 'PIL', 'tifffile'],
+        (da3_path, 'depth_anything_3')
+    ] + copy_metadata('imageio') + copy_metadata('safetensors') + copy_metadata('huggingface_hub'),
+    hiddenimports=['requests', 'torch', 'torchvision', 'timm', 'imageio', 'omegaconf', 'addict', 'evo', 'depth_anything_3', 'PIL', 'tifffile', 'safetensors', 'huggingface_hub'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
