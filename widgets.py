@@ -3123,7 +3123,7 @@ class PointCloudViewer(QDialog):
         self.colormap_mode = "viridis"
         header_layout.addWidget(QLabel("🎨 Color:"))
         self.colormap_combo = QComboBox()
-        self.colormap_combo.addItems(["Viridis", "Gray", "Albedo", "Normals"])
+        self.colormap_combo.addItems(["Viridis", "Image", "Gray", "Albedo", "Normals"])
         self.colormap_combo.setCurrentText("Viridis")
         self.colormap_combo.setToolTip("Select Colormap")
         self.colormap_combo.currentTextChanged.connect(self.on_colormap_changed)
@@ -3196,7 +3196,14 @@ class PointCloudViewer(QDialog):
         self.last_data = data
         self.last_rgb_data = rgb_data
         processed_data = None
-        q_image = None
+        if rgb_data is not None:
+            self.last_rgb_data = rgb_data
+            # Auto-switch to Image mode ONLY if we are currently in default 'viridis'
+            # and we have valid RGB data. This prevents aggressive switching back to Image
+            # if the user manually selected something else like 'Normals'.
+            if self.colormap_mode == "viridis" and self.colormap_combo.findText("Image") != -1:
+                 self.colormap_combo.setCurrentText("Image")
+                 self.colormap_mode = "image"
         
         # Ensure single channel
         if data.ndim == 3:
@@ -3289,7 +3296,8 @@ class PointCloudViewer(QDialog):
         # 2. Base Colors (on FULL grid)
         norm_z = np.clip((z_vals - z_p5) / z_range, 0, 1)
         
-        if rgb_data is not None:
+        if self.colormap_mode == "image" and self.last_rgb_data is not None:
+            rgb_data = self.last_rgb_data
             import cv2
             # Ensure RGB shape matches data shape
             if rgb_data.shape[:2] != data.shape[:2]:
@@ -3475,6 +3483,7 @@ class PointCloudViewer(QDialog):
         """Change Colormap based on dropdown selection."""
         mapping = {
             "Viridis": "viridis",
+            "Image": "image",
             "Gray": "gray",
             "Albedo": "albedo",
             "Normals": "normals"
