@@ -126,61 +126,55 @@ class ImageHandler:
         return False
 
     def _load_optical_flow(self, file_name):
-        try:
-            flow_data = read_flow(file_name)
-            if flow_data is not None:
-                # Convert flow to RGB for visualization
-                self.original_image_data = flow_to_color(flow_data)
-                self.height, self.width, _ = self.original_image_data.shape
-                self.dtype = self.original_image_data.dtype
-                self.color_format = "RGB (Flow)"
-            else:
-                raise ValueError("Failed to read flow file")
-        except Exception:
-             raise
+        flow_data = read_flow(file_name)
+        if flow_data is not None:
+            # Convert flow to RGB for visualization
+            self.original_image_data = flow_to_color(flow_data)
+            self.height, self.width, _ = self.original_image_data.shape
+            self.dtype = self.original_image_data.dtype
+            self.color_format = "RGB (Flow)"
+        else:
+            raise ValueError("Failed to read flow file")
 
     def _load_npz_file(self, file_path):
         """Load NPZ file and extract image arrays."""
-        try:
-            npz_file = np.load(file_path)
-            
-            # Store available keys and their validity
-            self.npz_keys = {}
+        npz_file = np.load(file_path)
+        
+        # Store available keys and their validity
+        self.npz_keys = {}
+        for key in npz_file.files:
+            arr = npz_file[key]
+            self.npz_keys[key] = self._is_valid_image_array(arr)
+        
+        # If only one array, load it directly
+        if len(npz_file.files) == 1:
+            key = npz_file.files[0]
+            self.original_image_data = npz_file[key]
+            self.current_npz_key = key
+        else:
+            # Load first valid key
+            valid_key_found = False
             for key in npz_file.files:
-                arr = npz_file[key]
-                self.npz_keys[key] = self._is_valid_image_array(arr)
+                if self.npz_keys[key]:
+                    self.original_image_data = npz_file[key]
+                    self.current_npz_key = key
+                    valid_key_found = True
+                    break
             
-            # If only one array, load it directly
-            if len(npz_file.files) == 1:
-                key = npz_file.files[0]
-                self.original_image_data = npz_file[key]
-                self.current_npz_key = key
-            else:
-                # Load first valid key
-                valid_key_found = False
-                for key in npz_file.files:
-                    if self.npz_keys[key]:
-                        self.original_image_data = npz_file[key]
-                        self.current_npz_key = key
-                        valid_key_found = True
-                        break
-                
-                if not valid_key_found:
-                    raise ValueError(f"No valid image arrays found in NPZ file: {file_path}")
-            
-            # Store reference for switching keys later
-            self.npz_file_path = file_path
-            self.npz_data = npz_file
-            
-            # Set dimensions
-            if self.original_image_data is not None:
-                if self.original_image_data.ndim == 2:
-                    self.height, self.width = self.original_image_data.shape
-                elif self.original_image_data.ndim == 3:
-                    self.height, self.width = self.original_image_data.shape[:2]
-                self.dtype = self.original_image_data.dtype
-        except Exception:
-            raise
+            if not valid_key_found:
+                raise ValueError(f"No valid image arrays found in NPZ file: {file_path}")
+        
+        # Store reference for switching keys later
+        self.npz_file_path = file_path
+        self.npz_data = npz_file
+        
+        # Set dimensions
+        if self.original_image_data is not None:
+            if self.original_image_data.ndim == 2:
+                self.height, self.width = self.original_image_data.shape
+            elif self.original_image_data.ndim == 3:
+                self.height, self.width = self.original_image_data.shape[:2]
+            self.dtype = self.original_image_data.dtype
     
     def _is_valid_image_array(self, arr):
         """Check if array can be displayed as an image."""
@@ -196,38 +190,32 @@ class ImageHandler:
         return True
 
     def _load_standard_image(self, file_name):
-        try:
-            with Image.open(file_name) as img:
-                if img.mode.startswith("I;16") or img.mode in ("I", "F"):
-                    self.original_image_data = np.array(img)
-                elif img.mode == "L":
-                    # Explicit grayscale
-                    self.original_image_data = np.array(img)
-                elif img.mode == "RGBA":
-                    self.original_image_data = np.array(img)
-                elif img.mode == "RGB":
-                    self.original_image_data = np.array(img)
-                elif img.mode.startswith("RGB") or img.mode.startswith("RGBA"):
-                     # Handle other variants if Pillow returns them, ensuring we get standard array
-                     self.original_image_data = np.array(img)
-                else:
-                    # Fallback for P (Palette), CMYK, YCbCr, etc. -> Convert to RGB
-                    # Previous fallback to "L" caused GIFs/Paletted images to look like generic raw/grayscale
-                    self.original_image_data = np.array(img.convert("RGB"))
+        with Image.open(file_name) as img:
+            if img.mode.startswith("I;16") or img.mode in ("I", "F"):
+                self.original_image_data = np.array(img)
+            elif img.mode == "L":
+                self.original_image_data = np.array(img)
+            elif img.mode == "RGBA":
+                self.original_image_data = np.array(img)
+            elif img.mode == "RGB":
+                self.original_image_data = np.array(img)
+            elif img.mode.startswith("RGB") or img.mode.startswith("RGBA"):
+                 self.original_image_data = np.array(img)
+            else:
+                # Fallback for P (Palette), CMYK, YCbCr, etc. -> Convert to RGB
+                self.original_image_data = np.array(img.convert("RGB"))
 
-                self.width, self.height = img.width, img.height
-                self.dtype = self.original_image_data.dtype
-                
-                # Set color format to display in info pane
-                if self.original_image_data.ndim == 3:
-                    if self.original_image_data.shape[2] == 4:
-                        self.color_format = "RGBA"
-                    else:
-                        self.color_format = "RGB"
+            self.width, self.height = img.width, img.height
+            self.dtype = self.original_image_data.dtype
+            
+            # Set color format to display in info pane
+            if self.original_image_data.ndim == 3:
+                if self.original_image_data.shape[2] == 4:
+                    self.color_format = "RGBA"
                 else:
-                    self.color_format = "Grayscale"
-        except Exception:
-             raise
+                    self.color_format = "RGB"
+            else:
+                self.color_format = "Grayscale"
 
     def _load_raw_image(self, file_name, override_settings=None):
         self.color_format = "Grayscale" # Default for raw
@@ -299,66 +287,42 @@ class ImageHandler:
                 print(f"Heuristic failed: {heuristic_e}")
 
         if channels > 1:
-             try:
-                 # Reshape to (H, W, C)
-                 raw_data = raw_data.reshape((height, width, channels))
-                 
-                 # Set Color Format
-                 if channels == 3: self.color_format = "RGB"
-                 elif channels == 4: self.color_format = "RGBA"
-                 elif channels == 2: pass # Flow or 2-channel
-                 
-                 self.original_image_data = raw_data
-                 return # Success
-             except ValueError as e:
-
-                 # Fallthrough to single channel attempt? 
-                 # If explicit channels failed, maybe single channel interpretation is valid?
-                 # But likely not. 
-                 pass
+             # Reshape to (H, W, C)
+             raw_data = raw_data.reshape((height, width, channels))
+             
+             # Set Color Format
+             if channels == 3: self.color_format = "RGB"
+             elif channels == 4: self.color_format = "RGBA"
+             elif channels == 2: pass # Flow or 2-channel
+             
+             self.original_image_data = raw_data
+             return # Success
 
         # Single Channel / Fallback Path
-        try:
-             # This corresponds to 'else' block
-             if channels <= 1: # Only try this if we think it's 1 channel
-                 raw_data = raw_data.reshape((height, width))
-             else:
-                 # IF we calculated multiple channels but reshape failed (and we fell through),
-                 # we shouldn't try reshaping to (H,W) because size won't match!
-                 # Unless we want to keep it flat?
-                 # Raising error here is appropriate if we can't handle it.
-                 raise ValueError(f"Cannot reshape {total_elements} into ({height}, {width}, {channels})")
-
-        except ValueError:
-             # If exact reshape fails, keep flat? 
-             # Or raise, to match previous behavior that caused popup?
-             # Raising allows the user to see the error.
-             raise
+        if channels <= 1: # Only try this if we think it's 1 channel
+            raw_data = raw_data.reshape((height, width))
+        else:
+            raise ValueError(f"Cannot reshape {total_elements} into ({height}, {width}, {channels})")
              
         self.original_image_data = raw_data
         
-        # Format Handling for YUV etc (logic continues below...)
-        expected_size = width * height # This variable used below for YUV checks? 
-        # Actually expected_size variable definition was overwritten by me in replacement.
-        # I should keep it for YUV logic.
+        # For non-YUV, non-Bayer single-channel images, we're done
+        if "YUV" not in color_format and "Bayer" not in color_format:
+            return
 
-        
+        expected_size = width * height
         if "YUV" in color_format:
             if "NV12" in color_format or "NV21" in color_format or "I420" in color_format:
                  expected_size = int(width * height * 1.5)
             elif "YUYV" in color_format or "UYVY" in color_format:
-                 expected_size = width * height * 2 # 2 bytes per pixel
+                 expected_size = width * height * 2
         
         if raw_data.size < expected_size:
-            # Handle YUV reading mismatch if dtype was guessed wrong (e.g. 16bit but YUV is 8bit stream)
             if "YUV" in color_format and dtype != np.uint8:
                  raw_data = np.fromfile(file_name, dtype=np.uint8)
             
-            # If still mismatch
             if raw_data.size < expected_size:
-                 # Truncate request or fail? Fail for now
-                 pass 
-                 # However, let's proceed to allow partial reads if valid
+                 pass
     
         if raw_data.size != expected_size:
              if raw_data.size > expected_size:
@@ -367,7 +331,7 @@ class ImageHandler:
                  raise ValueError(f"For {width}x{height} and format {color_format}, expected minimum {expected_size} elements, found {raw_data.size}")
 
         # Post-Processing: Masking for non-standard bits
-        if not is_float and not "YUV" in color_format:
+        if not is_float and ("YUV" not in color_format):
              container_bits = np.dtype(container).itemsize * 8
              if bits < container_bits:
                  mask = (1 << bits) - 1

@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QToolButton,
     QProgressBar,
+    QDialog,
 )
 import matplotlib.cm as cm
 
@@ -37,7 +38,7 @@ from widgets import ZoomableDraggableLabel, InfoPane, MathTransformPane, ZoomSet
     ThumbnailPane, SharedViewState, FileExplorerPane, PointCloudViewer
 from image_handler import ImageHandler
 import settings
-import sys
+
 try:
     import requests
 except ImportError:
@@ -55,7 +56,7 @@ class NumpyEncoder(json.JSONEncoder):
             return [obj.x(), obj.y()]
         return super(NumpyEncoder, self).default(obj)
 
-__version__ = "1.0.9"
+__version__ = "1.0.10"
 
 class CheckForUpdates(QThread):
     update_available = pyqtSignal(str, str) # version, url
@@ -98,6 +99,119 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
+
+class DA3Worker(QThread):
+    finished = pyqtSignal(str)
+    failed = pyqtSignal(str)
+    progress = pyqtSignal(int, int) # current_frame, total_frames
+    
+    def __init__(self, image_path, model_name):
+        super().__init__()
+        self.image_path = image_path
+        self.model_name = model_name
+        self._is_cancelled = False
+
+    def cancel(self):
+        self._is_cancelled = True
+
+    def run(self):
+        try:
+            import torch
+            from depth_anything_3.api import DepthAnything3
+            from PIL import Image
+            import numpy as np
+            import tifffile
+            import cv2
+            
+            device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+            model = DepthAnything3.from_pretrained(self.model_name)
+            model.eval().to(device)
+            
+            base, ext = os.path.splitext(self.image_path)
+            ext = ext.lower()
+            video_exts = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.gif']
+            
+            if ext in video_exts:
+                # Video Mode
+                cap = cv2.VideoCapture(self.image_path)
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                out_dir = f"{base}_DEPTH"
+                os.makedirs(out_dir, exist_ok=True)
+                
+                frame_idx = 0
+                while cap.isOpened() and not self._is_cancelled:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    
+                    # Convert BGR (OpenCV) to RGB
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    
+                    # Run inference
+                    pred = model.inference([frame_rgb])
+                    depth_map = pred.depth[0]
+                    
+                    # Save with 1-based indexing for user readability
+                    out_path = os.path.join(out_dir, f"frame_{frame_idx+1}.tiff")
+                    tifffile.imwrite(out_path, depth_map)
+                    
+                    frame_idx += 1
+                    self.progress.emit(frame_idx, total_frames)
+                
+                cap.release()
+                if self._is_cancelled:
+                    self.failed.emit("Cancelled by user")
+                else:
+                    self.finished.emit(out_dir)
+            else:
+                # Single Image Mode
+                img = Image.open(self.image_path).convert('RGB')
+                img_np = np.array(img)
+                
+                # Run inference
+                pred = model.inference([img_np])
+                depth_map = pred.depth[0]
+                
+                # Save depth map next to original file
+                out_path = f"{base}_DEPTH.tiff"
+                
+                tifffile.imwrite(out_path, depth_map)
+                self.finished.emit(out_path)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+class DA3ModelDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Depth Anything V3 Model")
+        self.layout = QVBoxLayout(self)
+        
+        self.layout.addWidget(QLabel("Select a model to generate depth map:"))
+        self.combo = QComboBox()
+        self.combo.addItems([
+            "depth-anything/DA3-SMALL",
+            "depth-anything/DA3-BASE",
+            "depth-anything/DA3-LARGE",
+            "depth-anything/DA3-GIANT"
+        ])
+        self.layout.addWidget(self.combo)
+        
+        self.warning_label = QLabel("Note: First run will download the model weights (may take a while).")
+        self.warning_label.setStyleSheet("color: gray; font-style: italic;")
+        self.warning_label.setWordWrap(True)
+        self.layout.addWidget(self.warning_label)
+        
+        btn_layout = QHBoxLayout()
+        self.ok_btn = QPushButton("Generate")
+        self.ok_btn.clicked.connect(self.accept)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.ok_btn)
+        btn_layout.addWidget(self.cancel_btn)
+        self.layout.addLayout(btn_layout)
+        
+    def get_model(self):
+        return self.combo.currentText()
 
 class ImageViewer(QMainWindow):
     view_clipboard = None  # Class-level clipboard for cross-window sharing
@@ -260,7 +374,7 @@ class ImageViewer(QMainWindow):
         try:
             limits = np.nanpercentile(sample, percentiles)
             return (float(limits[0]), float(limits[1]))
-        except:
+        except Exception:
             return (0.0, 1.0)
 
     def _create_welcome_screen(self):
@@ -286,6 +400,7 @@ class ImageViewer(QMainWindow):
 
     def _create_image_display(self):
         self.image_label = ZoomableDraggableLabel()
+        self.image_label.open_companion_depth.connect(self._on_open_companion_depth)
         self.image_display_container = QWidget()
         policy = QSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Expanding)
         policy.setHorizontalStretch(100)
@@ -362,7 +477,6 @@ class ImageViewer(QMainWindow):
         toolbar.addAction(settings_action)
         restore_action = QAction(QIcon(resource_path("assets/icons/expand.png")), "Restore View", self)
         restore_action.triggered.connect(self.restore_image_view)
-        restore_action.triggered.connect(self.restore_image_view)
         toolbar.addAction(restore_action)
         
         reset_action = QAction(QIcon(resource_path("assets/icons/redo.png")), "Reset Image", self)
@@ -407,6 +521,11 @@ class ImageViewer(QMainWindow):
         self.histogram_action.triggered.connect(self.toggle_histogram_window)
         self.histogram_action.setEnabled(False)
         toolbar.addAction(self.histogram_action)
+
+        self.da3_action = QAction(QIcon.fromTheme("camera-photo"), "DA3 Depth", self)
+        self.da3_action.setToolTip("Generate Depth Map using Depth Anything V3")
+        self.da3_action.triggered.connect(self.generate_da3_depth_map)
+        toolbar.addAction(self.da3_action)
 
         # Custom "3D" Button with separate colors for '3' (Green) and 'D' (Red)
         self.threed_button = QWidget()
@@ -589,8 +708,12 @@ class ImageViewer(QMainWindow):
         # 1. Get the base data (original or current video frame)
         is_montage = (self.stacked_widget.currentWidget() == self.montage_widget)
         
-        if is_montage and self.active_label and self.active_label.pristine_data is not None:
-             data = self.active_label.pristine_data
+        if is_montage and self.active_label:
+             # If the active label IS the main video being played, use image_handler data
+             if self.active_label.file_path == self.image_label.file_path and self.image_handler.is_video:
+                 data = self.image_handler.original_image_data
+             else:
+                 data = self.active_label.pristine_data
         else:
              data = self.image_handler.original_image_data
         
@@ -600,18 +723,29 @@ class ImageViewer(QMainWindow):
         # 2. Apply Channel Selection
         sliced_data = self.apply_channel_selection(data)
         
-        # Enable 3D View only for single channel images
+        # Enable 3D View for single channel images or RGB images with a depth companion
         is_single_channel = (sliced_data.ndim == 2) or (sliced_data.ndim == 3 and sliced_data.shape[2] == 1)
+        
+        has_depth_companion = False
+        if not is_single_channel and self.active_label and getattr(self.active_label, 'file_path', None):
+            base, _ = os.path.splitext(self.active_label.file_path)
+            depth_path = f"{base}_DEPTH.tiff"
+            depth_dir = f"{base}_DEPTH"
+            if os.path.exists(depth_path) or os.path.isdir(depth_dir):
+                has_depth_companion = True
+                
+        is_3d_enabled = is_single_channel or has_depth_companion
+        
         if hasattr(self, 'threed_button'):
-             self.threed_button.setEnabled(is_single_channel)
+             self.threed_button.setEnabled(is_3d_enabled)
              # Update styling to look disabled/enabled
-             if is_single_channel:
-                 self.threed_button.setToolTip("Open 3D View")
+             if is_3d_enabled:
+                 self.threed_button.setToolTip("Open 3D View" + (" (using Depth Companion)" if has_depth_companion else ""))
                  # Restore colors
                  self.label_3d_3.setStyleSheet("color: #00E676; font-weight: 900; font-size: 16px; font-family: 'Arial'; margin-right: -5px;")
                  self.label_3d_d.setStyleSheet("color: #FF1744; font-weight: 900; font-size: 16px; font-family: 'Arial'; margin-left: -5px;")
              else:
-                 self.threed_button.setToolTip("3D View available only for single-channel images")
+                 self.threed_button.setToolTip("3D View available only for single-channel or depth map companions")
                  # Set to gray
                  self.label_3d_3.setStyleSheet("color: #808080; font-weight: 900; font-size: 16px; font-family: 'Arial'; margin-right: -5px;")
                  self.label_3d_d.setStyleSheet("color: #808080; font-weight: 900; font-size: 16px; font-family: 'Arial'; margin-left: -5px;")
@@ -659,9 +793,41 @@ class ImageViewer(QMainWindow):
         target_label.repaint()
         self.update_histogram_data()
         
-        # 8. Update 3D View if open
+        # 8. Sync Montage labels for Video/Depth (Ensure all related labels update together)
+        if is_montage and self.image_label.file_path and self.image_handler.is_video:
+             video_file = self.image_label.file_path
+             video_base, _ = os.path.splitext(video_file)
+             depth_dir = f"{video_base}_DEPTH"
+             
+             frame_idx = self.image_handler.current_frame_index
+             depth_frame_path = os.path.join(depth_dir, f"frame_{frame_idx+1}.tiff")
+             
+             for label in self.montage_labels:
+                 if label == target_label:
+                     continue
+                     
+                 # Case A: Sync the VIDEO label if it's not the target but we are playing video
+                 if label.file_path == video_file:
+                      label.set_data(self.image_handler.original_image_data, reset_view=False, is_pristine=False)
+                      label.repaint()
+                      
+                 # Case B: Sync DEPTH labels
+                 elif os.path.isdir(depth_dir) and label.file_path and label.file_path.startswith(depth_dir):
+                      if os.path.exists(depth_frame_path) and label.file_path != depth_frame_path:
+                           try:
+                                from image_handler import ImageHandler
+                                temp_h = ImageHandler()
+                                temp_h.load_image(depth_frame_path)
+                                if temp_h.original_image_data is not None:
+                                     label.set_data(temp_h.original_image_data, reset_view=False, is_pristine=True)
+                                     label.file_path = depth_frame_path
+                                     label.repaint()
+                           except Exception:
+                                pass
+
+        # 9. Update 3D View if open
         if hasattr(self, 'point_cloud_viewer') and self.point_cloud_viewer and self.point_cloud_viewer.isVisible():
-             self.point_cloud_viewer.set_data(sliced_data)
+             self.open_3d_view()
         
 
 
@@ -819,7 +985,7 @@ class ImageViewer(QMainWindow):
         # Configure supported extensions for filtering
         extensions = self.image_handler.raw_extensions + ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.gif', '.webp', '.heic', '.heif'] + self.image_handler.video_extensions
         # Create unique list
-        # Create unique list
+
         extensions = list(set(extensions))
         
         # Create case-insensitive filters (add both lowercase and uppercase)
@@ -926,7 +1092,7 @@ class ImageViewer(QMainWindow):
                                  try:
                                      cont, _, _, _ = temp_handler._parse_dtype_string(odtype)
                                      bpp = np.dtype(cont).itemsize
-                                 except:
+                                 except Exception:
                                      bpp = 1
                              else:
                                  bpp = np.dtype(odtype).itemsize
@@ -938,7 +1104,7 @@ class ImageViewer(QMainWindow):
                              
                              if fsize != expected_size:
                                  current_override = None
-                         except:
+                         except Exception:
                              pass
 
             try:
@@ -957,7 +1123,7 @@ class ImageViewer(QMainWindow):
                             temp_handler.height, temp_handler.width = temp_handler.original_image_data.shape
                         elif temp_handler.original_image_data.ndim == 3:
                             temp_handler.height, temp_handler.width = temp_handler.original_image_data.shape[:2]
-            except:
+            except Exception:
                 # Fallback if load fails (e.g. missing resolution and no override)
                 continue
                 
@@ -971,6 +1137,7 @@ class ImageViewer(QMainWindow):
                 image_label = ZoomableDraggableLabel(shared_state=self.montage_shared_state)
                 image_label.set_data(data, is_pristine=True)
                 image_label.file_path = file_path # Store for overlay restoration
+                image_label.open_companion_depth.connect(self._on_open_companion_depth)
                 
                 # Store metadata for Info Pane
                 image_label.metadata = {
@@ -1189,8 +1356,64 @@ class ImageViewer(QMainWindow):
         else:
              if self.active_label:
                  file_path = getattr(self.active_label, 'file_path', "")
-                 # If active_label is one of the montage labels (e.g. focused), use its path
+                     # If active_label is one of the montage labels (e.g. focused), use its path
                  update_label(self.active_label, "x", file_path)
+
+    def generate_da3_depth_map(self):
+        if not self.current_file_path:
+            QMessageBox.warning(self, "Warning", "Please open an image first.")
+            return
+
+        dialog = DA3ModelDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            model_name = dialog.get_model()
+            
+            # Show progress UI
+            self.progress_bar.setVisible(True)
+            self.status_bar.showMessage(f"Generating DA3 Depth Map using {model_name}...")
+            self.da3_action.setEnabled(False)
+            
+            # Start worker
+            self.da3_worker = DA3Worker(self.current_file_path, model_name)
+            self.da3_worker.finished.connect(self._on_da3_finished)
+            self.da3_worker.failed.connect(self._on_da3_failed)
+            self.da3_worker.progress.connect(self._on_da3_progress)
+            self.da3_worker.start()
+
+    def _on_da3_finished(self, output_path):
+        self.progress_bar.setVisible(False)
+        self.status_bar.clearMessage()
+        self.da3_action.setEnabled(True)
+        
+        is_dir = os.path.isdir(output_path)
+        msg = f"Depth {'folder' if is_dir else 'map'} generated: {output_path}"
+        QMessageBox.information(self, "Success", msg)
+        
+        if is_dir:
+            # Refresh UI to show the 3D indication button/enable the 3D action
+            self.update_image_display(reset_view=False)
+            return
+        
+        # Determine existing files to append to
+        current_files = []
+        if self.stacked_widget.currentWidget() == self.montage_widget and self.montage_labels:
+            current_files = [label.file_path for label in self.montage_labels if label.file_path]
+        elif self.current_file_path:
+            current_files = [self.current_file_path]
+            
+        combined_paths = current_files + [output_path]
+        self.display_montage(combined_paths, is_manual=True)
+
+    def _on_da3_failed(self, error_msg):
+        self.progress_bar.setVisible(False)
+        self.status_bar.clearMessage()
+        self.da3_action.setEnabled(True)
+        QMessageBox.critical(self, "Error", f"Failed to generate depth map:\n{error_msg}")
+
+    def _on_da3_progress(self, current, total):
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(current)
+        self.status_bar.showMessage(f"Generating Depth Map: {current}/{total} frames...")
 
     def toggle_histogram_window(self):
         # Histogram is a tool window, but let's see if we want to preserve window size here too.
@@ -1477,21 +1700,91 @@ class ImageViewer(QMainWindow):
         if not self.active_label or self.active_label.original_data is None:
              return
              
-        # Check dimensionality and warn?
         data = self.active_label.original_data
+        rgb_data = None
         
-        # Instantiate if needed
-        # We don't cache it as a permanent member to avoid holding OpenGL contexts if closed?
-        # Actually reusing window is better UI.
+        
+        # Pair depth map and RGB image if in montage view
+        if self.stacked_widget.currentWidget() == self.montage_widget and len(self.montage_labels) >= 2:
+            is_active_rgb = (data.ndim == 3 and data.shape[2] >= 3)
+            is_active_depth = (data.ndim == 2 or (data.ndim == 3 and data.shape[2] == 1))
+            
+            for label in self.montage_labels:
+                if label == self.active_label or label.original_data is None:
+                    continue
+                    
+                other_data = label.original_data
+                is_other_rgb = (other_data.ndim == 3 and other_data.shape[2] >= 3)
+                is_other_depth = (other_data.ndim == 2 or (other_data.ndim == 3 and other_data.shape[2] == 1))
+                
+                if is_active_rgb and is_other_depth:
+                    # Active is RGB, other is depth. Geometry from depth, colors from RGB.
+                    data = other_data
+                    rgb_data = self.active_label.original_data
+                    break
+                elif is_active_depth and is_other_rgb:
+                    # Active is depth, other is RGB.
+                    rgb_data = other_data
+                    break
+                    
+        # If in single view OR we couldn't find a pair in montage, check for companion _DEPTH automatically
+        if rgb_data is None and self.active_label.file_path:
+             is_active_rgb = (data.ndim == 3 and data.shape[2] >= 3)
+             if is_active_rgb:
+                 base, _ = os.path.splitext(self.active_label.file_path)
+                 depth_path = f"{base}_DEPTH.tiff"
+                 depth_dir = f"{base}_DEPTH"
+                 
+                 target_depth = None
+                 if os.path.exists(depth_path):
+                     target_depth = depth_path
+                 elif os.path.isdir(depth_dir):
+                     # Frame-accurate depth for video
+                     frame_idx = getattr(self.image_handler, 'current_frame_index', 0)
+                     # Files saved as frame_1.tiff (1-based)
+                     potential_path = os.path.join(depth_dir, f"frame_{frame_idx+1}.tiff")
+                     if os.path.exists(potential_path):
+                         target_depth = potential_path
+                 
+                 if target_depth:
+                     try:
+                         from image_handler import ImageHandler
+                         temp_handler = ImageHandler()
+                         temp_handler.load_image(target_depth)
+                         depth_img_data = temp_handler.original_image_data
+                         if depth_img_data is not None:
+                              rgb_data = data
+                              data = depth_img_data
+                     except Exception as e:
+                         pass
+        
         if not hasattr(self, 'point_cloud_viewer') or self.point_cloud_viewer is None:
              from widgets import PointCloudViewer
              self.point_cloud_viewer = PointCloudViewer(self)
-             self.point_cloud_viewer.set_data(data, reset_view=True)
+             self.point_cloud_viewer.set_data(data, reset_view=True, rgb_data=rgb_data)
         else:
-             self.point_cloud_viewer.set_data(data, reset_view=False)
+             self.point_cloud_viewer.set_data(data, reset_view=False, rgb_data=rgb_data)
              
         self.point_cloud_viewer.show()
         self.point_cloud_viewer.activateWindow()
+
+    def _on_open_companion_depth(self, depth_path):
+        """Callback to open associated depth map alongside current image in montage view"""
+        if not self.active_label or not self.active_label.file_path:
+            return
+            
+        current_path = self.active_label.file_path
+        
+        # If it's a directory (video depth), find the current frame
+        if os.path.isdir(depth_path):
+            frame_idx = getattr(self.image_handler, 'current_frame_index', 0)
+            target_depth_path = os.path.join(depth_path, f"frame_{frame_idx+1}.tiff")
+            if os.path.exists(target_depth_path):
+                depth_path = target_depth_path
+
+        # Force a montage display with the original image AND its depth map
+        # display_montage can take duplicates but in this case we want [original, depth]
+        self.display_montage([current_path, depth_path], is_manual=True)
 
     def toggle_file_explorer_pane(self):
         visible = not self.file_explorer_pane.isVisible()
@@ -1640,6 +1933,7 @@ class ImageViewer(QMainWindow):
         
         # Store the original path (with NPZ key if present) for overlay tracking
         self.current_file_path = file_path
+        self.image_label.file_path = actual_file_path
         
         # Clear overlays for files other than the current one
         # For NPZ files, keep overlays that involve keys from the same base file
@@ -1711,7 +2005,7 @@ class ImageViewer(QMainWindow):
                           guess_bpp = float(np.dtype(container).itemsize)
                      else:
                           guess_bpp = float(np.dtype(dtype).itemsize)
-                 except:
+                 except Exception:
                      guess_bpp = 1.0
 
                  # Guess Parameters using 4:3 Aspect Ratio
@@ -2399,9 +2693,7 @@ class ImageViewer(QMainWindow):
         if hasattr(self.thumbnail_pane, 'block_populate'):
             self.thumbnail_pane.block_populate = False
 
-    def _update_thumbnail_pane_for_single_image(self):
-        """Deprecated: Use _refresh_thumbnail_pane instead to show all windows."""
-        self._refresh_thumbnail_pane()
+
 
     def _refresh_thumbnail_pane(self):
         """Refresh thumbnail pane to show ONLY images from the current window"""
@@ -2595,8 +2887,8 @@ class ImageViewer(QMainWindow):
                 elif self.current_file_path:
                     current_files = [self.current_file_path]
                 
-                # Merge new files (append unique ones)
-                combined_paths = current_files + [p for p in new_file_paths if p not in current_files]
+                # Merge new files (allow duplicates for side-by-side comparison)
+                combined_paths = current_files + new_file_paths
                 
                 if len(combined_paths) > 1:
                     self.display_montage(combined_paths, is_manual=True)
@@ -2756,10 +3048,7 @@ class ImageViewer(QMainWindow):
                                           qimg = QImage(data.data, w, h, 4*w, QImage.Format.Format_RGBA8888)
                                           source_pixmap = QPixmap.fromImage(qimg)
                                       
-                        except Exception as e:
-                             pass
-                             pass
-                        except:
+                        except Exception:
                              pass
                     
                     if source_pixmap:
@@ -2775,7 +3064,7 @@ class ImageViewer(QMainWindow):
         """Remove window from the list when closed."""
         try:
             QApplication.instance().removeEventFilter(self)
-        except:
+        except Exception:
             pass
             
         # Call super first to let C++ handle its closure

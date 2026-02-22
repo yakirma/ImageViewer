@@ -607,6 +607,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
     zoom_factor_changed = pyqtSignal(float)
     view_changed = pyqtSignal()
     clicked = pyqtSignal()
+    open_companion_depth = pyqtSignal(str) # Signals to open the associated DEPTAGH map
 
     def __init__(self, parent=None, shared_state=None):
         super().__init__(parent)
@@ -631,15 +632,14 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self.crosshair_enabled = False
         self.drag_start_position = QPoint()
         self.current_pixmap = None
-        self.drag_start_position = QPoint()
         self.processed_data = None # Store processed numpy array instead of QPixmap
-
         self.overlays = [] # List of (QPixmap, opacity)
         self.original_data = None # Raw data before processing
         self.pristine_data = None # Original loaded data (preserved across transforms)
         self.thumbnail_pixmap = None # Cached thumbnail for optimized rendering
         self.contrast_limits = None
         self.colormap = 'gray'
+        self.file_path = None
 
         self.zoom_speed = 1.1
         self.zoom_in_interp = Qt.TransformationMode.FastTransformation
@@ -651,6 +651,25 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self.indicator_line.setFixedHeight(3)
         self.indicator_line.setStyleSheet("background-color: transparent;")
 
+        # Depth Map Indicator Button
+        self.depth_btn = QPushButton("🗺️ 3D", self)
+        self.depth_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(50, 50, 50, 200);
+                color: white;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-weight: bold;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: rgba(80, 80, 80, 255);
+            }
+        """)
+        self.depth_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.depth_btn.setToolTip("Click to open associated Depth Map")
+        self.depth_btn.hide()
+
         # Overlay Label
         self.overlay_label = QLabel(self)
         self.overlay_label.setStyleSheet("background-color: rgba(0, 0, 0, 150); color: white; padding: 5px; border-radius: 5px; font-size: 14px;")
@@ -659,7 +678,6 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         
         
         self.show_colorbar = False # Toggle via external button
-        self.overlays = [] # List of tuples: (QPixmap, opacity)
 
         # Debounce Timer for View Changed Signal (Histogram updates)
         self._view_update_timer = QTimer()
@@ -733,21 +751,6 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         """Force a repaint/update of the transformation."""
         self.update()
 
-    def is_single_channel(self):
-        """Check if current image is single channel."""
-        if self.original_data is not None:
-            # Check shape: (H, W) or (H, W, 1) is single channel
-            if self.original_data.ndim == 2:
-                return True
-            if self.original_data.ndim == 3 and self.original_data.shape[2] == 1:
-                return True
-        return False
-        
-    def get_visible_sub_image(self):
-        """Return the currently visible portion of the image data."""
-        # TODO: Implement true cropping based on view. 
-        # For now, returning full image prevents crash and provides data.
-        return self.original_data
 
     def set_crosshair_enabled(self, enabled):
         self.crosshair_enabled = enabled
@@ -1031,12 +1034,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                      # Collapse to mean to allow visualization instead of crashing
                      processed_data = np.mean(processed_data, axis=2)
 
-                # ... existing colormap logic follows ...
-                # ZoomableDraggableLabel logic uses matplotlib colormaps usually?
-                # No, I think it uses `pg` or `matplotlib` or custom?
-                # Wait.
-                
-                # Let's peek below line 940 to be sure.
+
 
                 with np.errstate(divide='ignore', invalid='ignore'):
                     if self.contrast_limits:
@@ -1120,7 +1118,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         
         if is_new_image:
             self.processed_data = None 
-            self.current_pixmap = pixmap
+            self.update_pixmap_content(pixmap)
             self.fit_to_view()
         else:
             self.update_pixmap_content(pixmap)
@@ -1136,6 +1134,29 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             self.thumbnail_pixmap = pixmap.scaled(800, 800, Qt.AspectRatioMode.KeepAspectRatio, transform_mode)
         else:
              self.thumbnail_pixmap = None
+             
+        # Check for Depth Companion Map
+        if hasattr(self, 'file_path') and self.file_path:
+             base, _ = os.path.splitext(self.file_path)
+             depth_path = f"{base}_DEPTH.tiff"
+             depth_dir = f"{base}_DEPTH"
+             
+             has_depth = os.path.exists(depth_path) or os.path.isdir(depth_dir)
+             
+             if has_depth:
+                 # Disconnect first to avoid multiple connections if updated multiple times
+                 try:
+                     self.depth_btn.clicked.disconnect()
+                 except Exception:
+                     pass
+                     
+                 # If it's a directory, we pass the directory path
+                 target_path = depth_dir if os.path.isdir(depth_dir) else depth_path
+                 self.depth_btn.clicked.connect(lambda checked, p=target_path: self.open_companion_depth.emit(p))
+                 self.depth_btn.show()
+             else:
+                 self.depth_btn.hide()
+                 
         self.update()
 
     def resizeEvent(self, event):
@@ -1144,6 +1165,8 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self._update_overlay_position()
         if hasattr(self, 'indicator_line'):
              self.indicator_line.setGeometry(0, self.height() - 3, self.width(), 3)
+        if hasattr(self, 'depth_btn'):
+             self.depth_btn.setGeometry(10, 10, self.depth_btn.sizeHint().width(), self.depth_btn.sizeHint().height())
 
     def set_overlay_text(self, text):
         self.overlay_label.setText(text)
@@ -1407,6 +1430,13 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             self.setFocus()
         return super().mousePressEvent(event)
 
+    def keyPressEvent(self, event):
+        if event.key() in [Qt.Key.Key_Left, Qt.Key.Key_Right]:
+            # Propagate to parent to handle video navigation
+            event.ignore()
+        else:
+            super().keyPressEvent(event)
+
     def enterEvent(self, event):
         if self.shared_state and self.crosshair_enabled:
             # When we enter a widget in shared mode, we want to ensure we track mouse
@@ -1593,12 +1623,11 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             img_x = int(norm_pos.x() * img_width)
             img_y = int(norm_pos.y() * img_height)
 
-            scale = self._get_effective_scale_factor()
-            
-            # Calculate view position
-            # Note: img_x * scale might be slightly off if we don't consider exact pixel centers, but close enough for cursor
-            view_x = (img_x * scale) + target_rect.left()
-            view_y = (img_y * scale) + target_rect.top()
+            # Calculate view position using target_rect (already accounts for proxy scale)
+            pixel_scale_x = target_rect.width() / img_width
+            pixel_scale_y = target_rect.height() / img_height
+            view_x = (img_x * pixel_scale_x) + target_rect.left()
+            view_y = (img_y * pixel_scale_y) + target_rect.top()
             
             if 0 <= img_x < img_width and 0 <= img_y < img_height:
 
@@ -3053,13 +3082,13 @@ class CustomGLViewWidget(gl.GLViewWidget):
                 return True
         return super().event(event)
 
-    def orbit(self, az, el):
+    def orbit(self, azim=0, elev=0):
         """
         Orbit the camera around the center point.
         Overridden to allow unrestricted elevation range (no clamping).
         """
-        self.opts['azimuth'] += az
-        self.opts['elevation'] += el
+        self.opts['azimuth'] += azim
+        self.opts['elevation'] += elev
         self.update()
 
 
@@ -3082,11 +3111,23 @@ class PointCloudViewer(QDialog):
         
         header_layout.addStretch()
         
+        # Meshing / Points Mode
+        header_layout.addWidget(QLabel("Render:"))
+        self.render_mode_combo = QComboBox()
+        self.render_mode_combo.addItems(["Points", "Surface"])
+        self.render_mode_combo.currentTextChanged.connect(self.toggle_render_mode)
+        header_layout.addWidget(self.render_mode_combo)
+        
+        header_layout.addSpacing(10)
+
         self.colormap_mode = "viridis"
-        self.colormap_btn = QPushButton("🎨 Color")
-        self.colormap_btn.setToolTip("Toggle Colormap (Color/Gray/Albedo)")
-        self.colormap_btn.clicked.connect(self.toggle_colormap)
-        header_layout.addWidget(self.colormap_btn)
+        header_layout.addWidget(QLabel("🎨 Color:"))
+        self.colormap_combo = QComboBox()
+        self.colormap_combo.addItems(["Viridis", "Gray", "Albedo", "Normals"])
+        self.colormap_combo.setCurrentText("Viridis")
+        self.colormap_combo.setToolTip("Select Colormap")
+        self.colormap_combo.currentTextChanged.connect(self.on_colormap_changed)
+        header_layout.addWidget(self.colormap_combo)
         
         header_layout.addSpacing(10)
         
@@ -3134,16 +3175,26 @@ class PointCloudViewer(QDialog):
         
         # State
         self.last_data = None
+        self.last_rgb_data = None
         self.scatter = None
+        self.mesh = None
         self.base_colors = None
         self.normals = None
         self.pos = None
+        self.mesh_faces = None
+        self.mesh_vertices = None
 
-    def set_data(self, data, reset_view=False):
+    def toggle_render_mode(self):
+        if self.last_data is not None:
+             self.set_data(self.last_data, rgb_data=self.last_rgb_data)
+             self.update_lighting()
+
+    def set_data(self, data, reset_view=False, rgb_data=None):
         if gl is None: return
         
         if data is None: return
         self.last_data = data
+        self.last_rgb_data = rgb_data
         processed_data = None
         q_image = None
         
@@ -3238,7 +3289,25 @@ class PointCloudViewer(QDialog):
         # 2. Base Colors (on FULL grid)
         norm_z = np.clip((z_vals - z_p5) / z_range, 0, 1)
         
-        if self.colormap_mode == "gray":
+        if rgb_data is not None:
+            import cv2
+            # Ensure RGB shape matches data shape
+            if rgb_data.shape[:2] != data.shape[:2]:
+                rgb_resized = cv2.resize(rgb_data, (data.shape[1], data.shape[0]), interpolation=cv2.INTER_LINEAR)
+            else:
+                rgb_resized = rgb_data
+            
+            # Ensure it's RGB
+            if rgb_resized.ndim == 2:
+                rgb_resized = cv2.cvtColor(rgb_resized, cv2.COLOR_GRAY2RGB)
+            elif rgb_resized.shape[2] == 4:
+                rgb_resized = cv2.cvtColor(rgb_resized, cv2.COLOR_RGBA2RGB)
+                
+            # Map to 0-1 and add alpha channel
+            rgb_flat = rgb_resized.reshape(-1, 3) / 255.0
+            all_colors = np.hstack([rgb_flat, np.ones((len(rgb_flat), 1))])
+            
+        elif self.colormap_mode == "gray":
             all_colors = np.stack([norm_z, norm_z, norm_z, np.ones_like(norm_z)], axis=1)
         elif self.colormap_mode == "albedo":
             all_colors = np.array([[0.6, 0.6, 0.6, 1.0]] * len(norm_z))
@@ -3251,13 +3320,60 @@ class PointCloudViewer(QDialog):
             all_colors = cm.viridis(norm_z)
             
         # 3. Apply Validity Mask to filter out 0, NaN, Inf
+        
+        self.normals_all_grid = all_normals
+        
+        # Apply Validity Mask to filter out 0, NaN, Inf for Points
         self.pos = all_pos[valid_mask]
         self.normals = all_normals[valid_mask]
         self.base_colors = all_colors[valid_mask]
+
+        # 4. Generate Mesh (If applicable)
+        # We pre-calculate faces here in case we need them to render
+        render_mode = self.render_mode_combo.currentText()
+        if render_mode == "Surface":
+             # To create a mesh grid, we need vertex indices
+             idx_grid = np.arange(sh * sw).reshape(sh, sw)
+             
+             # Create two triangles per quad
+             #  t1: (r, c), (r+1, c), (r, c+1)
+             #  t2: (r+1, c), (r+1, c+1), (r, c+1)
+             
+             v1 = idx_grid[:-1, :-1].flatten()
+             v2 = idx_grid[1:, :-1].flatten()
+             v3 = idx_grid[:-1, 1:].flatten()
+             v4 = idx_grid[1:, :-1].flatten()
+             v5 = idx_grid[1:, 1:].flatten()
+             v6 = idx_grid[:-1, 1:].flatten()
+             
+             # Stack into (NumTriangles, 3) matrix
+             faces_t1 = np.vstack([v1, v2, v3]).T
+             faces_t2 = np.vstack([v4, v5, v6]).T
+             
+             # Filter faces that might be crossing invalid (z_val == 0) pixels
+             v_mask_flat = valid_mask.flatten()
+             
+             t1_valid = v_mask_flat[faces_t1[:,0]] & v_mask_flat[faces_t1[:,1]] & v_mask_flat[faces_t1[:,2]]
+             t2_valid = v_mask_flat[faces_t2[:,0]] & v_mask_flat[faces_t2[:,1]] & v_mask_flat[faces_t2[:,2]]
+             
+             valid_faces_t1 = faces_t1[t1_valid]
+             valid_faces_t2 = faces_t2[t2_valid]
+             
+             self.mesh_faces = np.vstack([valid_faces_t1, valid_faces_t2])
+             self.mesh_vertices = all_pos
+             self.base_colors_mesh = all_colors
+             
+             # Clear points so we don't render both
+             self.pos = np.array([])
+             self.base_colors = np.array([])
+             self.normals = np.array([])
             
         if self.scatter:
             self.view_widget.removeItem(self.scatter)
             self.scatter = None
+        if self.mesh:
+            self.view_widget.removeItem(self.mesh)
+            self.mesh = None
             
         # Initial draw with lighting
         self.update_lighting()
@@ -3304,14 +3420,42 @@ class PointCloudViewer(QDialog):
         # Improve contrast: allow shading to go darker
         shading = np.clip(dot, 0, 1) * shading_strength + ambient
         
-        shaded_colors[:, :3] *= shading[:, np.newaxis]
-        
-        if self.scatter:
-            self.scatter.setData(color=shaded_colors)
-        else:
-            # key fix: glOptions='opaque' prevents additive blending (summing to white)
-            self.scatter = gl.GLScatterPlotItem(pos=self.pos, color=shaded_colors, size=2, pxMode=True, glOptions='opaque')
-            self.view_widget.addItem(self.scatter)
+        # Points
+        if self.base_colors is not None and len(self.base_colors) > 0:
+            shaded_points = self.base_colors.copy()
+            # If length doesn't match, or scatter isn't created, we handle below
+            if len(shading) == len(shaded_points):
+                 shaded_points[:, :3] *= shading[:, np.newaxis]
+            
+            if self.scatter:
+                self.scatter.setData(color=shaded_points)
+            else:
+                self.scatter = gl.GLScatterPlotItem(pos=self.pos, color=shaded_points, size=2, pxMode=True, glOptions='opaque')
+                self.view_widget.addItem(self.scatter)
+
+        # Mesh / Surface
+        render_mode = self.render_mode_combo.currentText()
+        if render_mode == "Surface" and self.mesh_faces is not None:
+             # Apply lighting to mesh vertices directly
+             # Since it's a solid surface, simple interpolation works well
+             verts = self.mesh_vertices
+             colors = self.base_colors_mesh.copy()
+             
+             # Calculate light on all vertices
+             nx = self.normals_all_grid[:, 0] if hasattr(self, 'normals_all_grid') else np.ones(len(verts))
+             ny = self.normals_all_grid[:, 1] if hasattr(self, 'normals_all_grid') else np.zeros(len(verts))
+             nz = self.normals_all_grid[:, 2] if hasattr(self, 'normals_all_grid') else np.ones(len(verts))
+             
+             dp = nx * lx + ny * ly + nz * lz
+             shd = (dp + 1.0) / 2.0
+             shd = 0.3 + 0.7 * shd
+             colors[:, :3] *= shd[:, np.newaxis]
+             
+             if self.mesh:
+                  self.mesh.setMeshData(vertexes=verts, faces=self.mesh_faces, vertexColors=colors)
+             else:
+                  self.mesh = gl.GLMeshItem(vertexes=verts, faces=self.mesh_faces, vertexColors=colors, smooth=False, computeNormals=False, glOptions='opaque')
+                  self.view_widget.addItem(self.mesh)
 
     def reset_view(self):
         if gl is None: return
@@ -3329,29 +3473,19 @@ class PointCloudViewer(QDialog):
         
         # Ideally we compute optimal distance based on bounds
 
-    def toggle_colormap(self):
-        """Toggle between Viridis, Grayscale, Albedo, and Normals."""
-        if self.colormap_mode == "viridis":
-            self.colormap_mode = "gray"
-            self.colormap_btn.setText("⚪ Gray")
-        elif self.colormap_mode == "gray":
-            self.colormap_mode = "albedo"
-            self.colormap_btn.setText("⬜ Albedo")
-        elif self.colormap_mode == "albedo":
-            self.colormap_mode = "normals"
-            self.colormap_btn.setText("🌈 Normals")
-        else:
-            self.colormap_mode = "viridis"
-            self.colormap_btn.setText("🔥 Viridis")
+    def on_colormap_changed(self, text):
+        """Change Colormap based on dropdown selection."""
+        mapping = {
+            "Viridis": "viridis",
+            "Gray": "gray",
+            "Albedo": "albedo",
+            "Normals": "normals"
+        }
+        self.colormap_mode = mapping.get(text, "viridis")
         
         if self.last_data is not None:
-            self.set_data(self.last_data)
+            self.set_data(self.last_data, rgb_data=self.last_rgb_data)
             self.update_lighting()
-
-        if self.last_data is not None:
-            self.set_data(self.last_data)
-            self.update_lighting()
-            
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -3373,8 +3507,7 @@ class PointCloudViewer(QDialog):
         
         try:
              # Getting matrices from the widget's internal state
-             # projectionMatrix() requires optional args in some versions of pyqtgraph/opengl
-             pMatrix = self.view_widget.projectionMatrix(None, (0, 0, w, h)) 
+             pMatrix = self.view_widget.projectionMatrix(region=(0, 0, w, h)) 
              vMatrix = self.view_widget.viewMatrix()
              
              if pMatrix is None or vMatrix is None:
@@ -3390,8 +3523,13 @@ class PointCloudViewer(QDialog):
                   print("Error: self.pos is None in double click")
                   return
              
-             # Construct 4x4 MVP matrix as numpy array
-             mvp_data = np.array(mvp.data()).reshape(4, 4)
+             # Extract matrix elements directly via row/col lists in PyQt6
+             m_data = []
+             for i in range(4):
+                 col = mvp.column(i)
+                 m_data.append([col.x(), col.y(), col.z(), col.w()])
+             
+             mvp_data = np.array(m_data).T  # Transpose needed depending on column/row major layout expectations, PyQt6 .column() gives elements of column vectors
              
              # Homogeneous coordinates
              points_4d = np.hstack([self.pos, np.ones((len(self.pos), 1))])
@@ -3424,4 +3562,6 @@ class PointCloudViewer(QDialog):
                      self.view_widget.update()
                  
         except Exception as e:
-            print(f"Error handling double click: {e}")
+            import traceback
+            print(f"Error handling double click:")
+            traceback.print_exc()

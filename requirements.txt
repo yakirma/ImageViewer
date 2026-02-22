@@ -8,3 +8,11 @@ PyOpenGL
 pyinstaller
 pillow-heif
 requests
+torch
+torchvision
+timm
+imageio
+omegaconf
+addict
+evo
+depth-anything-3 @ git+https://github.com/LiheYoung/Depth-Anything-V3.git
