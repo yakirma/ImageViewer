@@ -1387,7 +1387,7 @@ class ImageViewer(QMainWindow):
         
         is_dir = os.path.isdir(output_path)
         msg = f"Depth {'folder' if is_dir else 'map'} generated: {output_path}"
-        QMessageBox.information(self, "Success", msg)
+        self.status_bar.showMessage(msg, 5000)
         
         if is_dir:
             # Refresh UI to show the 3D indication button/enable the 3D action
