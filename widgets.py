@@ -3550,18 +3550,21 @@ class PointCloudViewer(QDialog):
              
              # Check distance to click (nx, ny)
              dist_sq = (ndc_x - nx)**2 + (ndc_y - ny)**2
-             
-             # Find minimum distance
              if len(dist_sq) > 0:
                  min_idx = np.argmin(dist_sq)
                  min_dist = dist_sq[min_idx]
                  
                  # Threshold (e.g. within NDC distance of ~0.3)
                  if min_dist < 0.1:
+                     import pyqtgraph.opengl as gl
+                     import pyqtgraph as pg
                      target_vec = pg.Vector(*target_pos[min_idx])
                      
-                     # Explicitly set camera center
-                     self.view_widget.setCameraPosition(pos=target_vec)
+                     # Center the view (focal point) on this point.
+                     # Directly setting the center opt is more stable across multiple clicks
+                     # than setCameraPosition, which can sometimes interpret 'pos' relative 
+                     # to existing camera transforms depending on state.
+                     self.view_widget.opts['center'] = target_vec
                      self.view_widget.update()
                  else:
                      print(f"Clicked too far from any point. Min NDC dist_sq: {min_dist:.4f}")

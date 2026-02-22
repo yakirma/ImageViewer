@@ -104,7 +104,31 @@ class DA3Worker(QThread):
     finished = pyqtSignal(str)
     failed = pyqtSignal(str)
     progress = pyqtSignal(int, int) # current_frame, total_frames
+    download_progress = pyqtSignal(str, float) # filename, percentage
     
+    class QtTqdm:
+        def __init__(self, iterable=None, total=None, desc=None, unit=None, **kwargs):
+            self.total = total
+            self.n = 0
+            self.desc = desc or ""
+            self.worker = kwargs.get('worker')
+            
+        def update(self, n=1):
+            self.n += n
+            if self.total and self.worker:
+                percent = (self.n / self.total) * 100
+                self.worker.download_progress.emit(self.desc, percent)
+                
+        def close(self):
+            if self.worker:
+                self.worker.download_progress.emit(self.desc, 100.0)
+                
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            self.close()
+
     def __init__(self, image_path, model_name):
         super().__init__()
         self.image_path = image_path
@@ -124,7 +148,12 @@ class DA3Worker(QThread):
             import cv2
             
             device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
-            model = DepthAnything3.from_pretrained(self.model_name)
+            
+            # Load model with download progress tracking
+            model = DepthAnything3.from_pretrained(
+                self.model_name, 
+                tqdm_class=lambda **kwargs: self.QtTqdm(worker=self, **kwargs)
+            )
             model.eval().to(device)
             
             base, ext = os.path.splitext(self.image_path)
@@ -1378,6 +1407,7 @@ class ImageViewer(QMainWindow):
             self.da3_worker.finished.connect(self._on_da3_finished)
             self.da3_worker.failed.connect(self._on_da3_failed)
             self.da3_worker.progress.connect(self._on_da3_progress)
+            self.da3_worker.download_progress.connect(self._on_da3_download_progress)
             self.da3_worker.start()
 
     def _on_da3_finished(self, output_path):
@@ -1411,9 +1441,18 @@ class ImageViewer(QMainWindow):
         QMessageBox.critical(self, "Error", f"Failed to generate depth map:\n{error_msg}")
 
     def _on_da3_progress(self, current, total):
-        self.progress_bar.setMaximum(total)
-        self.progress_bar.setValue(current)
-        self.status_bar.showMessage(f"Generating Depth Map: {current}/{total} frames...")
+        if total > 0:
+            percent = int((current / total) * 100)
+            self.progress_bar.setValue(percent)
+            # Find the model name to include in status
+            model_name = "Model"
+            if hasattr(self, 'da3_worker') and self.da3_worker:
+                model_name = self.da3_worker.model_name
+            self.status_bar.showMessage(f"Processing {model_name}... {percent}% ({current}/{total})")
+
+    def _on_da3_download_progress(self, filename, percent):
+        self.progress_bar.setValue(int(percent))
+        self.status_bar.showMessage(f"Downloading {filename}... {percent:.1f}%")
 
     def toggle_histogram_window(self):
         # Histogram is a tool window, but let's see if we want to preserve window size here too.
