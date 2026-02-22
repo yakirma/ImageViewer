@@ -1,11 +1,17 @@
-# -*- mode: python ; coding: utf-8 -*-
+import os
+import depth_anything_3
 
+da3_path = os.path.dirname(depth_anything_3.__file__)
+da3_configs = os.path.join(da3_path, 'configs')
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets/icons', 'assets/icons')],
+    datas=[
+        ('assets/icons', 'assets/icons'),
+        (da3_configs, 'depth_anything_3/configs')
+    ],
     hiddenimports=['requests', 'torch', 'torchvision', 'timm', 'imageio', 'omegaconf', 'addict', 'evo', 'depth_anything_3', 'PIL', 'tifffile'],
     hookspath=[],
     hooksconfig={},
