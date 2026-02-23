@@ -3662,9 +3662,10 @@ class PointCloudViewer(QDialog):
              ny = self.normals_all_grid[:, 1] if hasattr(self, 'normals_all_grid') else np.zeros(len(verts))
              nz = self.normals_all_grid[:, 2] if hasattr(self, 'normals_all_grid') else np.ones(len(verts))
              
-             dp = nx * lx + ny * ly + nz * lz
+             dp = nx * lx + ny * ly_slider + nz * lz
              shd = (dp + 1.0) / 2.0
              shd = 0.3 + 0.7 * shd
+             shd *= brightness
              colors[:, :3] *= shd[:, np.newaxis]
              
              if self.mesh:
