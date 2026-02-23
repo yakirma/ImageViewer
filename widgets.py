@@ -3094,19 +3094,22 @@ class CustomGLViewWidget(gl.GLViewWidget):
 
 class RotationGizmo(QWidget):
     """
-    A 3D rotation gizmo overlay with interactive roll/pitch/yaw rings.
-    Click near a ring to constrain rotation to that axis.
-    Drag anywhere else for free rotation.
+    Stacked rotation gizmo: three separate ring rows (Pitch, Yaw, Roll).
+    Each ring is in its own row for unambiguous interaction.
     """
-    RING_PITCH = 0   # Red - X axis (elevation)
-    RING_YAW = 1     # Green - Y axis (azimuth)
-    RING_ROLL = 2    # Blue - Z axis
+    RING_PITCH = 0   # Red - elevation
+    RING_YAW = 1     # Green - azimuth
+    RING_ROLL = 2    # Blue - combined
     RING_NONE = -1
+    
+    ROW_HEIGHT = 50
+    RING_RADIUS = 20
+    WIDGET_WIDTH = 60
     
     def __init__(self, view_widget, parent=None):
         super().__init__(parent)
         self.view_widget = view_widget
-        self.setFixedSize(140, 140)
+        self.setFixedSize(self.WIDGET_WIDTH, self.ROW_HEIGHT * 3 + 10)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -3116,145 +3119,112 @@ class RotationGizmo(QWidget):
         self._active_ring = self.RING_NONE
         self._hover_ring = self.RING_NONE
         
-        self._cx, self._cy = 70, 70
-        self._radius = 50
-        self._hit_tolerance = 10  # pixels
-        
         # Sync timer
         self._sync_timer = QTimer(self)
         self._sync_timer.timeout.connect(self.update)
         self._sync_timer.start(33)
     
-    def _get_ring_points(self, ring_id, steps=72):
-        """Get the 2D projected points for a ring."""
-        import math
-        cx, cy, r = self._cx, self._cy, self._radius
-        azim = math.radians(self.view_widget.opts.get('azimuth', 0))
-        elev = math.radians(self.view_widget.opts.get('elevation', 0))
-        
-        points = []
-        for i in range(steps + 1):
-            t = 2 * math.pi * i / steps
-            
-            if ring_id == self.RING_PITCH:
-                # Red ring - lies in YZ plane, rotates with elevation
-                x = cx + r * math.cos(t)
-                y = cy + r * math.sin(t) * math.cos(elev)
-            elif ring_id == self.RING_YAW:
-                # Green ring - lies in XZ plane, rotates with azimuth
-                x = cx + r * math.cos(t) * math.cos(azim)
-                y = cy - r * math.sin(t)
-            elif ring_id == self.RING_ROLL:
-                # Blue ring - lies in XY plane, rotates with both
-                x = cx + r * math.cos(t) * math.cos(azim) + r * math.sin(t) * math.sin(azim) * math.sin(elev)
-                y = cy + r * math.cos(t) * math.sin(azim) * math.sin(elev) * 0.0 + r * math.sin(t) * math.cos(elev)
-            else:
-                x, y = cx, cy
-                
-            points.append((x, y))
-        return points
-    
-    def _hit_test(self, pos):
-        """Determine which ring the mouse is closest to."""
-        import math
-        px, py = pos.x(), pos.y()
-        
-        best_ring = self.RING_NONE
-        best_dist = self._hit_tolerance
-        
-        for ring_id in [self.RING_PITCH, self.RING_YAW, self.RING_ROLL]:
-            points = self._get_ring_points(ring_id, steps=72)
-            for (rx, ry) in points:
-                d = math.sqrt((px - rx)**2 + (py - ry)**2)
-                if d < best_dist:
-                    best_dist = d
-                    best_ring = ring_id
-        
-        return best_ring
+    def _ring_at(self, pos):
+        """Determine which ring row the position is in."""
+        y = pos.y()
+        for i in range(3):
+            row_top = 5 + i * self.ROW_HEIGHT
+            row_bottom = row_top + self.ROW_HEIGHT
+            if row_top <= y <= row_bottom:
+                return i
+        return self.RING_NONE
     
     def paintEvent(self, event):
+        import math
         from PyQt6.QtCore import QPointF
         from PyQt6.QtGui import QPainterPath
         
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        # Background: semi-transparent dark circle
-        painter.setBrush(QColor(20, 20, 25, 160))
+        azim = math.radians(self.view_widget.opts.get('azimuth', 0))
+        elev = math.radians(self.view_widget.opts.get('elevation', 0))
+        
+        # Background
+        painter.setBrush(QColor(20, 20, 25, 170))
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(10, 10, 120, 120)
+        painter.drawRoundedRect(0, 0, self.width(), self.height(), 8, 8)
         
         ring_configs = [
-            (self.RING_PITCH, QColor(220, 60, 60),   "Pitch"),
-            (self.RING_YAW,   QColor(60, 200, 60),   "Yaw"),
-            (self.RING_ROLL,  QColor(80, 120, 255),   "Roll"),
+            (self.RING_PITCH, QColor(220, 60, 60),  "P", elev),
+            (self.RING_YAW,   QColor(60, 200, 60),  "Y", azim),
+            (self.RING_ROLL,  QColor(80, 120, 255), "R", azim + elev),
         ]
         
-        for ring_id, base_color, label in ring_configs:
-            points = self._get_ring_points(ring_id)
+        cx = self.WIDGET_WIDTH // 2
+        r = self.RING_RADIUS
+        
+        for ring_id, base_color, label, angle in ring_configs:
+            row_top = 5 + ring_id * self.ROW_HEIGHT
+            cy = row_top + self.ROW_HEIGHT // 2
             
-            # Determine ring style based on state
             is_active = (self._active_ring == ring_id)
             is_hover = (self._hover_ring == ring_id and not self._dragging)
             
             if is_active:
                 color = QColor(base_color.red(), base_color.green(), base_color.blue(), 255)
-                width = 4.0
+                width = 3.5
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(base_color.red(), base_color.green(), base_color.blue(), 30))
+                painter.drawRoundedRect(2, row_top, self.WIDGET_WIDTH - 4, self.ROW_HEIGHT, 6, 6)
             elif is_hover:
                 color = QColor(
-                    min(255, base_color.red() + 40), 
-                    min(255, base_color.green() + 40), 
-                    min(255, base_color.blue() + 40), 255
+                    min(255, base_color.red() + 50),
+                    min(255, base_color.green() + 50),
+                    min(255, base_color.blue() + 50), 255
                 )
-                width = 3.5
+                width = 3.0
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(255, 255, 255, 15))
+                painter.drawRoundedRect(2, row_top, self.WIDGET_WIDTH - 4, self.ROW_HEIGHT, 6, 6)
             else:
-                color = QColor(base_color.red(), base_color.green(), base_color.blue(), 160)
+                color = QColor(base_color.red(), base_color.green(), base_color.blue(), 180)
                 width = 2.0
             
+            # Draw ring as tilted ellipse
             pen = QPen(color, width)
             painter.setPen(pen)
             
+            squeeze = max(0.15, abs(math.cos(angle)))
+            
             path = QPainterPath()
-            path.moveTo(QPointF(points[0][0], points[0][1]))
-            for px, py in points[1:]:
-                path.lineTo(QPointF(px, py))
+            steps = 48
+            for i in range(steps + 1):
+                t = 2 * math.pi * i / steps
+                x = cx + r * math.cos(t)
+                y = cy + r * math.sin(t) * squeeze
+                if i == 0:
+                    path.moveTo(QPointF(x, y))
+                else:
+                    path.lineTo(QPointF(x, y))
             painter.drawPath(path)
-        
-        # Center dot 
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(255, 255, 255, 200))
-        painter.drawEllipse(self._cx - 3, self._cy - 3, 6, 6)
-        
-        # Axis labels
-        font = painter.font()
-        font.setPointSize(9)
-        font.setBold(True)
-        painter.setFont(font)
-        
-        label_data = [
-            (self.RING_PITCH, QColor(220, 60, 60),   "P", 122, self._cy + 4),
-            (self.RING_YAW,   QColor(60, 200, 60),   "Y", self._cx - 4, 12),
-            (self.RING_ROLL,  QColor(80, 120, 255),   "R", 8, self._cy + 4),
-        ]
-        for ring_id, color, text, lx, ly in label_data:
-            if self._active_ring == ring_id or self._hover_ring == ring_id:
-                color = QColor(255, 255, 255)
-            painter.setPen(color)
-            painter.drawText(lx, ly, text)
-        
-        # Show active axis name when dragging
-        if self._dragging and self._active_ring != self.RING_NONE:
-            name = ["Pitch", "Yaw", "Roll"][self._active_ring]
-            painter.setPen(QColor(255, 255, 255, 220))
+            
+            # Marker dot on ring
+            mx = cx + r * math.cos(angle)
+            my = cy + r * math.sin(angle) * squeeze
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(255, 255, 255, 220))
+            painter.drawEllipse(QPointF(mx, my), 3, 3)
+            
+            # Label
+            font = painter.font()
             font.setPointSize(8)
+            font.setBold(True)
             painter.setFont(font)
-            painter.drawText(self._cx - 12, self._cy + self._radius + 18, name)
+            lbl_color = QColor(255, 255, 255) if (is_active or is_hover) else color
+            painter.setPen(lbl_color)
+            painter.drawText(4, row_top + 12, label)
         
         painter.end()
     
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self._active_ring = self._hit_test(event.pos())
+            self._active_ring = self._ring_at(event.pos())
             self._dragging = True
             self._last_pos = event.pos()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
@@ -3270,22 +3240,17 @@ class RotationGizmo(QWidget):
             dy = delta.y()
             
             if self._active_ring == self.RING_YAW:
-                # Yaw only: horizontal drag = azimuth
                 self.view_widget.orbit(azim=dx * 1.5, elev=0)
             elif self._active_ring == self.RING_PITCH:
-                # Pitch only: vertical drag = elevation
                 self.view_widget.orbit(azim=0, elev=-dy * 1.5)
             elif self._active_ring == self.RING_ROLL:
-                # Roll: combined diagonal movement
                 self.view_widget.orbit(azim=dx * 1.0, elev=-dy * 1.0)
             else:
-                # Free rotation (no ring selected)
                 self.view_widget.orbit(azim=dx * 1.0, elev=-dy * 1.0)
             
             event.accept()
         else:
-            # Hover detection
-            hover = self._hit_test(event.pos())
+            hover = self._ring_at(event.pos())
             if hover != self._hover_ring:
                 self._hover_ring = hover
                 self.update()
@@ -3379,7 +3344,7 @@ class PointCloudViewer(QDialog):
         
         # Rotation Gizmo overlay (bottom-right corner)
         self.rotation_gizmo = RotationGizmo(self.view_widget, parent=self.view_widget)
-        self.rotation_gizmo.move(self.view_widget.width() - 150, self.view_widget.height() - 150)
+        self.rotation_gizmo.move(self.view_widget.width() - 70, self.view_widget.height() - 170)
         self.rotation_gizmo.show()
         
         # Navigation Features
@@ -3713,7 +3678,7 @@ class PointCloudViewer(QDialog):
         if hasattr(self, 'rotation_gizmo') and self.view_widget:
             vw = self.view_widget.width()
             vh = self.view_widget.height()
-            self.rotation_gizmo.move(vw - 150, vh - 150)
+            self.rotation_gizmo.move(vw - 70, vh - 170)
             
     def handle_double_click(self, pos):
         """Center the view on the clicked point."""
