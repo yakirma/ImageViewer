@@ -3366,7 +3366,7 @@ class PointCloudViewer(QDialog):
 
         self.view_widget = CustomGLViewWidget()
         self.view_widget.opts['distance'] = 200
-        self.view_widget.opts['azimuth'] = 0
+        self.view_widget.opts['azimuth'] = 90
         self.view_widget.opts['elevation'] = 30
         self.layout.addWidget(self.view_widget)
         
@@ -3676,8 +3676,8 @@ class PointCloudViewer(QDialog):
     def reset_view(self):
         if gl is None: return
         # Reset to "Image POV": Top-down view looking at the XY plane (-90 az rotates "up" correctly usually)
-        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=30, azimuth=0)
-        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=30, azimuth=0)
+        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=30, azimuth=90)
+        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=30, azimuth=90)
         
         # Reset Lighting
         self.light_x_slider.setValue(0)
