@@ -1445,7 +1445,25 @@ class ImageViewer(QMainWindow):
         self.progress_bar.setVisible(False)
         self.status_bar.clearMessage()
         self.da3_action.setEnabled(True)
-        QMessageBox.critical(self, "Error", f"Failed to generate depth map:\n{error_msg}")
+        
+        if "WinError 1114" in error_msg:
+             msg_box = QMessageBox(self)
+             msg_box.setIcon(QMessageBox.Icon.Critical)
+             msg_box.setWindowTitle("Error")
+             msg_box.setText(f"Failed to generate depth map:\n\n{error_msg}")
+             msg_box.setInformativeText("This error usually means you are missing the Visual C++ Redistributable 2015-2022.")
+             
+             download_btn = msg_box.addButton("Download & Install", QMessageBox.ButtonRole.ActionRole)
+             msg_box.addButton(QMessageBox.StandardButton.Ok)
+             
+             msg_box.exec()
+             
+             if msg_box.clickedButton() == download_btn:
+                 from PyQt6.QtGui import QDesktopServices
+                 from PyQt6.QtCore import QUrl
+                 QDesktopServices.openUrl(QUrl("https://aka.ms/vs/17/release/vc_redist.x64.exe"))
+        else:
+             QMessageBox.critical(self, "Error", f"Failed to generate depth map:\n{error_msg}")
 
     def _on_da3_progress(self, current, total):
         if total > 0:

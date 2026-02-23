@@ -45,6 +45,24 @@ Section "ImageViewer (required)"
   ; Files
   File /r "dist\ImageViewer\*"
 
+  ; --- VC++ Redistributable Check ---
+  DetailPrint "Checking for Visual C++ 2015-2022 Redistributable..."
+  ReadRegDWORD $0 HKLM "SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" "Installed"
+  IntCmp $0 1 redist_done
+  
+  ; Not installed or older version - check if redist is bundled
+  IfFileExists "$EXEDIR\vc_redist.x64.exe" 0 redist_missing
+    DetailPrint "Installing Visual C++ 2015-2022 Redistributable..."
+    ExecWait '"$EXEDIR\vc_redist.x64.exe" /install /quiet /norestart' $1
+    DetailPrint "Redistributable install exited with code $1"
+    Goto redist_done
+
+  redist_missing:
+    DetailPrint "Visual C++ 2015-2022 Redistributable not found in installer directory."
+    ; We could potentially download it here if we had a plugin, but for now we rely on bundling or the app-level button.
+
+  redist_done:
+
   ; Uninstaller
   WriteUninstaller "uninstall.exe"
   
