@@ -3335,6 +3335,17 @@ class PointCloudViewer(QDialog):
         self.z_scale_slider.setToolTip("Vertical Exaggeration (Depth Scale)")
         header_layout.addWidget(self.z_scale_slider)
         
+        # Point Size Slider
+        header_layout.addSpacing(5)
+        header_layout.addWidget(QLabel("● Size:"))
+        self.point_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.point_size_slider.setRange(1, 10)
+        self.point_size_slider.setValue(2)
+        self.point_size_slider.setFixedWidth(60)
+        self.point_size_slider.setToolTip("Point Size")
+        self.point_size_slider.valueChanged.connect(self.on_point_size_changed)
+        header_layout.addWidget(self.point_size_slider)
+        
         self.layout.addLayout(header_layout)
         
         if gl is None:
@@ -3618,7 +3629,7 @@ class PointCloudViewer(QDialog):
                 if self.scatter:
                     self.scatter.setData(color=shaded_points)
                 else:
-                    self.scatter = gl.GLScatterPlotItem(pos=self.pos, color=shaded_points, size=2, pxMode=True, glOptions='opaque')
+                    self.scatter = gl.GLScatterPlotItem(pos=self.pos, color=shaded_points, size=self.point_size_slider.value(), pxMode=True, glOptions='opaque')
                     self.view_widget.addItem(self.scatter)
 
         # Mesh / Surface
@@ -3660,6 +3671,11 @@ class PointCloudViewer(QDialog):
         
         
         # Ideally we compute optimal distance based on bounds
+
+    def on_point_size_changed(self, value):
+        """Update scatter point size."""
+        if self.scatter is not None:
+            self.scatter.setData(size=value)
 
     def on_colormap_changed(self, text):
         """Change Colormap based on dropdown selection."""
