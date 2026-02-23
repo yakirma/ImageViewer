@@ -141,7 +141,33 @@ class DA3Worker(QThread):
 
     def run(self):
         try:
-            import torch
+            # Windows DLL loading workarounds
+            if platform.system() == "Windows":
+                import importlib
+                try:
+                    # First attempt: add torch's DLL directory explicitly
+                    import site
+                    for sp in site.getsitepackages():
+                        torch_lib = os.path.join(sp, "torch", "lib")
+                        if os.path.isdir(torch_lib):
+                            os.add_dll_directory(torch_lib)
+                except Exception:
+                    pass
+                
+                try:
+                    import torch
+                except OSError as dll_err:
+                    if "1114" in str(dll_err):
+                        # Fallback: force CPU-only by hiding CUDA
+                        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+                        os.environ["TORCH_CUDA_ARCH_LIST"] = ""
+                        # Retry import
+                        import torch
+                    else:
+                        raise
+            else:
+                import torch
+            
             from depth_anything_3.api import DepthAnything3
             from PIL import Image
             import numpy as np
@@ -228,11 +254,14 @@ class DA3Worker(QThread):
         except Exception as e:
             msg = str(e)
             if "1114" in msg and platform.system() == "Windows":
-                 msg = (f"DLL Load Error [WinError 1114]. This is often caused by missing system libraries.\n\n"
-                        f"Please try:\n"
+                 msg = (f"DLL Load Error [WinError 1114]. PyTorch failed to load on this system.\n\n"
+                        f"Most likely fix — reinstall PyTorch CPU-only:\n"
+                        f"  pip uninstall torch torchvision\n"
+                        f"  pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu\n\n"
+                        f"Other things to try:\n"
                         f"1. Install the latest Microsoft Visual C++ Redistributable (x64).\n"
-                        f"2. Ensure your Graphics Drivers are up to date.\n"
-                        f"3. Check for OpenMP conflicts (KMP_DUPLICATE_LIB_OK).")
+                        f"2. Update your GPU drivers.\n"
+                        f"3. If using Conda, try: conda install pytorch cpuonly -c pytorch")
             self.failed.emit(msg)
 
 class DA3ModelDialog(QDialog):
