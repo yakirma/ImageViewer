@@ -3619,6 +3619,7 @@ class PointCloudViewer(QDialog):
             
         # Y-up: light_vec = (X_horizontal, Y_up, Z_depth)
         light_vec = np.array([lx, ly_slider, lz])
+        brightness = self.brightness_slider.value() / 100.0
         
         # 1. Update Points (if applicable)
         if self.normals is not None and self.normals.ndim == 2 and self.normals.shape[0] > 0:
@@ -3634,7 +3635,6 @@ class PointCloudViewer(QDialog):
             shading = np.clip(dot, 0, 1) * shading_strength + ambient
             
             # Apply brightness strength
-            brightness = self.brightness_slider.value() / 100.0
             shading *= brightness
             
             if self.base_colors is not None and len(self.base_colors) > 0:
