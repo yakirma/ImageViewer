@@ -3455,8 +3455,8 @@ class PointCloudViewer(QDialog):
         # We use nanmean subtract on the scaled version to keep it centered
         z_vals_scaled = (z_vals - z_p5) / z_range * z_norm_range
         z_vals_centered = z_vals_scaled - np.nanmean(z_vals_scaled[valid_mask])
-        
-        all_pos = np.vstack((xv.flatten(), yv.flatten(), z_vals_centered)).transpose()
+        # Y-up coordinate system: (X, Z_depth, -Y) so pyqtgraph orbits naturally around Y
+        all_pos = np.vstack((xv.flatten(), z_vals_centered, -yv.flatten())).transpose()
 
         
         # For gradients, we need to adjust for the X/Y step size if we want true geometric normals
@@ -3472,7 +3472,8 @@ class PointCloudViewer(QDialog):
         mag = np.sqrt(nx**2 + ny**2 + nz**2)
         # Add epsilon to prevent division by zero/NaN normals
         mag[mag == 0] = 1e-8
-        all_normals = np.stack([nx/mag, ny/mag, nz/mag], axis=1)
+        # Y-up normals: swap Y↔Z to match (X, depth, -Y) coordinate system
+        all_normals = np.stack([nx/mag, nz/mag, -ny/mag], axis=1)
         
         # 2. Base Colors (on FULL grid)
         norm_z = np.clip((z_vals - z_p5) / z_range, 0, 1)
@@ -3647,8 +3648,8 @@ class PointCloudViewer(QDialog):
     def reset_view(self):
         if gl is None: return
         # Reset to "Image POV": Top-down view looking at the XY plane (-90 az rotates "up" correctly usually)
-        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=-90, azimuth=90)
-        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=-90, azimuth=90)
+        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=30, azimuth=-45)
+        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=30, azimuth=-45)
         
         # Reset Lighting
         self.light_x_slider.setValue(0)
