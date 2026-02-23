@@ -3366,6 +3366,8 @@ class PointCloudViewer(QDialog):
 
         self.view_widget = CustomGLViewWidget()
         self.view_widget.opts['distance'] = 200
+        self.view_widget.opts['azimuth'] = 0
+        self.view_widget.opts['elevation'] = 30
         self.layout.addWidget(self.view_widget)
         
         # Rotation Gizmo overlay (bottom-right corner)
