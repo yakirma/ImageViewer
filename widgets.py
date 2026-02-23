@@ -3241,10 +3241,10 @@ class RotationGizmo(QWidget):
             
             if self._active_ring == self.RING_YAW:
                 # Yaw: any drag direction rotates azimuth
-                self.view_widget.orbit(azim=(dx + dy) * 1.2, elev=0)
+                self.view_widget.orbit(azim=-(dx + dy) * 1.2, elev=0)
             elif self._active_ring == self.RING_PITCH:
                 # Pitch: any drag direction rotates elevation
-                self.view_widget.orbit(azim=0, elev=-(dx + dy) * 1.2)
+                self.view_widget.orbit(azim=0, elev=(dx + dy) * 1.2)
             elif self._active_ring == self.RING_ROLL:
                 # Roll: free rotation
                 self.view_widget.orbit(azim=dx * 1.0, elev=-dy * 1.0)
@@ -3455,8 +3455,8 @@ class PointCloudViewer(QDialog):
         # We use nanmean subtract on the scaled version to keep it centered
         z_vals_scaled = (z_vals - z_p5) / z_range * z_norm_range
         z_vals_centered = z_vals_scaled - np.nanmean(z_vals_scaled[valid_mask])
-        # Y-up coordinate system: (X, Z_depth, -Y) so pyqtgraph orbits naturally around Y
-        all_pos = np.vstack((xv.flatten(), z_vals_centered, -yv.flatten())).transpose()
+        # Y-up coordinate system: (X, Z_depth, Y) so pyqtgraph orbits naturally around Y
+        all_pos = np.vstack((xv.flatten(), z_vals_centered, yv.flatten())).transpose()
 
         
         # For gradients, we need to adjust for the X/Y step size if we want true geometric normals
@@ -3473,7 +3473,7 @@ class PointCloudViewer(QDialog):
         # Add epsilon to prevent division by zero/NaN normals
         mag[mag == 0] = 1e-8
         # Y-up normals: swap Y↔Z to match (X, depth, -Y) coordinate system
-        all_normals = np.stack([nx/mag, nz/mag, -ny/mag], axis=1)
+        all_normals = np.stack([nx/mag, nz/mag, ny/mag], axis=1)
         
         # 2. Base Colors (on FULL grid)
         norm_z = np.clip((z_vals - z_p5) / z_range, 0, 1)
