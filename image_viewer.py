@@ -2273,7 +2273,7 @@ class ImageViewer(QMainWindow):
                  # Reset Play state
                  self.playback_timer.stop()
                  self.play_action.setChecked(False)
-                 self.play_action.setText("Play")
+                 self.play_action.setText("▶")
             else:
                  self.video_toolbar.hide()
                  self.playback_timer.stop()
