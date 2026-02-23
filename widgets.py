@@ -3315,16 +3315,28 @@ class PointCloudViewer(QDialog):
         self.light_x_slider.setValue(0)
         self.light_x_slider.setFixedWidth(80)
         self.light_x_slider.setToolTip("Light Source Horizontal Position")
+        self.light_x_slider.valueChanged.connect(lambda: self.update_lighting())
         header_layout.addWidget(self.light_x_slider)
         
         # Light Y (Vertical)
         header_layout.addWidget(QLabel("☀️↕️"))
         self.light_y_slider = QSlider(Qt.Orientation.Vertical)
         self.light_y_slider.setRange(-100, 100)
-        self.light_y_slider.setValue(0) # Center (Directly above)
+        self.light_y_slider.setValue(0)
         self.light_y_slider.setFixedHeight(80)
         self.light_y_slider.setToolTip("Light Source Vertical Position")
+        self.light_y_slider.valueChanged.connect(lambda: self.update_lighting())
         header_layout.addWidget(self.light_y_slider)
+        
+        # Brightness Strength
+        header_layout.addWidget(QLabel("💡"))
+        self.brightness_slider = QSlider(Qt.Orientation.Vertical)
+        self.brightness_slider.setRange(0, 200)
+        self.brightness_slider.setValue(100)
+        self.brightness_slider.setFixedHeight(80)
+        self.brightness_slider.setToolTip("Brightness Strength (%)")
+        self.brightness_slider.valueChanged.connect(lambda: self.update_lighting())
+        header_layout.addWidget(self.brightness_slider)
         
         # Z-Scale Slider (Depth Exaggeration)
         header_layout.addWidget(QLabel("🏔️"))
@@ -3620,6 +3632,10 @@ class PointCloudViewer(QDialog):
             # Improve contrast: allow shading to go darker
             shading = np.clip(dot, 0, 1) * shading_strength + ambient
             
+            # Apply brightness strength
+            brightness = self.brightness_slider.value() / 100.0
+            shading *= brightness
+            
             if self.base_colors is not None and len(self.base_colors) > 0:
                 shaded_points = self.base_colors.copy()
                 # If length doesn't match, or scatter isn't created, we handle below
@@ -3665,6 +3681,7 @@ class PointCloudViewer(QDialog):
         # Reset Lighting
         self.light_x_slider.setValue(0)
         self.light_y_slider.setValue(0)
+        self.brightness_slider.setValue(100)
         
         # Reset Depth Scale
         self.z_scale_slider.setValue(50)
