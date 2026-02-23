@@ -3616,8 +3616,9 @@ class PointCloudViewer(QDialog):
         else:
             lz = np.sqrt(1.0 - r2)
             
-        # Data coords are (-X, Z_depth, Y): vertical slider → Y-up (component 1), hemisphere → Z-depth (component 2)
-        light_vec = np.array([lx, ly_slider, lz])
+        # Data coords: (-X, Z_depth, Y). From azimuth=-90, component 2 (Y) is visual up/down.
+        # Vertical slider → Y (visual up/down), hemisphere → Z_depth (toward viewer)
+        light_vec = np.array([lx, lz, ly_slider])
         brightness = self.brightness_slider.value() / 100.0
         
         # 1. Update Points (if applicable)
