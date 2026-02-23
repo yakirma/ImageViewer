@@ -891,7 +891,7 @@ class ImageViewer(QMainWindow):
         self.video_toolbar.hide() 
         
         # Play/Pause
-        self.play_action = QAction("Play", self) 
+        self.play_action = QAction("▶", self) 
         self.play_action.setCheckable(True)
         self.play_action.triggered.connect(self._on_play_pause)
         self.video_toolbar.addAction(self.play_action)
@@ -935,10 +935,10 @@ class ImageViewer(QMainWindow):
             fps = self.fps_spin.value()
             interval = int(1000 / fps)
             self.playback_timer.start(interval)
-            self.play_action.setText("Pause")
+            self.play_action.setText("⏸")
         else:
             self.playback_timer.stop()
-            self.play_action.setText("Play")
+            self.play_action.setText("▶")
 
     def _video_timer_timeout(self):
         if not self.image_handler.is_video:
