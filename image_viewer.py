@@ -227,6 +227,10 @@ class DA3Worker(QThread):
                     # Save each frame's depth map
                     for i, depth_map in enumerate(pred.depth):
                         frame_num = start + i + 1  # 1-based indexing
+                        # Resize to match input frame shape
+                        h, w = batch[i].shape[:2]
+                        if depth_map.shape[:2] != (h, w):
+                            depth_map = cv2.resize(depth_map, (w, h), interpolation=cv2.INTER_NEAREST)
                         out_path = os.path.join(out_dir, f"frame_{frame_num}.tiff")
                         tifffile.imwrite(out_path, depth_map)
                         
@@ -245,6 +249,11 @@ class DA3Worker(QThread):
                 # Run inference
                 pred = model.inference([img_np])
                 depth_map = pred.depth[0]
+                
+                # Resize to match input image shape
+                h, w = img_np.shape[:2]
+                if depth_map.shape[:2] != (h, w):
+                    depth_map = cv2.resize(depth_map, (w, h), interpolation=cv2.INTER_NEAREST)
                 
                 # Save depth map next to original file
                 out_path = f"{base}_DEPTH.tiff"
