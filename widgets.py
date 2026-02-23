@@ -3603,7 +3603,7 @@ class PointCloudViewer(QDialog):
             return
             
         # Cartesian Lighting for Y-up coordinate system with negated X
-        lx = -self.light_x_slider.value() / 100.0  # negated to match -X coords
+        lx = self.light_x_slider.value() / 100.0
         ly_slider = self.light_y_slider.value() / 100.0  # vertical slider = up/down
         
         # Compute hemisphere component for remaining axis
