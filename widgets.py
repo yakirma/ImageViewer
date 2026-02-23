@@ -3616,9 +3616,10 @@ class PointCloudViewer(QDialog):
         else:
             lz = np.sqrt(1.0 - r2)
             
-        # Data coords: (-X, Z_depth, Y). From azimuth=-90, component 2 (Y) is visual up/down.
-        # Vertical slider → Y (visual up/down), hemisphere → Z_depth (toward viewer)
-        light_vec = np.array([lx, lz, ly_slider])
+        # Data coords & Normals are: (-X, Z_depth, Y). 
+        # For azimuth=-90 (looking down Z), visual X = -X, visual Y = Y.
+        # So horizontal slider (lx) → -X axis, vertical slider (ly_slider) → Y axis, remaining (lz) → Z axis.
+        light_vec = np.array([-lx, lz, ly_slider])
         brightness = self.brightness_slider.value() / 100.0
         
         # 1. Update Points (if applicable)
@@ -3659,10 +3660,11 @@ class PointCloudViewer(QDialog):
              
              # Calculate light on all vertices
              nx = self.normals_all_grid[:, 0] if hasattr(self, 'normals_all_grid') else np.ones(len(verts))
-             ny = self.normals_all_grid[:, 1] if hasattr(self, 'normals_all_grid') else np.zeros(len(verts))
-             nz = self.normals_all_grid[:, 2] if hasattr(self, 'normals_all_grid') else np.ones(len(verts))
+             nz = self.normals_all_grid[:, 1] if hasattr(self, 'normals_all_grid') else np.ones(len(verts))
+             ny = self.normals_all_grid[:, 2] if hasattr(self, 'normals_all_grid') else np.zeros(len(verts))
              
-             dp = nx * lx + ny * ly_slider + nz * lz
+             # light_vec is [-lx (X axis), lz (Z axis), ly_slider (Y axis)]
+             dp = nx * light_vec[0] + nz * light_vec[1] + ny * light_vec[2]
              shd = (dp + 1.0) / 2.0
              shd = 0.3 + 0.7 * shd
              shd *= brightness
