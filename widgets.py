@@ -3240,10 +3240,13 @@ class RotationGizmo(QWidget):
             dy = delta.y()
             
             if self._active_ring == self.RING_YAW:
-                self.view_widget.orbit(azim=dx * 1.5, elev=0)
+                # Yaw: any drag direction rotates azimuth
+                self.view_widget.orbit(azim=(dx + dy) * 1.2, elev=0)
             elif self._active_ring == self.RING_PITCH:
-                self.view_widget.orbit(azim=0, elev=-dy * 1.5)
+                # Pitch: any drag direction rotates elevation
+                self.view_widget.orbit(azim=0, elev=-(dx + dy) * 1.2)
             elif self._active_ring == self.RING_ROLL:
+                # Roll: free rotation
                 self.view_widget.orbit(azim=dx * 1.0, elev=-dy * 1.0)
             else:
                 self.view_widget.orbit(azim=dx * 1.0, elev=-dy * 1.0)
