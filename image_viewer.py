@@ -207,7 +207,14 @@ class DA3Worker(QThread):
                 tifffile.imwrite(out_path, depth_map)
                 self.finished.emit(out_path)
         except Exception as e:
-            self.failed.emit(str(e))
+            msg = str(e)
+            if "1114" in msg and platform.system() == "Windows":
+                 msg = (f"DLL Load Error [WinError 1114]. This is often caused by missing system libraries.\n\n"
+                        f"Please try:\n"
+                        f"1. Install the latest Microsoft Visual C++ Redistributable (x64).\n"
+                        f"2. Ensure your Graphics Drivers are up to date.\n"
+                        f"3. Check for OpenMP conflicts (KMP_DUPLICATE_LIB_OK).")
+            self.failed.emit(msg)
 
 class DA3ModelDialog(QDialog):
     def __init__(self, parent=None):

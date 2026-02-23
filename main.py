@@ -1,6 +1,10 @@
 import sys
 import os
 import platform
+
+# Fix for WinError 1114 on Windows when loading torch
+if platform.system() == "Windows":
+    os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QFileDialog, QMessageBox, QSplitter
 from PyQt6.QtCore import Qt, QTimer, QEvent, QSize, pyqtSignal, QPoint
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QColor, QPalette
