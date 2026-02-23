@@ -3602,12 +3602,11 @@ class PointCloudViewer(QDialog):
         if self.base_colors is None or self.normals is None:
             return
             
-        # Cartesian Lighting for Y-up coordinate system
-        lx = self.light_x_slider.value() / 100.0
-        ly_slider = self.light_y_slider.value() / 100.0  # top-bottom = Y axis (up)
+        # Cartesian Lighting for Y-up coordinate system with negated X
+        lx = -self.light_x_slider.value() / 100.0  # negated to match -X coords
+        ly_slider = self.light_y_slider.value() / 100.0  # vertical slider = up/down
         
-        # Horizontal slider controls X, vertical slider controls Y (up/down)
-        # Z (depth) is computed from hemisphere
+        # Compute hemisphere component for remaining axis
         r2 = lx*lx + ly_slider*ly_slider
         if r2 > 1.0:
             mag = np.sqrt(r2)
@@ -3617,7 +3616,7 @@ class PointCloudViewer(QDialog):
         else:
             lz = np.sqrt(1.0 - r2)
             
-        # Y-up: light_vec = (X_horizontal, Y_up, Z_depth)
+        # Data coords are (-X, Z_depth, Y): vertical slider → Y-up (component 1), hemisphere → Z-depth (component 2)
         light_vec = np.array([lx, ly_slider, lz])
         brightness = self.brightness_slider.value() / 100.0
         
