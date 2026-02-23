@@ -295,7 +295,7 @@ class ImageViewer(QMainWindow):
         self.active_label = None
 
         screen_geometry = self.screen().geometry()
-        self.resize(screen_geometry.width() // 2, screen_geometry.height() // 2)
+        self.resize(int(screen_geometry.width() * 0.7), screen_geometry.height() // 2)
         self.move(screen_geometry.center() - self.rect().center())
 
         self.stacked_widget = QStackedWidget()
