@@ -3480,8 +3480,8 @@ class PointCloudViewer(QDialog):
         # We use nanmean subtract on the scaled version to keep it centered
         z_vals_scaled = (z_vals - z_p5) / z_range * z_norm_range
         z_vals_centered = z_vals_scaled - np.nanmean(z_vals_scaled[valid_mask])
-        # Y-up coordinate system: (X, Z_depth, Y) so pyqtgraph orbits naturally around Y
-        all_pos = np.vstack((xv.flatten(), z_vals_centered, yv.flatten())).transpose()
+        # Y-up coordinate system: (-X, Z_depth, Y) — negate X to fix left-right flip
+        all_pos = np.vstack((-xv.flatten(), z_vals_centered, yv.flatten())).transpose()
 
         
         # For gradients, we need to adjust for the X/Y step size if we want true geometric normals
