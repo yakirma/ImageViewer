@@ -1,6 +1,7 @@
 import os
 import sys
 import re
+import platform
 import shutil
 import json
 import tempfile
