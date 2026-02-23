@@ -3600,24 +3600,23 @@ class PointCloudViewer(QDialog):
         if self.base_colors is None or self.normals is None:
             return
             
-        # Cartesian Lighting: Project 2D slider pos onto 3D hemisphere
-        # Invert both directions as requested
+        # Cartesian Lighting for Y-up coordinate system
         lx = self.light_x_slider.value() / 100.0
-        ly = -self.light_y_slider.value() / 100.0
+        ly_slider = self.light_y_slider.value() / 100.0  # top-bottom = Y axis (up)
         
-        # Calculate Z component (height of light above surface)
-        # sphere equation: x^2 + y^2 + z^2 = 1 => z = sqrt(1 - x^2 - y^2)
-        r2 = lx*lx + ly*ly
+        # Horizontal slider controls X, vertical slider controls Y (up/down)
+        # Z (depth) is computed from hemisphere
+        r2 = lx*lx + ly_slider*ly_slider
         if r2 > 1.0:
-            # Normalize to unit circle edge if outside
             mag = np.sqrt(r2)
             lx /= mag
-            ly /= mag
-            lz = 0.0 # Horizon
+            ly_slider /= mag
+            lz = 0.0
         else:
             lz = np.sqrt(1.0 - r2)
             
-        light_vec = np.array([lx, ly, lz])
+        # Y-up: light_vec = (X_horizontal, Y_up, Z_depth)
+        light_vec = np.array([lx, ly_slider, lz])
         
         # 1. Update Points (if applicable)
         if self.normals is not None and self.normals.ndim == 2 and self.normals.shape[0] > 0:
@@ -3675,8 +3674,8 @@ class PointCloudViewer(QDialog):
     def reset_view(self):
         if gl is None: return
         # Reset to "Image POV": Top-down view looking at the XY plane (-90 az rotates "up" correctly usually)
-        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=30, azimuth=-45)
-        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=30, azimuth=-45)
+        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=30, azimuth=0)
+        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=30, azimuth=0)
         
         # Reset Lighting
         self.light_x_slider.setValue(0)
