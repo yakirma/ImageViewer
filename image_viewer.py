@@ -161,33 +161,51 @@ class DA3Worker(QThread):
             video_exts = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.gif']
             
             if ext in video_exts:
-                # Video Mode
+                # Video Mode - Streaming (batch frames for temporal consistency)
                 cap = cv2.VideoCapture(self.image_path)
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 out_dir = f"{base}_DEPTH"
                 os.makedirs(out_dir, exist_ok=True)
                 
-                frame_idx = 0
-                while cap.isOpened() and not self._is_cancelled:
+                # Read all frames first
+                all_frames = []
+                while cap.isOpened():
                     ret, frame = cap.read()
                     if not ret:
                         break
-                    
-                    # Convert BGR (OpenCV) to RGB
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    
-                    # Run inference
-                    pred = model.inference([frame_rgb])
-                    depth_map = pred.depth[0]
-                    
-                    # Save with 1-based indexing for user readability
-                    out_path = os.path.join(out_dir, f"frame_{frame_idx+1}.tiff")
-                    tifffile.imwrite(out_path, depth_map)
-                    
-                    frame_idx += 1
-                    self.progress.emit(frame_idx, total_frames)
-                
+                    all_frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                 cap.release()
+                
+                if self._is_cancelled:
+                    self.failed.emit("Cancelled by user")
+                    return
+                
+                total_frames = len(all_frames)
+                
+                # Process in sliding window batches for temporal consistency
+                # DA3 uses spatial-temporal attention when given multiple frames
+                WINDOW_SIZE = 8
+                processed = 0
+                
+                for start in range(0, total_frames, WINDOW_SIZE):
+                    if self._is_cancelled:
+                        break
+                    
+                    end = min(start + WINDOW_SIZE, total_frames)
+                    batch = all_frames[start:end]
+                    
+                    # Run inference on the batch - DA3 handles temporal coherence internally
+                    pred = model.inference(batch)
+                    
+                    # Save each frame's depth map
+                    for i, depth_map in enumerate(pred.depth):
+                        frame_num = start + i + 1  # 1-based indexing
+                        out_path = os.path.join(out_dir, f"frame_{frame_num}.tiff")
+                        tifffile.imwrite(out_path, depth_map)
+                        
+                        processed += 1
+                        self.progress.emit(processed, total_frames)
+                
                 if self._is_cancelled:
                     self.failed.emit("Cancelled by user")
                 else:
