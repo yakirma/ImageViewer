@@ -3,7 +3,7 @@
 
 !define APP_NAME "ImageViewer"
 !define COMPANY "Yakirma"
-!define VERSION "1.0.0"
+!define VERSION "1.1.0"
 
 Name "${APP_NAME}"
 OutFile "dist\${APP_NAME}_Setup.exe"
