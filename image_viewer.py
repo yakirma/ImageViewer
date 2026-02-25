@@ -1330,6 +1330,8 @@ class ImageViewer(QMainWindow):
 
         self.active_label = label
         if self.active_label:
+            if hasattr(self.active_label, 'file_path') and self.active_label.file_path:
+                self.current_file_path = self.active_label.file_path
             try:
                 self.active_label.set_active(True)
                 if hasattr(self.active_label, 'indicator_line'):
@@ -1497,6 +1499,8 @@ class ImageViewer(QMainWindow):
             
         combined_paths = current_files + [output_path]
         self.display_montage(combined_paths, is_manual=True)
+        # Refresh UI to enable the 3D button now that the depth companion exists
+        self.update_image_display(reset_view=False)
 
     def _on_da3_failed(self, error_msg):
         self.progress_bar.setVisible(False)
