@@ -12,7 +12,7 @@ a = Analysis(
         ('assets/icons', 'assets/icons'),
         (da3_path, 'depth_anything_3')
     ] + copy_metadata('imageio') + copy_metadata('safetensors') + copy_metadata('huggingface_hub'),
-    hiddenimports=['requests', 'torch', 'torchvision', 'timm', 'imageio', 'omegaconf', 'addict', 'evo', 'depth_anything_3', 'PIL', 'tifffile', 'safetensors', 'huggingface_hub'],
+    hiddenimports=['requests', 'torch', 'torchvision', 'timm', 'imageio', 'omegaconf', 'addict', 'evo', 'depth_anything_3', 'PIL', 'tifffile', 'safetensors', 'huggingface_hub', 'numpy', 'numpy.core', 'numpy._core', 'numpy.core.multiarray', 'numpy._core.multiarray'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
