@@ -1,4 +1,4 @@
-from PyInstaller.utils.hooks import copy_metadata
+from PyInstaller.utils.hooks import copy_metadata, collect_submodules, collect_data_files, collect_dynamic_libs
 import os
 import depth_anything_3
 
@@ -7,12 +7,12 @@ da3_path = depth_anything_3.__path__[0]
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
+    binaries=[] + collect_dynamic_libs('numpy'),
     datas=[
         ('assets/icons', 'assets/icons'),
         (da3_path, 'depth_anything_3')
-    ] + copy_metadata('imageio') + copy_metadata('safetensors') + copy_metadata('huggingface_hub'),
-    hiddenimports=['requests', 'torch', 'torchvision', 'timm', 'imageio', 'omegaconf', 'addict', 'evo', 'depth_anything_3', 'PIL', 'tifffile', 'safetensors', 'huggingface_hub', 'numpy', 'numpy.core', 'numpy._core', 'numpy.core.multiarray', 'numpy._core.multiarray'],
+    ] + copy_metadata('imageio') + copy_metadata('safetensors') + copy_metadata('huggingface_hub') + collect_data_files('numpy'),
+    hiddenimports=['requests', 'torch', 'torchvision', 'timm', 'imageio', 'omegaconf', 'addict', 'evo', 'depth_anything_3', 'PIL', 'tifffile', 'safetensors', 'huggingface_hub'] + collect_submodules('numpy'),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
