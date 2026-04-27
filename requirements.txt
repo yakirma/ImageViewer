@@ -15,4 +15,4 @@ imageio
 omegaconf
 addict
 evo
-depth-anything-3 @ git+https://github.com/LiheYoung/Depth-Anything-V3.git
+depth-anything-3 @ git+https://github.com/ByteDance-Seed/depth-anything-3

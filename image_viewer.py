@@ -5,7 +5,14 @@ import platform
 import shutil
 import json
 import tempfile
+import subprocess
 from datetime import datetime
+
+# ML packages are not bundled — they are downloaded to this directory on first
+# depth-generation use so the installer stays small (~80-100 MB instead of ~250 MB).
+_ML_PACKAGES_DIR = os.path.join(os.path.expanduser("~"), ".imageviewer", "ml_packages")
+if os.path.isdir(_ML_PACKAGES_DIR) and _ML_PACKAGES_DIR not in sys.path:
+    sys.path.insert(0, _ML_PACKAGES_DIR)
 
 import numpy as np
 from PyQt6.QtCore import Qt, QEvent, QPoint, QPointF, QTimer, QThread, pyqtSignal, QUrl, QMimeData, QDir
@@ -57,7 +64,7 @@ class NumpyEncoder(json.JSONEncoder):
             return [obj.x(), obj.y()]
         return super(NumpyEncoder, self).default(obj)
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 class CheckForUpdates(QThread):
     update_available = pyqtSignal(str, str) # version, url
@@ -100,6 +107,51 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
+def _find_python_with_pip():
+    """Return a [python, '-m', 'pip'] command that works, or None."""
+    if platform.system() == "Darwin":
+        candidates = [
+            "/opt/homebrew/bin/python3.12",   # Homebrew Apple Silicon
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3.12",       # Homebrew Intel
+            "/usr/local/bin/python3",
+            "/usr/bin/python3",                # macOS system Python
+            "python3", "python",
+        ]
+    elif platform.system() == "Windows":
+        import winreg
+        candidates = ["python", "py", "python3"]
+        # Also probe the registry for installed Pythons
+        try:
+            for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                with winreg.OpenKey(root, r"SOFTWARE\Python\PythonCore") as k:
+                    i = 0
+                    while True:
+                        try:
+                            ver = winreg.EnumKey(k, i)
+                            with winreg.OpenKey(k, rf"{ver}\InstallPath") as ip:
+                                path = winreg.QueryValue(ip, None)
+                                candidates.insert(0, os.path.join(path, "python.exe"))
+                        except OSError:
+                            break
+                        i += 1
+        except Exception:
+            pass
+    else:
+        candidates = ["python3", "python"]
+
+    for py in candidates:
+        try:
+            r = subprocess.run(
+                [py, "-m", "pip", "--version"],
+                capture_output=True, timeout=10,
+            )
+            if r.returncode == 0:
+                return [py, "-m", "pip"]
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            continue
+    return None
+
 
 class DA3Worker(QThread):
     finished = pyqtSignal(str)
@@ -139,34 +191,109 @@ class DA3Worker(QThread):
     def cancel(self):
         self._is_cancelled = True
 
+    def _install_torch(self):
+        """pip-install torch/torchvision/timm into _ML_PACKAGES_DIR (first-time setup)."""
+        os.makedirs(_ML_PACKAGES_DIR, exist_ok=True)
+
+        pip = _find_python_with_pip()
+        if pip is None:
+            raise RuntimeError(
+                "PyTorch is not installed and no Python with pip was found.\n\n"
+                "Install Python 3 from https://python.org (or via Homebrew on macOS),\n"
+                "then retry depth generation.\n\n"
+                "Or install manually:\n"
+                f"  pip install torch torchvision timm --target \"{_ML_PACKAGES_DIR}\""
+            )
+
+        packages = ["torch", "torchvision", "timm"]
+        cmd = pip + ["install", "--target", _ML_PACKAGES_DIR] + packages
+
+        self.download_progress.emit("Downloading PyTorch (first-time setup, ~150 MB)…", 0.0)
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+        progress = 0.0
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            # Parse "X.X/Y.Y MB" style pip download progress
+            m = re.search(r'(\d+\.?\d*)/(\d+\.?\d*)\s*[MK]B', line)
+            if m:
+                try:
+                    progress = min(float(m.group(1)) / float(m.group(2)) * 80, 80.0)
+                except ZeroDivisionError:
+                    pass
+            elif "Installing collected" in line:
+                progress = 85.0
+            elif "Successfully installed" in line:
+                progress = 99.0
+            self.download_progress.emit(line, progress)
+
+        proc.wait()
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "Failed to install PyTorch.\n\n"
+                "Try installing manually:\n"
+                f"  pip install torch torchvision timm --target \"{_ML_PACKAGES_DIR}\""
+            )
+
+        # Inject the new packages into the live process path
+        if _ML_PACKAGES_DIR not in sys.path:
+            sys.path.insert(0, _ML_PACKAGES_DIR)
+
+        self.download_progress.emit("PyTorch installed successfully.", 100.0)
+
     def run(self):
         try:
-            # Windows DLL loading workarounds
+            # Ensure previously-installed ML packages are importable
+            if _ML_PACKAGES_DIR not in sys.path:
+                sys.path.insert(0, _ML_PACKAGES_DIR)
+
+            # Install torch if not present (first-time setup)
+            try:
+                import torch
+            except ImportError:
+                self._install_torch()
+                import torch  # retry after install
+
+            # Windows: register torch DLL directories (both bundle and ML packages dir)
             if platform.system() == "Windows":
-                import importlib
+                dll_dirs = []
+                # Bundled torch (if present)
                 try:
-                    # First attempt: add torch's DLL directory explicitly
                     import site
                     for sp in site.getsitepackages():
-                        torch_lib = os.path.join(sp, "torch", "lib")
-                        if os.path.isdir(torch_lib):
-                            os.add_dll_directory(torch_lib)
+                        p = os.path.join(sp, "torch", "lib")
+                        if os.path.isdir(p):
+                            dll_dirs.append(p)
                 except Exception:
                     pass
-                
+                # On-demand installed torch
+                p = os.path.join(_ML_PACKAGES_DIR, "torch", "lib")
+                if os.path.isdir(p):
+                    dll_dirs.append(p)
+                for d in dll_dirs:
+                    try:
+                        os.add_dll_directory(d)
+                    except Exception:
+                        pass
+
                 try:
-                    import torch
+                    import torch as _t  # noqa: already imported above; reload if needed
                 except OSError as dll_err:
                     if "1114" in str(dll_err):
-                        # Fallback: force CPU-only by hiding CUDA
                         os.environ["CUDA_VISIBLE_DEVICES"] = ""
                         os.environ["TORCH_CUDA_ARCH_LIST"] = ""
-                        # Retry import
-                        import torch
+                        import importlib
+                        importlib.invalidate_caches()
                     else:
                         raise
-            else:
-                import torch
             
             from depth_anything_3.api import DepthAnything3
             from PIL import Image
@@ -289,7 +416,21 @@ class DA3ModelDialog(QDialog):
         ])
         self.layout.addWidget(self.combo)
         
-        self.warning_label = QLabel("Note: First run will download the model weights (may take a while).")
+        torch_ready = False
+        try:
+            import torch  # noqa
+            torch_ready = True
+        except ImportError:
+            pass
+
+        if torch_ready:
+            note = "Note: First run will download the model weights (may take a while)."
+        else:
+            note = ("Note: PyTorch is not yet installed.\n"
+                    "First use will download PyTorch (~150 MB) and the model weights.\n"
+                    "Requires an internet connection and Python with pip.")
+
+        self.warning_label = QLabel(note)
         self.warning_label.setStyleSheet("color: gray; font-style: italic;")
         self.warning_label.setWordWrap(True)
         self.layout.addWidget(self.warning_label)
@@ -499,6 +640,9 @@ class ImageViewer(QMainWindow):
         policy.setHorizontalStretch(100)
         self.image_display_container.setSizePolicy(policy)
         image_display_layout = QVBoxLayout(self.image_display_container)
+        # Use the entire container for the image canvas — no chrome around it.
+        image_display_layout.setContentsMargins(0, 0, 0, 0)
+        image_display_layout.setSpacing(0)
         image_display_layout.addWidget(self.image_label)
         self.image_label.setSizePolicy(policy) # Also on the label itself
 
@@ -691,25 +835,37 @@ class ImageViewer(QMainWindow):
 
     def update_channel_options(self):
         """Populate channel selector based on current image channels."""
+        # Save per-label selection first, then fall back to current combo text
+        saved_selection = None
+        if self.active_label:
+            saved_selection = getattr(self.active_label, '_channel_selection', None)
+        if saved_selection is None:
+            saved_selection = self.channel_combo.currentText()
+
         self.channel_combo.blockSignals(True)
         self.channel_combo.clear()
-        
+
+        # Determine the full-channel source image (never sliced data).
+        # In montage mode, pristine_data is preserved across channel selections
+        # (set_data is called with is_pristine=False). In single-image mode, use
+        # the image handler which always holds the unsliced original.
         image = None
-        # Prefer active label data if available
-        if self.active_label and self.active_label.original_data is not None:
-             image = self.active_label.original_data
+        is_montage = (self.stacked_widget.currentWidget() == self.montage_widget)
+        if is_montage and self.active_label and self.active_label.pristine_data is not None:
+            image = self.active_label.pristine_data
         elif self.image_handler.original_image_data is not None:
-             image = self.image_handler.original_image_data
-        
+            image = self.image_handler.original_image_data
+        if image is None and self.active_label and self.active_label.original_data is not None:
+            image = self.active_label.original_data
+
         if image is None:
             self.channel_combo.addItem("Default")
             self.channel_combo.blockSignals(False)
             return
 
-        # Check if this is an NPZ file with multiple keys (FIXME: Need to track NPZ keys per label)
-        # For now, fallback to image handler if active label matches handler
+        # NPZ multi-key display (only relevant when handler is the source)
         is_handler_source = (image is self.image_handler.original_image_data)
-        
+
         if is_handler_source and hasattr(self.image_handler, 'npz_keys') and len(self.image_handler.npz_keys) > 1:
             from PyQt6.QtGui import QStandardItemModel, QStandardItem, QColor
             model = QStandardItemModel()
@@ -718,11 +874,10 @@ class ImageViewer(QMainWindow):
                 is_valid = self.image_handler.npz_keys[key]
                 if not is_valid:
                     item.setEnabled(False)
-                    item.setForeground(QColor('gray'))  # Gray out invalid keys
+                    item.setForeground(QColor('gray'))
                 model.appendRow(item)
             self.channel_combo.setModel(model)
-            
-            # Select current key
+
             if hasattr(self.image_handler, 'current_npz_key'):
                 try:
                     index = list(self.image_handler.npz_keys.keys()).index(self.image_handler.current_npz_key)
@@ -730,23 +885,25 @@ class ImageViewer(QMainWindow):
                 except ValueError:
                     pass
         else:
-            # Standard channel options for regular images
+            # Standard channel options based on the original (unsliced) image shape
             if image.ndim == 2:
                 self.channel_combo.addItems(["Gray"])
             elif image.ndim == 3:
                 channels = image.shape[2]
                 if channels == 3:
-                    # Standard RGB
                     self.channel_combo.addItems(["RGB", "R", "G", "B", "RG"])
                 elif channels == 4:
-                    # RGBA
                     self.channel_combo.addItems(["RGBA", "RGB", "RG", "R", "G", "B", "A"])
                 elif channels == 2:
-                    # RG
                     self.channel_combo.addItems(["RG", "R", "G"])
                 else:
                     self.channel_combo.addItem(f"{channels} Channels")
-        
+
+            # Restore saved selection if still valid for this image's channel set
+            index = self.channel_combo.findText(saved_selection)
+            if index >= 0:
+                self.channel_combo.setCurrentIndex(index)
+
         self.channel_combo.blockSignals(False)
 
     def apply_channel_selection(self, image_data):
@@ -812,9 +969,13 @@ class ImageViewer(QMainWindow):
         
         if data is None:
             return
-        
+
         # 2. Apply Channel Selection
         sliced_data = self.apply_channel_selection(data)
+
+        # Remember this label's channel selection so update_channel_options can restore it
+        if self.active_label:
+            self.active_label._channel_selection = self.channel_combo.currentText()
         
         # Enable 3D View for single channel images or RGB images with a depth companion
         is_single_channel = (sliced_data.ndim == 2) or (sliced_data.ndim == 3 and sliced_data.shape[2] == 1)
@@ -1059,6 +1220,22 @@ class ImageViewer(QMainWindow):
         self.histogram_window.hide()
         self.histogram_window.use_visible_checkbox.toggled.connect(lambda: self.update_histogram_data(new_image=False))
 
+        # Debounce the histogram recompute so it doesn't run on every pan pixel.
+        # The active label's view_changed signal restarts this timer; it then
+        # calls update_histogram_data once the user pauses for ~200ms.
+        self._histogram_debounce_timer = QTimer(self)
+        self._histogram_debounce_timer.setSingleShot(True)
+        self._histogram_debounce_timer.setInterval(200)
+        self._histogram_debounce_timer.timeout.connect(
+            lambda: self.update_histogram_data(new_image=False)
+        )
+
+    def _on_view_changed_debounced(self):
+        """Slot wired to active_label.view_changed. Restarts the histogram
+        debounce timer rather than running an immediate (expensive) update."""
+        if self.histogram_window.isVisible():
+            self._histogram_debounce_timer.start()
+
     def _create_thumbnail_pane(self):
         self.thumbnail_pane = ThumbnailPane(self)
         self.thumbnail_pane.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
@@ -1101,19 +1278,25 @@ class ImageViewer(QMainWindow):
         existing_states = {} # path -> state_dict
         for label in self.montage_labels:
             if hasattr(label, 'file_path') and label.file_path:
-                existing_states[label.file_path] = label.get_view_state()
+                state = label.get_view_state()
+                state['channel_selection'] = getattr(label, '_channel_selection', None)
+                existing_states[label.file_path] = state
 
         # Reset active_label BEFORE clearing layout to prevent accessing deleted objects
         self.active_label = None
-        
-        while self.montage_layout.count():
-            item = self.montage_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        
-        # Force immediate processing of delete events to prevent ghosting
-        QApplication.processEvents()
-        
+
+        # Suspend updates while we tear the layout down and rebuild it; this
+        # eliminates flicker and avoids re-entrant signal delivery from
+        # processEvents() in the middle of a half-built layout.
+        self.montage_widget.setUpdatesEnabled(False)
+        try:
+            while self.montage_layout.count():
+                item = self.montage_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+        finally:
+            self.montage_widget.setUpdatesEnabled(True)
+
         self.montage_labels.clear()
         
         # Clear overlays for files not in the new selection
@@ -1252,6 +1435,8 @@ class ImageViewer(QMainWindow):
                         'contrast_limits': state.get('contrast_limits')
                     }
                     image_label.set_view_state(filtered_state)
+                    if state.get('channel_selection'):
+                        image_label._channel_selection = state['channel_selection']
                     state_applied = True
                 
                 # 2. If not found, check other open windows
@@ -1311,8 +1496,10 @@ class ImageViewer(QMainWindow):
             self._set_active_montage_label(self.montage_labels[0])
 
         self.stacked_widget.setCurrentWidget(self.montage_widget)
-        # Synchronous update
-        self.montage_widget.repaint()
+        # Let Qt coalesce the paint with other pending events instead of a
+        # synchronous repaint (which can flicker when nested in selection
+        # handlers).
+        self.montage_widget.update()
         
         # Update thumbnail pane - ensure new images show up in gallery
         if not self._updating_from_thumbnail:
@@ -1385,7 +1572,7 @@ class ImageViewer(QMainWindow):
         self._update_overlay_labels()
 
         self.active_label.hover_moved.connect(self.update_status_bar)
-        self.active_label.view_changed.connect(self.update_histogram_data)
+        self.active_label.view_changed.connect(self._on_view_changed_debounced)
         self.histogram_window.region_changed.connect(self.set_contrast_limits)
 
         self.colormap_combo.setEnabled(True)

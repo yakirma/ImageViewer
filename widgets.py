@@ -59,8 +59,6 @@ class SharedViewState(QObject):
         super().__init__()
         self._zoom_multiplier = 1.0
         self._offset = QPointF()
-        self._zoom_multiplier = 1.0
-        self._offset = QPointF()
         self._crosshair_pos = None
         self.max_zoom_limit = 1000.0
         
@@ -111,7 +109,7 @@ class SharedViewState(QObject):
     def crosshair_pos(self, value):
         if self._crosshair_pos != value:
             self._crosshair_pos = value
-            self.state_changed.emit()
+            self.crosshair_changed.emit()
 
     def reset(self):
         self._zoom_multiplier = 1.0
@@ -646,10 +644,9 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self.zoom_out_interp = Qt.TransformationMode.SmoothTransformation
         self._pinch_start_scale_factor = None
 
-        # Active Indicator Line
-        self.indicator_line = QFrame(self)
-        self.indicator_line.setFixedHeight(3)
-        self.indicator_line.setStyleSheet("background-color: transparent;")
+        # The active-indicator line is now created externally by display_montage
+        # and assigned to self.indicator_line on demand. Single-view doesn't
+        # need an indicator (there's only one canvas).
 
         # Depth Map Indicator Button
         self.depth_btn = QPushButton("🗺️ 3D", self)
@@ -684,6 +681,34 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self._view_update_timer.setSingleShot(True)
         self._view_update_timer.setInterval(200) # 200ms debounce
         self._view_update_timer.timeout.connect(self.view_changed.emit)
+
+        # Single-view interaction tracking (mirrors SharedViewState._is_interacting)
+        # Used to drop smooth scaling during pan/zoom for snappier rendering.
+        self._single_is_interacting = False
+        self._single_interaction_timer = QTimer()
+        self._single_interaction_timer.setSingleShot(True)
+        self._single_interaction_timer.setInterval(180)
+        self._single_interaction_timer.timeout.connect(self._end_single_interaction)
+
+    def _begin_single_interaction(self):
+        """Mark the start of a user-driven pan/zoom in single-view mode.
+        Mirrors SharedViewState.begin_interaction so paintEvent can drop smooth
+        scaling while the user is actively interacting."""
+        if not self._single_is_interacting:
+            self._single_is_interacting = True
+        self._single_interaction_timer.start()
+
+    def _end_single_interaction(self):
+        """Called when the single-view interaction timer expires.
+        Triggers one final repaint at full quality."""
+        self._single_is_interacting = False
+        self.update()
+
+    def _is_user_interacting(self):
+        """True if either the shared-state or single-view interaction flag is set."""
+        if self.shared_state and self.shared_state._is_interacting:
+            return True
+        return self._single_is_interacting
 
     @property
     def zoom_scale(self):
@@ -901,8 +926,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         data = self.original_data
         if data is None: return
         processed_data = None
-        q_image = None
-        
+
         if self.colormap == "flow":
             # If data is 2-channel, convert to RGB using flow_to_color
             if data.ndim == 3 and data.shape[2] == 2:
@@ -916,19 +940,18 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                              max_flow = val
                      except:
                          pass
-                
+
                 try:
                     # Make sure data is contiguous to avoid potential C-API issues with views
                     if not data.flags['C_CONTIGUOUS']:
                         data = np.ascontiguousarray(data)
-                        
+
                     processed_data = flow_to_color(data, max_flow=max_flow)
-                    h, w, _ = processed_data.shape
-                    q_image = QImage(processed_data.tobytes(), w, h, 3 * w, QImage.Format.Format_RGB888)
+                    # QImage build deferred to the unified proxy/build section below.
                 except Exception as e:
                     print(f"Error in flow_to_color: {e}")
                     return
-            
+
         else:
             # Original logic for other colormaps
             # Determine mode: standard RGB or Colormapped (single channel)
@@ -993,32 +1016,10 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                         processed_data = np.zeros_like(data, dtype=np.uint8)
                 else:
                     processed_data = data.astype(np.uint8)
-                    # If float 0-1, this becomes 0 or 1.
-                    # We need checks for float -> uint8 conversion if limits not set?
-                    # Original code: `processed_data = data.astype(np.uint8)`
-                    # If data is float32 0-1, this truncates to 0/1. BAD.
-                    # BUT self.contrast_limits usually defaults to min/max of data?
-                    # If not, existing code was broken for floats without limits.
-                    # I will assume limits are set or user accepts it.
-                    # BUT specifically for floating point 0-1...
+                    # If data was float in [0, 1], rescale before truncation.
                     if data.dtype.kind == 'f' and data.max() <= 1.0:
                          processed_data = (data * 255).astype(np.uint8)
-
-                h, w, c_out = processed_data.shape
-                
-                # Ensure contiguous
-                if not processed_data.flags['C_CONTIGUOUS']:
-                    processed_data = np.ascontiguousarray(processed_data)
-
-                # Use RGBA8888 as native mapping for R,G,B,A data
-                fmt = QImage.Format.Format_RGB888 if c_out == 3 else QImage.Format.Format_RGBA8888
-
-                stride = processed_data.strides[0]
-                
-                # Keep reference to data to prevent garbage collection!
-                self._qimage_bytes = processed_data.tobytes()
-                
-                q_image = QImage(self._qimage_bytes, w, h, stride, fmt)
+                # QImage build deferred to the unified proxy/build section below.
 
             else:  # Grayscale / Colormapped
                 if is_rgb:
@@ -1070,9 +1071,8 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
 
                     colored_data = cm.get_cmap(self.colormap)(norm_data)
                 image_data_8bit = (colored_data[:, :, :3] * 255).astype(np.uint8)
-                processed_data = image_data_8bit # Fix: Update processed_data to hold the 3D RGB array
-                h, w, _ = image_data_8bit.shape
-                q_image = QImage(image_data_8bit.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+                processed_data = image_data_8bit # Update processed_data to hold the 3D RGB array
+                # QImage build deferred to the unified proxy/build section below.
             # End of else block for non-flow colormaps
 
         # Proxy Rendering Logic
@@ -1111,9 +1111,11 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             fmt = QImage.Format.Format_Grayscale8
             stride = w
 
-        # Keep reference to bytes to prevent crash
-        self._last_processed_bytes = processed_data.tobytes()
-        q_image = QImage(self._last_processed_bytes, w, h, stride, fmt).copy()
+        # Build the QImage once from the (possibly downsampled) processed_data.
+        # .copy() makes the QImage own its buffer, so the temporary bytes are
+        # safe to drop immediately afterwards.
+        _bytes = processed_data.tobytes()
+        q_image = QImage(_bytes, w, h, stride, fmt).copy()
         pixmap = QPixmap.fromImage(q_image)
         
         if is_new_image:
@@ -1163,10 +1165,10 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         super().resizeEvent(event)
         self.update_fit_scale()
         self._update_overlay_position()
-        if hasattr(self, 'indicator_line'):
-             self.indicator_line.setGeometry(0, self.height() - 3, self.width(), 3)
+        # indicator_line (when present) is laid out by the parent container in
+        # montage mode, so we no longer adjust its geometry here.
         if hasattr(self, 'depth_btn'):
-             self.depth_btn.setGeometry(10, 10, self.depth_btn.sizeHint().width(), self.depth_btn.sizeHint().height())
+            self.depth_btn.setGeometry(10, 10, self.depth_btn.sizeHint().width(), self.depth_btn.sizeHint().height())
 
     def set_overlay_text(self, text):
         self.overlay_label.setText(text)
@@ -1257,11 +1259,11 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
     def fit_to_view(self):
         if self.current_pixmap and self.size().width() > 0 and self.size().height() > 0:
             self.update_fit_scale()
-            self._pixmap_offset = QPointF()
 
             if self.shared_state:
                 self.shared_state.reset()
             else:
+                self._pixmap_offset = QPointF()
                 self._scale_factor = self._fit_scale
 
             self.update()
@@ -1326,8 +1328,6 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
 
         self.zoom_factor_changed.emit(self._get_effective_scale_factor())
         self.view_changed.emit()
-
-        self.view_changed.emit()
         self.update()
 
 
@@ -1376,20 +1376,23 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             else:
                 self._pixmap_offset *= zoom_ratio
             self._scale_factor = new_scale_factor
-            self.update()
+
+        # Always request a repaint after a successful zoom (shared and single).
+        self.update()
 
         self.zoom_factor_changed.emit(self._get_effective_scale_factor())
-        
+
         # Debounce the expensive view changed signal (histogram update)
         self._view_update_timer.start()
-        
+
         # Update overlay position (keep it floating on image)
         self._update_overlay_position()
 
     def wheelEvent(self, event):
         current_effective_scale = self._get_effective_scale_factor()
         if self.shared_state:
-             self.shared_state.begin_interaction()
+            self.shared_state.begin_interaction()
+        self._begin_single_interaction()
 
         if event.angleDelta().y() > 0:
             new_effective_scale = current_effective_scale * self.zoom_speed
@@ -1400,6 +1403,9 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
     def event(self, event):
         if event.type() == QEvent.Type.NativeGesture:
             if event.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:
+                if self.shared_state:
+                    self.shared_state.begin_interaction()
+                self._begin_single_interaction()
                 value = event.value()
                 current_scale = self._get_effective_scale_factor()
                 new_scale_factor = current_scale * (1.0 + value)
@@ -1412,7 +1418,13 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             if pinch:
                 if pinch.state() == Qt.GestureState.GestureStarted:
                     self._pinch_start_scale_factor = self._get_effective_scale_factor()
+                    if self.shared_state:
+                        self.shared_state.begin_interaction()
+                    self._begin_single_interaction()
                 elif pinch.state() == Qt.GestureState.GestureUpdated:
+                    if self.shared_state:
+                        self.shared_state.begin_interaction()
+                    self._begin_single_interaction()
                     new_scale_factor = self._pinch_start_scale_factor * pinch.totalScaleFactor()
                     center_point = pinch.hotSpot()
                     # Cast to QPointF explicitly
@@ -1446,7 +1458,13 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         super().enterEvent(event)
 
     def mouseMoveEvent(self, event):
-        if not self.drag_start_position.isNull() and self.current_pixmap is not None:
+        is_dragging = not self.drag_start_position.isNull() and self.current_pixmap is not None
+        if is_dragging:
+            # Mark as actively interacting so paintEvent skips smooth scaling.
+            if self.shared_state:
+                self.shared_state.begin_interaction()
+            self._begin_single_interaction()
+
             delta = event.pos() - self.drag_start_position
             if self.shared_state:
                 # Use explicit addition/assignment to ensure property setter is triggered correctly
@@ -1456,16 +1474,18 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                 self._pixmap_offset += QPointF(delta)
                 self.update()
             self.drag_start_position = event.pos()
-            
+
             # Update overlay position (keep it floating on image)
             self._update_overlay_position()
-            
-            # self.view_changed.emit() # Removed for performance, moved to release
 
+            # view_changed.emit() intentionally not called here — the histogram
+            # recompute is debounced at the ImageViewer level and a final emit
+            # happens on mouseReleaseEvent.
+            return
+
+        # Not dragging — track hover for crosshair / status bar.
         if self.original_data is not None and self.current_pixmap is not None:
-             # Even if not active/focused, if we are in shared state we should update.
-             # We want "seamless" movement.
-             self._update_crosshair_from_pos(event.pos())
+            self._update_crosshair_from_pos(event.pos())
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -1526,10 +1546,10 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         painter.translate(-self.current_pixmap.width() / 2, -self.current_pixmap.height() / 2)
         
         # Determine if we should use Smooth Transformation
-        # Use Fast if interacting (scrolling/dragging) to improve performance, especially in Montage
-        use_smooth = True
-        if self.shared_state and self.shared_state._is_interacting:
-            use_smooth = False
+        # Use Fast if interacting (scrolling/dragging) to improve performance,
+        # in both single-view and montage. One final smooth repaint runs after
+        # the interaction debounce timer fires.
+        use_smooth = not self._is_user_interacting()
         
         scale_factor_for_hint = self._get_effective_scale_factor()
         
@@ -1540,7 +1560,8 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         else: # scale == 1.0 or not use_smooth for zoom out
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.zoom_out_interp == Qt.TransformationMode.SmoothTransformation and use_smooth)
 
-        # Ensure Antialiasing is OFF for pixel-sharp rendering
+        # Antialiasing OFF for the pixmap draw (pixel-sharp rendering of the image data).
+        # Re-enabled later for crosshair/tooltip/colorbar UI elements.
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
         # Draw Image (Thumbnail Optimized)
@@ -1606,8 +1627,12 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             painter.restore()
 
         painter.restore()
-        
-        # Crosshair drawing continues below...
+
+        # Crosshair / tooltip / colorbar drawing — re-enable antialiasing so
+        # rounded rects and text are smooth (image data above is intentionally
+        # drawn without AA for pixel-sharp inspection).
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
         # Calculate target rect for Crosshair (Widget Coordinates)
         w = self.current_pixmap.width() * draw_scale
@@ -1680,8 +1705,8 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             self.draw_colorbar(painter)
 
     def draw_colorbar(self, painter):
-        if not self.original_data is not None:
-             return
+        if self.original_data is None:
+            return
 
         # Dimensions regarding widget
         bar_w = 20

@@ -27,42 +27,15 @@ fi
 echo "Packaging for $OS_TYPE..."
 
 if [ "$OS_TYPE" == "Mac" ]; then
-    # MacOS Packaging (.dmg)
-    DMG_NAME="${APP_NAME}_Installer.dmg"
-    APP_PATH="dist/${APP_NAME}.app"
-    TMP_DIR="dist/dmg_root"
-
-    # Clean up
-    rm -rf "$TMP_DIR"
-    rm -f "dist/$DMG_NAME"
-
-    mkdir -p "$TMP_DIR"
-    
-    if [ ! -d "$APP_PATH" ]; then
-        echo "Error: $APP_PATH not found."
-        exit 1
-    fi
-
-    echo "Copying app bundle..."
-    cp -a "$APP_PATH" "$TMP_DIR/"
-    
-    echo "Creating /Applications link..."
-    ln -s /Applications "$TMP_DIR/Applications"
-
-    echo "Creating DMG..."
-    hdiutil create -volname "$APP_NAME" -srcfolder "$TMP_DIR" -ov -format UDZO "dist/$DMG_NAME"
-    
-    # Cleanup temp
-    rm -rf "$TMP_DIR"
-    
-    echo "Packaging Complete: dist/$DMG_NAME"
+    # macOS packaging is handled inside build.py (calls hdiutil).
+    echo "Packaging Complete: dist/${APP_NAME}_Installer.dmg"
 
 elif [ "$OS_TYPE" == "Linux" ]; then
     # Linux Packaging (.deb)
     DEB_NAME="${APP_NAME}_Linux.deb"
     BUILD_DIR="dist/${APP_NAME}"
     PKG_ROOT="dist/package_root"
-    VERSION="1.0.0"
+    VERSION="1.1.1"
     ARCH="amd64" # Assuming amd64 for now, could detect with uname -m
     
     if [ ! -d "$BUILD_DIR" ]; then

@@ -1,28 +1,42 @@
 ; ImageViewer Installer Script
-; Requires NSIS (Nullsoft Scriptable Install System)
+; Requires NSIS (Nullsoft Scriptable Install System) with MUI2
 
-!define APP_NAME "ImageViewer"
-!define COMPANY "Yakirma"
-!define VERSION "1.1.0"
+!define APP_NAME  "ImageViewer"
+!define COMPANY   "Yakirma"
+!define VERSION   "1.1.1"
+!define REGKEY    "Software\${APP_NAME}"
+!define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
 
-Name "${APP_NAME}"
+Name "${APP_NAME} ${VERSION}"
 OutFile "dist\${APP_NAME}_Setup.exe"
 InstallDir "$PROGRAMFILES64\${APP_NAME}"
-InstallDirRegKey HKLM "Software\${APP_NAME}" "Install_Dir"
+InstallDirRegKey HKLM "${REGKEY}" "Install_Dir"
 RequestExecutionLevel admin
 
-; UI settings
+; ── Installer metadata (shown in file properties) ────────────────────────────
+VIProductVersion "${VERSION}.0"
+VIAddVersionKey "ProductName"     "${APP_NAME}"
+VIAddVersionKey "CompanyName"     "${COMPANY}"
+VIAddVersionKey "FileVersion"     "${VERSION}"
+VIAddVersionKey "ProductVersion"  "${VERSION}"
+VIAddVersionKey "FileDescription" "ImageViewer Installer"
+VIAddVersionKey "LegalCopyright"  "© 2025 ${COMPANY}"
+
+; ── UI ───────────────────────────────────────────────────────────────────────
 !include "MUI2.nsh"
 !define MUI_ABORTWARNING
-!define MUI_ICON "assets\icons\icon.ico" 
+!define MUI_ICON   "assets\icons\icon.ico"
 !define MUI_UNICON "assets\icons\icon.ico"
 
-; Pages
+; Install pages
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
+!define MUI_PAGE_CUSTOMFUNCTION_PRE  ComponentsPagePre
+!insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
 
+; Uninstall pages
 !insertmacro MUI_UNPAGE_WELCOME
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
@@ -30,109 +44,143 @@ RequestExecutionLevel admin
 
 !insertmacro MUI_LANGUAGE "English"
 
-Section "ImageViewer (required)"
-  SectionIn RO
-  
-  SetOutPath "$INSTDIR"
-  
-  ; Write reg keys
-  WriteRegStr HKLM "SOFTWARE\${APP_NAME}" "Install_Dir" "$INSTDIR"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "DisplayName" "${APP_NAME}"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "UninstallString" '"$INSTDIR\uninstall.exe"'
-  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "NoModify" 1
-  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "NoRepair" 1
+Function ComponentsPagePre
+  ; Nothing — placeholder so the define above compiles.
+FunctionEnd
 
-  ; Files
+; ── Sections ─────────────────────────────────────────────────────────────────
+
+Section "ImageViewer (required)" SecMain
+  SectionIn RO
+  SetOutPath "$INSTDIR"
+
+  ; Registry: install path + Add/Remove Programs entry
+  WriteRegStr   HKLM "${REGKEY}" "Install_Dir" "$INSTDIR"
+  WriteRegStr   HKLM "${UNINST_KEY}" "DisplayName"    "${APP_NAME}"
+  WriteRegStr   HKLM "${UNINST_KEY}" "DisplayVersion"  "${VERSION}"
+  WriteRegStr   HKLM "${UNINST_KEY}" "Publisher"       "${COMPANY}"
+  WriteRegStr   HKLM "${UNINST_KEY}" "DisplayIcon"     "$INSTDIR\ImageViewer.exe,0"
+  WriteRegStr   HKLM "${UNINST_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
+  WriteRegDWORD HKLM "${UNINST_KEY}" "NoModify" 1
+  WriteRegDWORD HKLM "${UNINST_KEY}" "NoRepair"  1
+
+  ; Copy application files
   File /r "dist\ImageViewer\*"
 
-  ; --- VC++ Redistributable Check ---
+  ; ── Visual C++ Redistributable ───────────────────────────────────────────
   DetailPrint "Checking for Visual C++ 2015-2022 Redistributable..."
   ReadRegDWORD $0 HKLM "SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" "Installed"
   IntCmp $0 1 redist_done
-  
-  ; Not installed or older version - check if redist is bundled
+
   IfFileExists "$EXEDIR\vc_redist.x64.exe" 0 redist_missing
     DetailPrint "Installing Visual C++ 2015-2022 Redistributable..."
     ExecWait '"$EXEDIR\vc_redist.x64.exe" /install /quiet /norestart' $1
-    DetailPrint "Redistributable install exited with code $1"
+    DetailPrint "Redistributable installer exited with code $1"
     Goto redist_done
 
   redist_missing:
-    DetailPrint "Visual C++ 2015-2022 Redistributable not found in installer directory."
-    ; We could potentially download it here if we had a plugin, but for now we rely on bundling or the app-level button.
+    DetailPrint "vc_redist.x64.exe not found next to installer — skipping."
 
   redist_done:
 
   ; Uninstaller
-  WriteUninstaller "uninstall.exe"
-  
-  ; Shortcuts
+  WriteUninstaller "$INSTDIR\uninstall.exe"
+
+  ; Start Menu shortcut
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"
-  CreateShortCut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\ImageViewer.exe"
-  CreateShortCut "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk" "$INSTDIR\uninstall.exe"
+  CreateShortCut  "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" \
+                  "$INSTDIR\ImageViewer.exe" "" "$INSTDIR\ImageViewer.exe" 0
+  CreateShortCut  "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk" \
+                  "$INSTDIR\uninstall.exe"   "" "$INSTDIR\uninstall.exe"   0
 
-  ; File Associations Strategy: 
-  ; 1. Register a ProgID (ImageViewer.File)
-  ; 2. Register under HKCR\Applications\ImageViewer.exe (for Open With list)
-  
-  ; --- Register Application for "Open With" list ---
+  ; ── File Associations ───────────────────────────────────────────────────
   WriteRegStr HKCR "Applications\ImageViewer.exe" "" ""
-  WriteRegStr HKCR "Applications\ImageViewer.exe" "FriendlyAppName" "Image Viewer"
+  WriteRegStr HKCR "Applications\ImageViewer.exe" "FriendlyAppName"  "ImageViewer"
   WriteRegStr HKCR "Applications\ImageViewer.exe" "MultiSelectModel" "Player"
-  WriteRegStr HKCR "Applications\ImageViewer.exe\shell\open\command" "" '"$INSTDIR\ImageViewer.exe" "%1"'
-  
-  ; Supported Types
-  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".png" ""
-  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".jpg" ""
-  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".jpeg" ""
-  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".tif" ""
-  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".tiff" ""
-  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".raw" ""
-  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".bin" ""
-  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".u16" ""
-  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".f32" ""
-  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".mp4" ""
-  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".avi" ""
-  WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".mov" ""
+  WriteRegStr HKCR "Applications\ImageViewer.exe\shell\open\command" "" \
+                   '"$INSTDIR\ImageViewer.exe" "%1"'
 
-  ; --- Register Extensions (ProgID) ---
+  ; Supported extensions in Open-With list
+  !macro RegSupportedType EXT
+    WriteRegStr HKCR "Applications\ImageViewer.exe\SupportedTypes" ".${EXT}" ""
+  !macroend
+  !insertmacro RegSupportedType "png"
+  !insertmacro RegSupportedType "jpg"
+  !insertmacro RegSupportedType "jpeg"
+  !insertmacro RegSupportedType "tif"
+  !insertmacro RegSupportedType "tiff"
+  !insertmacro RegSupportedType "raw"
+  !insertmacro RegSupportedType "bin"
+  !insertmacro RegSupportedType "u16"
+  !insertmacro RegSupportedType "f32"
+  !insertmacro RegSupportedType "flo"
+  !insertmacro RegSupportedType "npz"
+  !insertmacro RegSupportedType "npy"
+  !insertmacro RegSupportedType "gif"
+  !insertmacro RegSupportedType "webp"
+  !insertmacro RegSupportedType "heic"
+  !insertmacro RegSupportedType "heif"
+  !insertmacro RegSupportedType "mp4"
+  !insertmacro RegSupportedType "avi"
+  !insertmacro RegSupportedType "mov"
+  !insertmacro RegSupportedType "mkv"
+  !insertmacro RegSupportedType "webm"
+
   !macro RegisterExtension EXT DESC
-    ; Create ProgID
-    WriteRegStr HKCR "ImageViewer.${EXT}" "" "${DESC}"
-    WriteRegStr HKCR "ImageViewer.${EXT}\DefaultIcon" "" "$INSTDIR\ImageViewer.exe,0"
-    WriteRegStr HKCR "ImageViewer.${EXT}\shell" "" "open"
-    WriteRegStr HKCR "ImageViewer.${EXT}\shell\open\command" "" '"$INSTDIR\ImageViewer.exe" "%1"'
-    
-    ; Link Extension to ProgID (OpenWithProgIDs is safer than default value)
-    WriteRegStr HKCR ".${EXT}\OpenWithProgIDs" "ImageViewer.${EXT}" ""
+    WriteRegStr HKCR "ImageViewer.${EXT}" ""                            "${DESC}"
+    WriteRegStr HKCR "ImageViewer.${EXT}\DefaultIcon"                   "" "$INSTDIR\ImageViewer.exe,0"
+    WriteRegStr HKCR "ImageViewer.${EXT}\shell"                         "" "open"
+    WriteRegStr HKCR "ImageViewer.${EXT}\shell\open\command"            "" '"$INSTDIR\ImageViewer.exe" "%1"'
+    WriteRegStr HKCR ".${EXT}\OpenWithProgIDs" "ImageViewer.${EXT}"     ""
   !macroend
 
-  !insertmacro RegisterExtension "png" "PNG Image"
-  !insertmacro RegisterExtension "jpg" "JPEG Image"
+  !insertmacro RegisterExtension "png"  "PNG Image"
+  !insertmacro RegisterExtension "jpg"  "JPEG Image"
   !insertmacro RegisterExtension "jpeg" "JPEG Image"
-  !insertmacro RegisterExtension "tif" "TIFF Image"
+  !insertmacro RegisterExtension "tif"  "TIFF Image"
   !insertmacro RegisterExtension "tiff" "TIFF Image"
-  !insertmacro RegisterExtension "raw" "Raw Image Data"
-  !insertmacro RegisterExtension "bin" "Binary Image Data"
-  !insertmacro RegisterExtension "u16" "16-bit Unsigned Image"
-  !insertmacro RegisterExtension "f32" "32-bit Float Image"
-  !insertmacro RegisterExtension "mp4" "MPEG-4 Video"
-  !insertmacro RegisterExtension "avi" "AVI Video"
-  !insertmacro RegisterExtension "mov" "QuickTime Video"
-  
-  ; Notify Shell to refresh icons
+  !insertmacro RegisterExtension "raw"  "Raw Image Data"
+  !insertmacro RegisterExtension "bin"  "Binary Image Data"
+  !insertmacro RegisterExtension "u16"  "16-bit Unsigned Image"
+  !insertmacro RegisterExtension "f32"  "32-bit Float Image"
+  !insertmacro RegisterExtension "flo"  "Optical Flow File"
+  !insertmacro RegisterExtension "npz"  "NumPy Archive"
+  !insertmacro RegisterExtension "npy"  "NumPy Array"
+  !insertmacro RegisterExtension "gif"  "GIF Image"
+  !insertmacro RegisterExtension "webp" "WebP Image"
+  !insertmacro RegisterExtension "heic" "HEIC Image"
+  !insertmacro RegisterExtension "heif" "HEIF Image"
+  !insertmacro RegisterExtension "mp4"  "MPEG-4 Video"
+  !insertmacro RegisterExtension "avi"  "AVI Video"
+  !insertmacro RegisterExtension "mov"  "QuickTime Video"
+  !insertmacro RegisterExtension "mkv"  "Matroska Video"
+  !insertmacro RegisterExtension "webm" "WebM Video"
+
+  ; Notify shell to refresh icons
   System::Call 'shell32::SHChangeNotify(i 0x8000000, i 0, i 0, i 0)'
 
 SectionEnd
 
+Section "Desktop Shortcut" SecDesktop
+  CreateShortCut "$DESKTOP\${APP_NAME}.lnk" \
+                 "$INSTDIR\ImageViewer.exe" "" "$INSTDIR\ImageViewer.exe" 0
+SectionEnd
+
+; ── Section descriptions (shown in components page) ──────────────────────────
+!insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecMain}    "Core application files (required)."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "Create a shortcut on the Desktop."
+!insertmacro MUI_FUNCTION_DESCRIPTION_END
+
+; ── Uninstaller ──────────────────────────────────────────────────────────────
 Section "Uninstall"
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
-  DeleteRegKey HKLM "SOFTWARE\${APP_NAME}"
+  ; Registry cleanup
+  DeleteRegKey HKLM "${UNINST_KEY}"
+  DeleteRegKey HKLM "${REGKEY}"
   DeleteRegKey HKCR "Applications\ImageViewer.exe"
 
-  ; Remove File Associations
   !macro UnregisterExtension EXT
-    DeleteRegKey HKCR "ImageViewer.${EXT}"
+    DeleteRegKey  HKCR "ImageViewer.${EXT}"
     DeleteRegValue HKCR ".${EXT}\OpenWithProgIDs" "ImageViewer.${EXT}"
   !macroend
 
@@ -145,12 +193,28 @@ Section "Uninstall"
   !insertmacro UnregisterExtension "bin"
   !insertmacro UnregisterExtension "u16"
   !insertmacro UnregisterExtension "f32"
+  !insertmacro UnregisterExtension "flo"
+  !insertmacro UnregisterExtension "npz"
+  !insertmacro UnregisterExtension "npy"
+  !insertmacro UnregisterExtension "gif"
+  !insertmacro UnregisterExtension "webp"
+  !insertmacro UnregisterExtension "heic"
+  !insertmacro UnregisterExtension "heif"
   !insertmacro UnregisterExtension "mp4"
   !insertmacro UnregisterExtension "avi"
   !insertmacro UnregisterExtension "mov"
-  
+  !insertmacro UnregisterExtension "mkv"
+  !insertmacro UnregisterExtension "webm"
+
   System::Call 'shell32::SHChangeNotify(i 0x8000000, i 0, i 0, i 0)'
 
-  RMDir /r "$SMPROGRAMS\${APP_NAME}"
+  ; Shortcuts
+  Delete "$DESKTOP\${APP_NAME}.lnk"
+  Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk"
+  Delete "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk"
+  RMDir  "$SMPROGRAMS\${APP_NAME}"
+
+  ; Application files
   RMDir /r "$INSTDIR"
+
 SectionEnd
