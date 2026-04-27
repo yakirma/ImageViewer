@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ImageViewer — Raw sensor data, optical flow, and AI depth maps in one viewer</title>
+<meta name="description" content="A cross-platform desktop image viewer for raw camera dumps, optical-flow fields, scientific arrays, and AI-generated depth maps. PyQt6, MIT-licensed." />
+<meta property="og:title" content="ImageViewer" />
+<meta property="og:description" content="Open raw sensor dumps, optical flow, and AI depth maps without scripting." />
+<meta property="og:image" content="assets/screenshot.gif" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary_large_image" />
+<link rel="icon" type="image/png" href="assets/app_icon.png" />
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-hover: #79b8ff;
+    --code: #f0883e;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-hover); text-decoration: underline; }
+
+  .container {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 0 24px;
+  }
+
+  /* Hero */
+  header {
+    padding: 64px 0 40px;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+  }
+  header img.icon {
+    width: 96px;
+    height: 96px;
+    border-radius: 22px;
+    margin-bottom: 16px;
+    box-shadow: 0 8px 32px rgba(88, 166, 255, 0.12);
+  }
+  h1 {
+    font-size: 2.6rem;
+    margin: 0 0 8px;
+    letter-spacing: -0.02em;
+  }
+  .tagline {
+    font-size: 1.15rem;
+    color: var(--muted);
+    max-width: 640px;
+    margin: 0 auto 28px;
+  }
+  .ctas {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+  }
+  .btn {
+    display: inline-block;
+    padding: 12px 22px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    transition: transform 0.08s ease, background 0.15s ease, border-color 0.15s ease;
+  }
+  .btn:hover {
+    text-decoration: none;
+    border-color: var(--accent);
+    transform: translateY(-1px);
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: #0d1117;
+    border-color: var(--accent);
+  }
+  .btn-primary:hover {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+    color: #0d1117;
+  }
+
+  /* Demo */
+  .demo {
+    padding: 40px 0;
+  }
+  .demo img {
+    display: block;
+    width: 100%;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4);
+  }
+  .demo-secondary {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-top: 16px;
+  }
+  .demo-secondary img {
+    width: 100%;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+
+  /* Sections */
+  section {
+    padding: 48px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.6rem;
+    margin: 0 0 24px;
+    letter-spacing: -0.01em;
+  }
+  .lead {
+    color: var(--muted);
+    font-size: 1.05rem;
+    margin-bottom: 28px;
+    max-width: 720px;
+  }
+
+  /* Feature grid */
+  .features {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+  }
+  .feature {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 22px 24px;
+  }
+  .feature h3 {
+    font-size: 1.05rem;
+    margin: 0 0 8px;
+    color: var(--text);
+  }
+  .feature p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.95rem;
+  }
+  .feature .tag {
+    display: inline-block;
+    font-size: 0.72rem;
+    background: rgba(88, 166, 255, 0.12);
+    color: var(--accent);
+    padding: 2px 8px;
+    border-radius: 999px;
+    margin-bottom: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  /* Format table */
+  table.formats {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    font-size: 0.92rem;
+  }
+  table.formats th, table.formats td {
+    padding: 12px 18px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  table.formats tr:last-child td { border-bottom: none; }
+  table.formats th {
+    background: var(--panel-2);
+    font-weight: 600;
+    color: var(--muted);
+    font-size: 0.78rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, monospace;
+    font-size: 0.88em;
+    color: var(--code);
+    background: rgba(240, 136, 62, 0.08);
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+
+  /* Final CTA */
+  .final-cta {
+    text-align: center;
+    padding: 56px 0;
+  }
+  .final-cta h2 {
+    margin-bottom: 12px;
+  }
+  .final-cta p {
+    color: var(--muted);
+    margin-bottom: 28px;
+  }
+
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 32px 0;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+
+  @media (max-width: 720px) {
+    h1 { font-size: 2rem; }
+    .features { grid-template-columns: 1fr; }
+    .demo-secondary { grid-template-columns: 1fr; }
+    section { padding: 36px 0; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="container">
+    <img class="icon" src="assets/app_icon.png" alt="ImageViewer icon" />
+    <h1>ImageViewer</h1>
+    <p class="tagline">
+      A cross-platform desktop viewer for raw camera dumps, optical-flow fields,
+      scientific arrays, and AI-generated depth maps — without scripting.
+    </p>
+    <div class="ctas">
+      <a class="btn btn-primary" href="https://github.com/yakirma/ImageViewer/releases/latest">Download</a>
+      <a class="btn" href="https://github.com/yakirma/ImageViewer">View on GitHub</a>
+    </div>
+  </div>
+</header>
+
+<div class="demo">
+  <div class="container">
+    <img src="assets/screenshot.gif" alt="ImageViewer interface demo" loading="lazy" />
+    <div class="demo-secondary">
+      <img src="assets/video_demo.gif" alt="Video playback demo" loading="lazy" />
+      <img src="assets/3d_demo.gif" alt="3D point cloud demo" loading="lazy" />
+    </div>
+  </div>
+</div>
+
+<section>
+  <div class="container">
+    <h2>Built for image data that other viewers can't open</h2>
+    <p class="lead">
+      Most desktop viewers stop at PNG, JPEG, and TIFF. ImageViewer treats raw
+      sensor dumps, optical-flow fields, NumPy archives, and AI depth maps as
+      first-class citizens — with live histograms, math transforms, and 3D
+      visualization on top.
+    </p>
+
+    <div class="features">
+
+      <div class="feature">
+        <span class="tag">Raw Support</span>
+        <h3>Open raw sensor dumps directly</h3>
+        <p>
+          <code>.raw</code>, <code>.f32</code>, <code>.uint16</code>,
+          <code>.u10</code>/<code>.u12</code>/<code>.u14</code>,
+          <code>.yuv</code>, <code>.nv12</code>, and more. Resolution and dtype
+          are inferred or inherited between similar files.
+        </p>
+      </div>
+
+      <div class="feature">
+        <span class="tag">AI Depth</span>
+        <h3>One-click depth maps</h3>
+        <p>
+          Generate per-pixel depth from any image or video using
+          <a href="https://github.com/ByteDance-Seed/depth-anything-3">Depth Anything 3</a>.
+          Choose from four model sizes; results save next to the source.
+        </p>
+      </div>
+
+      <div class="feature">
+        <span class="tag">Optical Flow</span>
+        <h3>Native <code>.flo</code> visualization</h3>
+        <p>
+          2-channel flow fields render with color-coded direction and
+          histogram-driven contrast — surface subtle motion without writing a
+          colormap script.
+        </p>
+      </div>
+
+      <div class="feature">
+        <span class="tag">3D View</span>
+        <h3>Height-map → point cloud</h3>
+        <p>
+          OpenGL-backed 3D surface view of any single-channel image. Rotate, pan,
+          and zoom; updates live as you apply math transforms.
+        </p>
+      </div>
+
+      <div class="feature">
+        <span class="tag">Analysis</span>
+        <h3>Live histogram + NumPy transforms</h3>
+        <p>
+          Drag-to-stretch contrast, percentile presets, and a math pane that
+          accepts NumPy expressions like <code>np.log(x)</code> or
+          <code>x ** 0.5</code>.
+        </p>
+      </div>
+
+      <div class="feature">
+        <span class="tag">Multi-window</span>
+        <h3>Synchronized montage</h3>
+        <p>
+          Open any number of windows, pick which images to compare, and zoom/pan
+          them in lockstep. Crosshair shows per-image pixel values across all of
+          them.
+        </p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <h2>Supported formats</h2>
+    <table class="formats">
+      <thead>
+        <tr><th>Category</th><th>Extensions</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Standard images</td>
+          <td><code>.png</code> <code>.jpg</code> <code>.jpeg</code> <code>.bmp</code> <code>.tiff</code> <code>.tif</code> <code>.gif</code> <code>.webp</code> <code>.heic</code> <code>.heif</code></td>
+        </tr>
+        <tr>
+          <td>Raw sensor data</td>
+          <td><code>.raw</code> <code>.bin</code> <code>.dat</code> <code>.f32</code> <code>.f16</code> <code>.uint8</code> <code>.uint16</code> <code>.u10</code> <code>.u12</code> <code>.u14</code> <code>.yuv</code> <code>.nv12</code> <code>.nv21</code> <code>.rgb</code> <code>.rgba</code> <code>.bgr</code> <code>.bgra</code> <code>.yuyv</code> <code>.uyvy</code></td>
+        </tr>
+        <tr>
+          <td>Optical flow</td>
+          <td><code>.flo</code> (Middlebury 2-channel)</td>
+        </tr>
+        <tr>
+          <td>Video</td>
+          <td><code>.mp4</code> <code>.avi</code> <code>.mov</code> <code>.mkv</code> <code>.webm</code></td>
+        </tr>
+        <tr>
+          <td>NumPy archives</td>
+          <td><code>.npz</code> (multi-array, with key picker)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="final-cta">
+  <div class="container">
+    <h2>Free and open source</h2>
+    <p>MIT-licensed. Runs on macOS, Windows, and Linux.</p>
+    <div class="ctas">
+      <a class="btn btn-primary" href="https://github.com/yakirma/ImageViewer/releases/latest">Download the latest release</a>
+      <a class="btn" href="https://github.com/yakirma/ImageViewer">Star on GitHub</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    Built by <a href="https://github.com/yakirma">@yakirma</a> ·
+    <a href="https://github.com/yakirma/ImageViewer/blob/main/LICENSE">MIT License</a>
+  </div>
+</footer>
+
+</body>
+</html>
