@@ -88,7 +88,7 @@ a = Analysis(
         'sklearn', 'IPython', 'notebook', 'pandas', 'sympy',
         'triton',               # GPU kernel compiler — not available on macOS
         # ── Unused stdlib modules ───────────────────────────────────────────
-        'unittest', 'doctest', 'xmlrpc', 'ftplib',
+        'doctest', 'xmlrpc', 'ftplib',
         'email', 'html.server', 'http.server', 'imaplib', 'poplib', 'smtplib',
         'tkinter', 'turtle',
         'setuptools', 'pkg_resources',
