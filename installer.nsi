@@ -3,7 +3,7 @@
 
 !define APP_NAME  "ImageViewer"
 !define COMPANY   "Yakirma"
-!define VERSION   "1.1.1"
+!define VERSION   "1.1.2"
 !define REGKEY    "Software\${APP_NAME}"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
 
