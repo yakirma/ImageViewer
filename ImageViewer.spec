@@ -153,8 +153,8 @@ if IS_MACOS:
         info_plist={
             'CFBundleName': 'ImageViewer',
             'CFBundleDisplayName': 'ImageViewer',
-            'CFBundleShortVersionString': '1.1.2',
-            'CFBundleVersion': '1.1.2',
+            'CFBundleShortVersionString': '1.1.1',
+            'CFBundleVersion': '1.1.1',
             'NSHighResolutionCapable': 'True',
             'NSRequiresAquaSystemAppearance': 'False',  # Supports dark mode
             'CFBundleDocumentTypes': [
