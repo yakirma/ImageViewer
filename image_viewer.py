@@ -1906,6 +1906,10 @@ class ImageViewer(QMainWindow):
 
             transformed_data = self.image_handler.apply_math_transform(expression, context_dict=context)
             if self.active_label:
+                # The data scale changed, so any prior contrast window no longer
+                # maps to meaningful values. Drop it before set_data so the histogram
+                # re-fits to the new data range instead of showing the stale window.
+                self.active_label.contrast_limits = None
                 self.active_label.set_data(transformed_data, reset_view=False)
                 self.active_label.repaint()
             
@@ -1921,6 +1925,7 @@ class ImageViewer(QMainWindow):
     def restore_original_image(self):
         self.current_math_expression = None
         if self.active_label and self.active_label.pristine_data is not None:
+            self.active_label.contrast_limits = None
             self.active_label.set_data(self.active_label.pristine_data, reset_view=False)
             
             # Update 3D View if open
