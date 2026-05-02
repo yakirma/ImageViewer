@@ -2,13 +2,25 @@ import os
 import re
 import numpy as np
 from PIL import Image
-import cv2
 from utils import read_flow, flow_to_color
-try:
-    import pillow_heif
-    pillow_heif.register_heif_opener()
-except ImportError:
-    pass
+
+# cv2 and pillow_heif are imported lazily — they're heavy native libs only
+# needed when opening videos / HEIC files. Deferring saves ~80 ms in dev
+# and several seconds of perceived startup in the frozen bundle.
+
+_HEIF_REGISTERED = False
+
+def _ensure_heif_opener():
+    """Register pillow_heif's PIL plugin on first use. Safe to call repeatedly."""
+    global _HEIF_REGISTERED
+    if _HEIF_REGISTERED:
+        return
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except ImportError:
+        pass
+    _HEIF_REGISTERED = True
 
 
 class ImageHandler:
@@ -81,10 +93,11 @@ class ImageHandler:
         return True
 
     def _load_video(self, file_path):
+        import cv2
         self.video_cap = cv2.VideoCapture(file_path)
         if not self.video_cap.isOpened():
              raise Exception(f"Could not open video file: {file_path}")
-        
+
         self.is_video = True
         fps = self.video_cap.get(cv2.CAP_PROP_FPS)
         self.video_fps = fps if fps > 0 else 30.0
@@ -92,18 +105,19 @@ class ImageHandler:
         self.width = int(self.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.color_format = "RGB" # Videos opened as RGB via OpenCV usually
-        
-        
+
+
         # Load first frame
         self.seek_frame(0)
 
     def seek_frame(self, index):
         if not self.is_video or not self.video_cap: return False
-        
+        import cv2
+
         # Clamp
         if self.video_frame_count > 0:
             index = max(0, min(index, self.video_frame_count - 1))
-        
+
         self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, index)
         return self._update_from_current_frame(expected_index=index)
 
@@ -112,13 +126,14 @@ class ImageHandler:
         return self._update_from_current_frame()
 
     def _update_from_current_frame(self, expected_index=None):
+        import cv2
         ret, frame = self.video_cap.read()
         if ret:
              if expected_index is not None:
                  self.current_frame_index = expected_index
              else:
                  self.current_frame_index = int(self.video_cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
-             
+
              # Convert BGR to RGB
              self.original_image_data = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
              self.dtype = self.original_image_data.dtype
@@ -190,6 +205,8 @@ class ImageHandler:
         return True
 
     def _load_standard_image(self, file_name):
+        if file_name.lower().endswith((".heic", ".heif")):
+            _ensure_heif_opener()
         with Image.open(file_name) as img:
             if img.mode.startswith("I;16") or img.mode in ("I", "F"):
                 self.original_image_data = np.array(img)

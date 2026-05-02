@@ -40,17 +40,14 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QDialog,
 )
-import matplotlib.cm as cm
-
 from widgets import ZoomableDraggableLabel, InfoPane, MathTransformPane, ZoomSettingsDialog, HistogramWidget, \
     ThumbnailPane, SharedViewState, FileExplorerPane, PointCloudViewer
 from image_handler import ImageHandler
 import settings
 
-try:
-    import requests
-except ImportError:
-    requests = None
+# requests is imported lazily inside the network paths (update checker,
+# DA3 model download). It transitively pulls urllib3 + ssl on first import,
+# which adds ~10 ms in dev and a noticeable fraction of frozen-bundle startup.
 
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -70,7 +67,9 @@ class CheckForUpdates(QThread):
     update_available = pyqtSignal(str, str) # version, url
 
     def run(self):
-        if requests is None:
+        try:
+            import requests
+        except ImportError:
             return
 
         try:
@@ -539,8 +538,12 @@ class ImageViewer(QMainWindow):
 
         self.zoom_status_label = QLabel("Zoom: 100%")
         self.status_bar.addPermanentWidget(self.zoom_status_label)
-        
-        self._check_for_updates()
+
+        # Defer the network-bound update check until after the window paints.
+        # Starting it here would block on `import requests` (which transitively
+        # pulls urllib3 + _ssl) and the QThread setup before the user sees
+        # anything. 1.5 s gives the UI room to settle.
+        QTimer.singleShot(1500, self._check_for_updates)
 
     def _check_for_updates(self):
         self.update_checker = CheckForUpdates()

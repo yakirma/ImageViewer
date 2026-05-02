@@ -44,7 +44,10 @@ try:
 except ImportError:
     gl = None
 import os
-import matplotlib.cm as cm
+# matplotlib.cm is imported lazily inside the colormap-application paths.
+# The import pulls in matplotlib's font cache, pyparsing, and PIL on first
+# load — measurable startup cost (~50 ms in dev, multiple-second perceived
+# cost in the frozen bundle).
 from utils import flow_to_color
 from settings import load_folder_history, save_folder_history, load_filter_history, save_filter_history
 
@@ -1069,6 +1072,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                         # Final safety clamp
                         norm_data = np.nan_to_num(norm_data, nan=0.0, posinf=1.0, neginf=0.0)
 
+                    import matplotlib.cm as cm
                     colored_data = cm.get_cmap(self.colormap)(norm_data)
                 image_data_8bit = (colored_data[:, :, :3] * 255).astype(np.uint8)
                 processed_data = image_data_8bit # Update processed_data to hold the 3D RGB array
@@ -1736,6 +1740,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                  qn_gradient.setColorAt(1, QColor(255, 255, 255))
             else:
                  # Sample colormap at 0, 0.25, 0.5, 0.75, 1
+                 import matplotlib.cm as cm
                  cmap = cm.get_cmap(cmap_name)
                  for i in range(11):
                      pos = i / 10.0
@@ -3557,6 +3562,7 @@ class PointCloudViewer(QDialog):
             rgb_normals = (all_normals + 1.0) / 2.0
             all_colors = np.hstack([rgb_normals, np.ones((len(rgb_normals), 1))])
         else:
+            import matplotlib.cm as cm
             all_colors = cm.viridis(norm_z)
             
         # 3. Apply Validity Mask to filter out 0, NaN, Inf
