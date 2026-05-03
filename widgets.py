@@ -3397,7 +3397,7 @@ class PointCloudViewer(QDialog):
         self.view_widget = CustomGLViewWidget()
         self.view_widget.opts['distance'] = 200
         self.view_widget.opts['azimuth'] = -90
-        self.view_widget.opts['elevation'] = 30
+        self.view_widget.opts['elevation'] = 0
         self.layout.addWidget(self.view_widget)
         
         # Rotation Gizmo overlay (bottom-right corner)
@@ -3434,12 +3434,13 @@ class PointCloudViewer(QDialog):
         processed_data = None
         if rgb_data is not None:
             self.last_rgb_data = rgb_data
-            # Auto-switch to Image mode ONLY if we are currently in default 'viridis'
-            # and we have valid RGB data. This prevents aggressive switching back to Image
-            # if the user manually selected something else like 'Normals'.
-            if self.colormap_mode == "viridis" and self.colormap_combo.findText("Image") != -1:
-                 self.colormap_combo.setCurrentText("Image")
-                 self.colormap_mode = "image"
+        # Auto-switch to Image mode ONLY if we are currently in default 'viridis'.
+        # This prevents aggressive switching back to Image if the user manually
+        # selected something else like 'Normals'.
+        # For single-channel images without rgb_data, "Image" mode shows grayscale.
+        if self.colormap_mode == "viridis" and self.colormap_combo.findText("Image") != -1:
+             self.colormap_combo.setCurrentText("Image")
+             self.colormap_mode = "image"
         
         # Ensure single channel
         if data.ndim == 3:
@@ -3551,6 +3552,9 @@ class PointCloudViewer(QDialog):
             # Map to 0-1 and add alpha channel
             rgb_flat = rgb_resized.reshape(-1, 3) / 255.0
             all_colors = np.hstack([rgb_flat, np.ones((len(rgb_flat), 1))])
+        elif self.colormap_mode == "image" and self.last_rgb_data is None:
+            # Single-channel image without separate RGB: use actual gray levels
+            all_colors = np.stack([norm_z, norm_z, norm_z, np.ones_like(norm_z)], axis=1)
             
         elif self.colormap_mode == "gray":
             all_colors = np.stack([norm_z, norm_z, norm_z, np.ones_like(norm_z)], axis=1)
@@ -3709,9 +3713,8 @@ class PointCloudViewer(QDialog):
 
     def reset_view(self):
         if gl is None: return
-        # Reset to "Image POV": Top-down view looking at the XY plane (-90 az rotates "up" correctly usually)
-        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=30, azimuth=-90)
-        self.view_widget.setCameraPosition(distance=max(self.view_widget.opts['distance'], 200), elevation=30, azimuth=-90)
+        # Reset to "Image POV": looking along depth axis, image plane is face-on
+        self.view_widget.setCameraPosition(distance=200, elevation=0, azimuth=-90)
         
         # Reset Lighting
         self.light_x_slider.setValue(0)

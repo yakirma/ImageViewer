@@ -12,7 +12,9 @@ from datetime import datetime
 # depth-generation use so the installer stays small (~80-100 MB instead of ~250 MB).
 _ML_PACKAGES_DIR = os.path.join(os.path.expanduser("~"), ".imageviewer", "ml_packages")
 if os.path.isdir(_ML_PACKAGES_DIR) and _ML_PACKAGES_DIR not in sys.path:
-    sys.path.insert(0, _ML_PACKAGES_DIR)
+    # Append (not prepend) so that environment packages like numpy are not
+    # shadowed by potentially ABI-incompatible copies in ml_packages.
+    sys.path.append(_ML_PACKAGES_DIR)
 
 import numpy as np
 from PyQt6.QtCore import Qt, QEvent, QPoint, QPointF, QTimer, QThread, pyqtSignal, QUrl, QMimeData, QDir
@@ -61,7 +63,7 @@ class NumpyEncoder(json.JSONEncoder):
             return [obj.x(), obj.y()]
         return super(NumpyEncoder, self).default(obj)
 
-__version__ = "1.1.2"
+__version__ = "1.1.3"
 
 class CheckForUpdates(QThread):
     update_available = pyqtSignal(str, str) # version, url
@@ -107,20 +109,29 @@ def resource_path(relative_path):
 
 
 def _find_python_with_pip():
-    """Return a [python, '-m', 'pip'] command that works, or None."""
+    """Return a [python, '-m', 'pip'] command that works, or None.
+
+    Prefers a Python whose major.minor version matches the running interpreter
+    so that compiled extensions (numpy, torch) installed via ``--target`` are
+    ABI-compatible with the app.
+    """
+    vi = sys.version_info
+    ver_tag = f"{vi.major}.{vi.minor}"          # e.g. "3.12"
+
     if platform.system() == "Darwin":
+        # Version-matched candidates first, then generic fallbacks.
         candidates = [
-            "/opt/homebrew/bin/python3.12",   # Homebrew Apple Silicon
+            f"/opt/homebrew/bin/python{ver_tag}",   # Homebrew Apple Silicon
+            f"/usr/local/bin/python{ver_tag}",       # Homebrew Intel
+            f"python{ver_tag}",
             "/opt/homebrew/bin/python3",
-            "/usr/local/bin/python3.12",       # Homebrew Intel
             "/usr/local/bin/python3",
-            "/usr/bin/python3",                # macOS system Python
+            "/usr/bin/python3",
             "python3", "python",
         ]
     elif platform.system() == "Windows":
         import winreg
-        candidates = ["python", "py", "python3"]
-        # Also probe the registry for installed Pythons
+        candidates = [f"python{ver_tag}", "python", "py", "python3"]
         try:
             for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
                 with winreg.OpenKey(root, r"SOFTWARE\Python\PythonCore") as k:
@@ -137,19 +148,122 @@ def _find_python_with_pip():
         except Exception:
             pass
     else:
-        candidates = ["python3", "python"]
+        candidates = [f"python{ver_tag}", "python3", "python"]
 
-    for py in candidates:
-        try:
-            r = subprocess.run(
-                [py, "-m", "pip", "--version"],
-                capture_output=True, timeout=10,
-            )
-            if r.returncode == 0:
+    # First pass: find a candidate whose version matches the running interpreter.
+    # Second pass (fallback): accept any candidate that has pip.
+    for must_match_version in (True, False):
+        for py in candidates:
+            try:
+                r = subprocess.run(
+                    [py, "-m", "pip", "--version"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if r.returncode != 0:
+                    continue
+                if must_match_version:
+                    # Verify the candidate's Python version matches ours.
+                    rv = subprocess.run(
+                        [py, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if rv.returncode != 0 or rv.stdout.strip() != ver_tag:
+                        continue
                 return [py, "-m", "pip"]
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-            continue
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                continue
     return None
+
+
+def _cleanup_torch_stubs(target_dir):
+    """Remove torch/_C/ and torch/_C_flatbuffer/ stub directories.
+
+    ``pip install --target`` places ``.pyi`` type-stub directories alongside
+    the compiled C extension (``.so`` / ``.pyd``).  Python's import machinery
+    resolves the *directory* as a package before it finds the ``.so``, causing
+    the "Failed to load PyTorch C extensions" error.  Removing the stub dirs
+    lets the compiled extensions load normally.
+    """
+    torch_dir = os.path.join(target_dir, "torch")
+    if not os.path.isdir(torch_dir):
+        return
+    for stub_name in ("_C", "_C_flatbuffer"):
+        stub_dir = os.path.join(torch_dir, stub_name)
+        if os.path.isdir(stub_dir):
+            try:
+                shutil.rmtree(stub_dir)
+            except OSError:
+                pass  # best-effort; may lack permissions
+
+
+# Fix any already-installed ML packages that have the stub-directory problem.
+if os.path.isdir(_ML_PACKAGES_DIR):
+    _cleanup_torch_stubs(_ML_PACKAGES_DIR)
+
+
+def _install_torch_packages(status_cb):
+    """pip-install torch/torchvision/timm into _ML_PACKAGES_DIR (first-time setup).
+
+    status_cb(message: str, percent: float) is called for progress updates.
+    Raises RuntimeError on failure.
+    """
+    os.makedirs(_ML_PACKAGES_DIR, exist_ok=True)
+
+    pip = _find_python_with_pip()
+    if pip is None:
+        raise RuntimeError(
+            "PyTorch is not installed and no Python with pip was found.\n\n"
+            "Install Python 3 from https://python.org (or via Homebrew on macOS),\n"
+            "then retry depth generation.\n\n"
+            "Or install manually:\n"
+            f"  pip install torch torchvision timm --target \"{_ML_PACKAGES_DIR}\""
+        )
+
+    cmd = pip + ["install", "--target", _ML_PACKAGES_DIR, "torch", "torchvision", "timm"]
+    status_cb("Downloading PyTorch (first-time setup, ~150 MB)…", 0.0)
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    progress = 0.0
+    for line in proc.stdout:
+        line = line.strip()
+        if not line:
+            continue
+        m = re.search(r'(\d+\.?\d*)/(\d+\.?\d*)\s*[MK]B', line)
+        if m:
+            try:
+                progress = min(float(m.group(1)) / float(m.group(2)) * 80, 80.0)
+            except ZeroDivisionError:
+                pass
+        elif "Installing collected" in line:
+            progress = 85.0
+        elif "Successfully installed" in line:
+            progress = 99.0
+        status_cb(line, progress)
+
+    proc.wait()
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "Failed to install PyTorch.\n\n"
+            "Try installing manually:\n"
+            f"  pip install torch torchvision timm --target \"{_ML_PACKAGES_DIR}\""
+        )
+
+    # `pip install --target` places .pyi stub directories (torch/_C/,
+    # torch/_C_flatbuffer/) alongside the compiled C extension .so files.
+    # Python resolves the directory-as-package *before* the .so, causing
+    # "Failed to load PyTorch C extensions".  Remove the stub dirs.
+    _cleanup_torch_stubs(_ML_PACKAGES_DIR)
+
+    if _ML_PACKAGES_DIR not in sys.path:
+        sys.path.append(_ML_PACKAGES_DIR)
+
+    status_cb("PyTorch installed successfully.", 100.0)
 
 
 class DA3Worker(QThread):
@@ -191,68 +305,13 @@ class DA3Worker(QThread):
         self._is_cancelled = True
 
     def _install_torch(self):
-        """pip-install torch/torchvision/timm into _ML_PACKAGES_DIR (first-time setup)."""
-        os.makedirs(_ML_PACKAGES_DIR, exist_ok=True)
-
-        pip = _find_python_with_pip()
-        if pip is None:
-            raise RuntimeError(
-                "PyTorch is not installed and no Python with pip was found.\n\n"
-                "Install Python 3 from https://python.org (or via Homebrew on macOS),\n"
-                "then retry depth generation.\n\n"
-                "Or install manually:\n"
-                f"  pip install torch torchvision timm --target \"{_ML_PACKAGES_DIR}\""
-            )
-
-        packages = ["torch", "torchvision", "timm"]
-        cmd = pip + ["install", "--target", _ML_PACKAGES_DIR] + packages
-
-        self.download_progress.emit("Downloading PyTorch (first-time setup, ~150 MB)…", 0.0)
-
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-
-        progress = 0.0
-        for line in proc.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            # Parse "X.X/Y.Y MB" style pip download progress
-            m = re.search(r'(\d+\.?\d*)/(\d+\.?\d*)\s*[MK]B', line)
-            if m:
-                try:
-                    progress = min(float(m.group(1)) / float(m.group(2)) * 80, 80.0)
-                except ZeroDivisionError:
-                    pass
-            elif "Installing collected" in line:
-                progress = 85.0
-            elif "Successfully installed" in line:
-                progress = 99.0
-            self.download_progress.emit(line, progress)
-
-        proc.wait()
-        if proc.returncode != 0:
-            raise RuntimeError(
-                "Failed to install PyTorch.\n\n"
-                "Try installing manually:\n"
-                f"  pip install torch torchvision timm --target \"{_ML_PACKAGES_DIR}\""
-            )
-
-        # Inject the new packages into the live process path
-        if _ML_PACKAGES_DIR not in sys.path:
-            sys.path.insert(0, _ML_PACKAGES_DIR)
-
-        self.download_progress.emit("PyTorch installed successfully.", 100.0)
+        _install_torch_packages(lambda msg, pct: self.download_progress.emit(msg, pct))
 
     def run(self):
         try:
             # Ensure previously-installed ML packages are importable
             if _ML_PACKAGES_DIR not in sys.path:
-                sys.path.insert(0, _ML_PACKAGES_DIR)
+                sys.path.append(_ML_PACKAGES_DIR)
 
             # Install torch if not present (first-time setup)
             try:
@@ -1644,6 +1703,50 @@ class ImageViewer(QMainWindow):
                      # If active_label is one of the montage labels (e.g. focused), use its path
                  update_label(self.active_label, "x", file_path)
 
+    def _preload_torch_on_main_thread(self):
+        """Import torch on the main thread before the worker starts.
+
+        Why: PyTorch's pybind11 type registration (in torch._C._distributed_c10d
+        and friends) is not safe to run on a non-main Python thread — it raises
+        a C++ exception that bypasses Python's ImportError handler and aborts
+        the process. Loading it on the main thread first means the worker's
+        `import torch` is just a sys.modules cache hit.
+        """
+        if 'torch' in sys.modules and 'depth_anything_3.api' in sys.modules:
+            return True
+
+        if _ML_PACKAGES_DIR not in sys.path:
+            sys.path.append(_ML_PACKAGES_DIR)
+
+        self.status_bar.showMessage("Loading PyTorch…")
+        QApplication.processEvents()
+
+        try:
+            import torch  # noqa: F401
+        except ImportError:
+            try:
+                _install_torch_packages(
+                    lambda msg, pct: (
+                        self.status_bar.showMessage(msg),
+                        QApplication.processEvents(),
+                    )
+                )
+                import torch  # noqa: F401
+            except Exception as e:
+                self.status_bar.clearMessage()
+                QMessageBox.critical(self, "Error", str(e))
+                return False
+
+        try:
+            from depth_anything_3.api import DepthAnything3  # noqa: F401
+        except Exception as e:
+            self.status_bar.clearMessage()
+            QMessageBox.critical(self, "Error", f"Failed to load Depth Anything 3: {e}")
+            return False
+
+        self.status_bar.clearMessage()
+        return True
+
     def generate_da3_depth_map(self):
         if not self.current_file_path:
             QMessageBox.warning(self, "Warning", "Please open an image first.")
@@ -1652,12 +1755,15 @@ class ImageViewer(QMainWindow):
         dialog = DA3ModelDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             model_name = dialog.get_model()
-            
+
+            if not self._preload_torch_on_main_thread():
+                return
+
             # Show progress UI
             self.progress_bar.setVisible(True)
             self.status_bar.showMessage(f"Generating DA3 Depth Map using {model_name}...")
             self.da3_action.setEnabled(False)
-            
+
             # Start worker
             self.da3_worker = DA3Worker(self.current_file_path, model_name)
             self.da3_worker.finished.connect(self._on_da3_finished)
