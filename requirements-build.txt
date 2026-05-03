@@ -1,0 +1,21 @@
+# Slim dependency set for CI builds.
+#
+# torch / torchvision / timm / depth-anything-3 are intentionally omitted —
+# the PyInstaller spec excludes them and they're downloaded at runtime
+# into ~/.imageviewer/ml_packages on first DA3 use. Installing them in CI
+# would burn 5+ minutes and ~2 GB of cache for no bundle benefit.
+
+PyQt6
+Pillow
+numpy
+matplotlib
+pyqtgraph
+opencv-python
+PyOpenGL
+pyinstaller
+pillow-heif
+requests
+imageio
+tifffile
+safetensors
+huggingface_hub
