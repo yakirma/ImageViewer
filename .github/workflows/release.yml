@@ -5,8 +5,9 @@ name: Release
 #     release that GitHub auto-creates for the tag.
 #   - workflow_dispatch → manual run from the Actions tab (handy for testing).
 #
-# macOS DMG is intentionally NOT built here — the existing local flow on the
-# maintainer's Mac handles it. Adding macOS to CI is straightforward later.
+# All three platforms (Windows, Linux, macOS) are built in CI. The macOS
+# runner is Apple Silicon (arm64), matching the maintainer's local Mac —
+# Intel Mac users have not been supported by the local build either.
 
 on:
   push:
@@ -158,4 +159,48 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/ImageViewer_Linux.deb
+          fail_on_unmatched_files: true
+
+  # --------------------------------------------------------------------
+  # macOS: PyInstaller → DMG (via build.sh, which delegates to build.py
+  # which calls hdiutil). Apple Silicon arm64 only.
+  # --------------------------------------------------------------------
+  build-macos:
+    name: Build macOS DMG
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - name: Time estimate
+        run: |
+          echo "::notice title=macOS build ETA::~3-5 min on cold cache, ~2-3 min on warm cache. Apple Silicon arm64 only."
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-build.txt
+
+      - name: Build (PyInstaller + DMG via hdiutil)
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Upload artifact for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImageViewer_Installer-macos
+          path: dist/ImageViewer_Installer.dmg
+          if-no-files-found: error
+
+      - name: Attach to GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ImageViewer_Installer.dmg
           fail_on_unmatched_files: true

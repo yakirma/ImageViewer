@@ -12,20 +12,25 @@
 #   2. Bumps the version across build.py, build.sh, installer.nsi,
 #      ImageViewer.spec, and image_viewer.py.
 #   3. Commits, tags v<version>, pushes to origin (the tag push triggers
-#      the GitHub Actions workflow that builds Windows + Linux installers).
-#   4. Builds the macOS DMG locally (runs in parallel with CI).
-#   5. Creates the GitHub release with the DMG attached and release notes.
-#      The CI workflow then attaches the .exe and .deb to the same release.
-#   6. Optionally watches CI to completion and reports status.
+#      the GitHub Actions workflow that builds Windows, Linux, and macOS
+#      installers).
+#   4. Creates the GitHub release with the supplied (or auto-generated)
+#      notes. The CI workflow attaches the .exe, .deb, and .dmg to this
+#      release as each build job finishes.
+#   5. Optionally watches CI to completion and reports status.
 #
-# Timing (measured on the first dry run, 2026-05-03):
-#   Local steps:        ~30 s (version bump, commit, push)
-#   Local DMG build:    ~3 min
-#   GitHub Actions:     ~5 min on a cold cache (52s test, 3m 44s Windows,
-#                       2m 40s Linux — last two run in parallel).
+# All three platform builds run in CI — no local build step is required,
+# and this script is portable across any host with Python, git, and gh.
+#
+# Timing (measured 2026-05-03):
+#   Local steps:        ~30 s (version bump, commit, push, release create)
+#   GitHub Actions:     ~5 min on a cold cache
+#                         (52s test, 3m 44s Windows, 2m 40s Linux,
+#                          macOS expected ~3-5 min — runs in parallel
+#                          with Windows and Linux)
 #                       ~3-4 min on a warm cache.
-#   Total wall-clock:   ~5-8 min until the release page has all 3 binaries
-#                       (DMG ready locally same-time as CI finishes).
+#   Total wall-clock:   ~5-6 min from invocation to all 3 binaries on
+#                       the release page.
 
 set -euo pipefail
 
@@ -61,11 +66,6 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
-
-if [[ "$(uname -s)" != "Darwin" ]]; then
-    echo "WARNING: this script builds the macOS DMG locally and assumes a Mac host."
-    echo "         On other platforms, skip the DMG step and let CI do everything."
-fi
 
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*"; }
@@ -137,16 +137,43 @@ git add build.py build.sh installer.nsi image_viewer.py ImageViewer.spec
 git commit -m "Bump version to $VERSION"
 git tag -a "v$VERSION" -m "Release $VERSION"
 
-step "Pushing to origin (this triggers the CI build for Windows + Linux)"
+step "Pushing to origin (the tag push triggers CI for Win + Linux + macOS)"
 git push origin "$CURRENT_BRANCH"
 git push origin "v$VERSION"
 
+# ----------------------------------------------------------------------
+# 4. Create the GitHub release immediately
+#
+# Doing this right after the tag push (and before any build job finishes)
+# guarantees softprops/action-gh-release in CI uploads to *this* release
+# rather than auto-creating one with default name and notes.
+# ----------------------------------------------------------------------
+step "Creating GitHub release v$VERSION"
+
+if [[ -z "$NOTES" ]]; then
+    NOTES_ARG=(--generate-notes)
+else
+    NOTES_ARG=(--notes "$NOTES")
+fi
+
+gh release create "v$VERSION" \
+    --title "v$VERSION" \
+    "${NOTES_ARG[@]}" \
+    --latest
+
 cat <<EOF
 
-CI is now running. Measured wall-clock time:
-  - Cold cache (first run / changed deps):  ~5 minutes
-  - Warm cache (typical):                    ~3-4 minutes
-  - Test job runs first (~1 min), then Windows + Linux builds run in parallel.
+Release page: https://github.com/yakirma/ImageViewer/releases/tag/v$VERSION
+
+CI is now building all three installers in parallel. Measured timing:
+  - Cold cache:  ~5 min total
+  - Warm cache:  ~3-4 min total
+
+Each platform's binary will appear on the release page as soon as its
+build job finishes:
+  - Linux  .deb   (~2-3 min after tag push)
+  - macOS  .dmg   (~3-5 min)
+  - Windows .exe  (~3-4 min)
 
 Watch progress at:
   https://github.com/yakirma/ImageViewer/actions
@@ -154,65 +181,14 @@ Watch progress at:
 EOF
 
 # ----------------------------------------------------------------------
-# 4. Build macOS DMG locally (parallel with CI)
+# 5. Optionally watch CI
 # ----------------------------------------------------------------------
-if [[ "$(uname -s)" == "Darwin" ]]; then
-    step "Building macOS DMG locally (~3 min)"
-    python3 build.py
-    DMG_PATH="dist/ImageViewer_Installer.dmg"
-    if [[ ! -f "$DMG_PATH" ]]; then
-        fail "DMG build failed: $DMG_PATH not found."
-    fi
-    DMG_SIZE=$(du -h "$DMG_PATH" | cut -f1)
-    echo "DMG built: $DMG_PATH ($DMG_SIZE)"
-else
-    warn "Not on macOS — skipping local DMG build. CI will build Win+Linux only."
-    DMG_PATH=""
-fi
-
-# ----------------------------------------------------------------------
-# 5. Create the GitHub release
-# ----------------------------------------------------------------------
-step "Creating GitHub release v$VERSION"
-
-if [[ -z "$NOTES" ]]; then
-    # Auto-generate notes from commits since the previous tag.
-    NOTES_ARG=(--generate-notes)
-else
-    NOTES_ARG=(--notes "$NOTES")
-fi
-
-if [[ -n "$DMG_PATH" ]]; then
-    gh release create "v$VERSION" "$DMG_PATH" \
-        --title "v$VERSION" \
-        "${NOTES_ARG[@]}" \
-        --latest
-else
-    gh release create "v$VERSION" \
-        --title "v$VERSION" \
-        "${NOTES_ARG[@]}" \
-        --latest
-fi
-
-cat <<EOF
-
-Release page: https://github.com/yakirma/ImageViewer/releases/tag/v$VERSION
-
-The CI workflow will attach ImageViewer_Setup.exe and ImageViewer_Linux.deb
-to this release as soon as the Windows and Linux build jobs finish.
-
-EOF
-
-# ----------------------------------------------------------------------
-# 6. Optionally watch CI
-# ----------------------------------------------------------------------
-read -rp "Watch CI runs to completion now? [y/N] " ans
+read -rp "Watch CI to completion now? [y/N] " ans
 if [[ "$ans" =~ ^[Yy]$ ]]; then
-    # Find the run ID for the tag push and stream it.
     sleep 3 # give GitHub a moment to register the run
     RUN_ID=$(gh run list --workflow=release.yml --limit 1 --json databaseId --jq '.[0].databaseId')
     if [[ -n "$RUN_ID" ]]; then
-        gh run watch "$RUN_ID" || warn "Watch ended with a non-zero status."
+        gh run watch "$RUN_ID" || warn "Watch ended with a non-zero status — check the Actions tab."
     else
         warn "Could not locate the CI run; check the Actions tab."
     fi
