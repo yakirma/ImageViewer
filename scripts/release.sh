@@ -22,15 +22,14 @@
 # All three platform builds run in CI — no local build step is required,
 # and this script is portable across any host with Python, git, and gh.
 #
-# Timing (measured 2026-05-03):
+# Timing (measured 2026-05-03 across two cold-cache runs):
 #   Local steps:        ~30 s (version bump, commit, push, release create)
-#   GitHub Actions:     ~5 min on a cold cache
-#                         (52s test, 3m 44s Windows, 2m 40s Linux,
-#                          macOS expected ~3-5 min — runs in parallel
-#                          with Windows and Linux)
+#   GitHub Actions:     ~4-5 min on a cold cache
+#                         (~50s test, then in parallel:
+#                          1m 28s macOS, 2m 40s Linux, 3m 30s Windows)
 #                       ~3-4 min on a warm cache.
-#   Total wall-clock:   ~5-6 min from invocation to all 3 binaries on
-#                       the release page.
+#   Total wall-clock:   ~5 min from invocation to all 3 binaries on the
+#                       release page. Windows is the long pole.
 
 set -euo pipefail
 
@@ -171,9 +170,9 @@ CI is now building all three installers in parallel. Measured timing:
 
 Each platform's binary will appear on the release page as soon as its
 build job finishes:
-  - Linux  .deb   (~2-3 min after tag push)
-  - macOS  .dmg   (~3-5 min)
-  - Windows .exe  (~3-4 min)
+  - macOS  .dmg   (~1-2 min after tag push)
+  - Linux  .deb   (~2-3 min)
+  - Windows .exe  (~3-4 min — the long pole)
 
 Watch progress at:
   https://github.com/yakirma/ImageViewer/actions

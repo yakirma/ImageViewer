@@ -172,7 +172,7 @@ jobs:
     steps:
       - name: Time estimate
         run: |
-          echo "::notice title=macOS build ETA::~3-5 min on cold cache, ~2-3 min on warm cache. Apple Silicon arm64 only."
+          echo "::notice title=macOS build ETA::~1-2 min on cold cache (measured 1m 28s on first run), ~1 min on warm cache. Apple Silicon arm64 only."
 
       - uses: actions/checkout@v4
 
