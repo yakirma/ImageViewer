@@ -18,12 +18,14 @@
 #      The CI workflow then attaches the .exe and .deb to the same release.
 #   6. Optionally watches CI to completion and reports status.
 #
-# Timing rough estimates:
+# Timing (measured on the first dry run, 2026-05-03):
 #   Local steps:        ~30 s (version bump, commit, push)
 #   Local DMG build:    ~3 min
-#   GitHub Actions:     ~5–8 min on a cold cache (first ever run, or after
-#                       deps change), ~3–5 min on a warm cache.
-#   Total wall-clock:   ~5–8 min until the release page has all 3 binaries.
+#   GitHub Actions:     ~5 min on a cold cache (52s test, 3m 44s Windows,
+#                       2m 40s Linux — last two run in parallel).
+#                       ~3-4 min on a warm cache.
+#   Total wall-clock:   ~5-8 min until the release page has all 3 binaries
+#                       (DMG ready locally same-time as CI finishes).
 
 set -euo pipefail
 
@@ -141,10 +143,10 @@ git push origin "v$VERSION"
 
 cat <<EOF
 
-CI is now running. Expected wall-clock time:
-  - Cold cache (first run / changed deps):  5–8 minutes
-  - Warm cache (typical):                    3–5 minutes
-  - Test job runs first; build jobs gated on it.
+CI is now running. Measured wall-clock time:
+  - Cold cache (first run / changed deps):  ~5 minutes
+  - Warm cache (typical):                    ~3-4 minutes
+  - Test job runs first (~1 min), then Windows + Linux builds run in parallel.
 
 Watch progress at:
   https://github.com/yakirma/ImageViewer/actions

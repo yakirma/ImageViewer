@@ -29,7 +29,7 @@ jobs:
     steps:
       - name: Time estimate
         run: |
-          echo "::notice title=Test job ETA::~1-2 min on warm cache, ~3-4 min on cold cache (first ever run, or after dependency changes)."
+          echo "::notice title=Test job ETA::~30 s on warm cache, ~1 min on cold cache (measured 52 s on first ever run)."
 
       - uses: actions/checkout@v4
 
@@ -69,7 +69,7 @@ jobs:
       - name: Time estimate
         shell: bash
         run: |
-          echo "::notice title=Windows build ETA::~5-8 min on cold cache (first ever run, or after dependency changes), ~3-5 min on warm cache. PyInstaller and NSIS install dominate."
+          echo "::notice title=Windows build ETA::~3-4 min on cold cache (measured 3m 44s on first ever run), ~2-3 min on warm cache. PyInstaller and NSIS install dominate."
 
       - uses: actions/checkout@v4
 
@@ -117,7 +117,7 @@ jobs:
     steps:
       - name: Time estimate
         run: |
-          echo "::notice title=Linux build ETA::~3-5 min on cold cache (first ever run, or after dependency changes), ~2-3 min on warm cache."
+          echo "::notice title=Linux build ETA::~2-3 min on cold cache (measured 2m 40s on first ever run), ~1-2 min on warm cache."
 
       - uses: actions/checkout@v4
 
