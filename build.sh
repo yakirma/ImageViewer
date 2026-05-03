@@ -35,7 +35,7 @@ elif [ "$OS_TYPE" == "Linux" ]; then
     DEB_NAME="${APP_NAME}_Linux.deb"
     BUILD_DIR="dist/${APP_NAME}"
     PKG_ROOT="dist/package_root"
-    VERSION="1.1.2"
+    VERSION="1.1.4"
     ARCH="amd64" # Assuming amd64 for now, could detect with uname -m
     
     if [ ! -d "$BUILD_DIR" ]; then

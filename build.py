@@ -7,7 +7,7 @@ import shutil
 
 APP_NAME    = "ImageViewer"
 ENTRY_POINT = "main.py"
-VERSION     = "1.1.2"
+VERSION     = "1.1.4"
 
 def run_pyinstaller():
     command = ['ImageViewer.spec', '--noconfirm', '--clean']
