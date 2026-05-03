@@ -61,7 +61,7 @@ class NumpyEncoder(json.JSONEncoder):
             return [obj.x(), obj.y()]
         return super(NumpyEncoder, self).default(obj)
 
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 
 class CheckForUpdates(QThread):
     update_available = pyqtSignal(str, str) # version, url
