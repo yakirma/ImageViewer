@@ -2010,26 +2010,24 @@ class ThumbnailPane(QDockWidget):
 
         from image_handler import ImageHandler
         temp_handler = ImageHandler()
-        supported_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.webp', '.heic', '.heif'] + \
-                             temp_handler.raw_extensions + temp_handler.video_extensions
-        
+
         added_any = False
         for path in file_paths:
             if os.path.isfile(path) and path not in self.gallery_images:
-                _, ext = os.path.splitext(path)
-                if ext.lower() in supported_extensions:
-                    # Generate thumbnail
-                    try:
-                        if temp_handler.load_image(path):
-                            pixmap = self._generate_pixmap_from_array(temp_handler.original_image_data)
-                            if pixmap:
-                                self.gallery_images[path] = pixmap
-                                self.manual_paths.add(path)
-                                if path in self.removed_paths:
-                                    self.removed_paths.remove(path)
-                                added_any = True
-                    except Exception as e:
-                        print(f"Error generating thumbnail for {path}: {e}")
+                # Try to load — unknown extensions are treated as raw by the
+                # loader. Loader failures (e.g. missing raw resolution) fall
+                # through to the except below.
+                try:
+                    if temp_handler.load_image(path):
+                        pixmap = self._generate_pixmap_from_array(temp_handler.original_image_data)
+                        if pixmap:
+                            self.gallery_images[path] = pixmap
+                            self.manual_paths.add(path)
+                            if path in self.removed_paths:
+                                self.removed_paths.remove(path)
+                            added_any = True
+                except Exception as e:
+                    print(f"Error generating thumbnail for {path}: {e}")
 
         if added_any:
             self.populate()

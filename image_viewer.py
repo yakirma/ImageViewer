@@ -1314,19 +1314,10 @@ class ImageViewer(QMainWindow):
         self.file_explorer_pane.hide()
         self.file_explorer_pane.files_selected.connect(self._on_explorer_files_selected)
         
-        # Configure supported extensions for filtering
-        extensions = self.image_handler.raw_extensions + ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.gif', '.webp', '.heic', '.heif'] + self.image_handler.video_extensions
-        # Create unique list
-
-        extensions = list(set(extensions))
-        
-        # Create case-insensitive filters (add both lowercase and uppercase)
-        ext_filters = []
-        for ext in extensions:
-            ext_filters.append('*' + ext.lower())
-            ext_filters.append('*' + ext.upper())
-            
-        self.file_explorer_pane.set_supported_extensions(ext_filters)
+        # File explorer shows all files — unknown extensions are loaded as raw,
+        # so users with ad-hoc binary blobs (.foo, .bin variants) can still see
+        # and open them.
+        self.file_explorer_pane.set_supported_extensions(['*'])
 
         self.overlay_alphas = {} # (source_path, target_path) -> alpha
         self.overlay_cache = {}  # (source_path, target_path) -> QPixmap (resized to match target view)
@@ -1411,7 +1402,7 @@ class ImageViewer(QMainWindow):
             _, ext = os.path.splitext(actual_file_path)
             ext_lower = ext.lower()
             
-            if current_override and ext_lower not in temp_handler.raw_extensions:
+            if current_override and not temp_handler.is_raw_path(actual_file_path):
                 current_override = None
             elif current_override:
                 # Check if target file has explicit resolution in name
@@ -2268,16 +2259,14 @@ class ImageViewer(QMainWindow):
 
         if len(file_paths) == 1:
             target_path = file_paths[0]
-            _, ext = os.path.splitext(target_path)
-            target_is_raw = ext.lower() in self.image_handler.raw_extensions
-            
+            target_is_raw = self.image_handler.is_raw_path(target_path)
+
             # Only inherit raw settings (resolution/dtype) if target is also raw
             effective_raw = raw_settings if target_is_raw else None
             self.open_file(target_path, override_settings=effective_raw, maintain_view_state=view_state, is_manual=False)
         else:
             # For Montage, check if the first file is raw as a representative
-            _, ext = os.path.splitext(file_paths[0])
-            target_is_raw = ext.lower() in self.image_handler.raw_extensions
+            target_is_raw = self.image_handler.is_raw_path(file_paths[0])
             
             self._temp_montage_override = raw_settings if target_is_raw else None
             self.display_montage(file_paths)
@@ -2302,13 +2291,14 @@ class ImageViewer(QMainWindow):
                 pass 
 
     def open_image_dialog(self):
-        extensions = self.image_handler.raw_extensions + ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.gif', '.webp'] + self.image_handler.video_extensions
+        extensions = self.image_handler.raw_extensions + self.image_handler.standard_extensions + self.image_handler.video_extensions + self.image_handler.flow_extensions + self.image_handler.npz_extensions
         # Create unique list
         extensions = list(set(extensions))
         ext_str = " ".join(['*' + ext for ext in extensions])
-        
-        file_path, _ = QFileDialog.getOpenFileName(self, "Open Image", "",
-                                                   f"Image Files ({ext_str})")
+
+        # Allow any file — unknown extensions are loaded as raw.
+        filters = f"Image Files ({ext_str});;All Files (*)"
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open Image", "", filters)
         if file_path:
             self.open_file(file_path, is_manual=True)
 
@@ -2384,7 +2374,7 @@ class ImageViewer(QMainWindow):
 
         # Determine if it's a raw file
         _, ext = os.path.splitext(actual_file_path)
-        is_raw = ext.lower() in self.image_handler.raw_extensions
+        is_raw = self.image_handler.is_raw_path(actual_file_path)
         
         # Get File Size
         if os.path.exists(actual_file_path):
@@ -3289,19 +3279,15 @@ class ImageViewer(QMainWindow):
                     return True
                 return False
             
-            # For Drop: Handle Centralized Append
+            # For Drop: Handle Centralized Append. Unknown extensions are
+            # accepted and treated as raw by the loader.
             urls = event.mimeData().urls()
             if urls:
                 new_file_paths = []
-                supported_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.webp', '.heic', '.heif'] + \
-                                     self.image_handler.raw_extensions + self.image_handler.video_extensions
-                
                 for url in urls:
                     path = url.toLocalFile()
                     if os.path.isfile(path):
-                        _, ext = os.path.splitext(path)
-                        if ext.lower() in supported_extensions:
-                            new_file_paths.append(path)
+                        new_file_paths.append(path)
                 
                 if not new_file_paths:
                     return False
@@ -3442,8 +3428,7 @@ class ImageViewer(QMainWindow):
                              # Let's try loading.
                              # Check if we have history for this file to respect resolution
                              override = None
-                             _, ext = os.path.splitext(source_path)
-                             if ext.lower() in temp_handler.raw_extensions:
+                             if temp_handler.is_raw_path(source_path):
                                   basename = os.path.basename(source_path)
                                   if not re.search(r"[\-_](\d+)x(\d+)", basename):
                                       history = settings.load_raw_history()

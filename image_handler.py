@@ -43,6 +43,15 @@ class ImageHandler:
         ]
         self.video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.gif']
         self.flow_extensions = ['.flo']
+        self.npz_extensions = ['.npz']
+        # Extensions handled by the standard PIL loader. Any extension not in
+        # raw/video/flow/npz/standard is treated as raw — scientific binary
+        # blobs often have ad-hoc extensions.
+        self.standard_extensions = [
+            '.png', '.jpg', '.jpeg', '.bmp',
+            '.tiff', '.tif', '.gif', '.webp',
+            '.heic', '.heif',
+        ]
         self.is_video = False
         self.video_cap = None
         self.video_fps = 30
@@ -69,26 +78,45 @@ class ImageHandler:
             return True
         return self.original_image_data.ndim == 2
 
+    def is_raw_path(self, file_path):
+        """Treat known raw extensions and any unknown extension as raw."""
+        _, ext = os.path.splitext(file_path)
+        ext_lower = ext.lower()
+        if ext_lower in self.raw_extensions:
+            return True
+        # Known non-raw types are not raw.
+        if (ext_lower in self.standard_extensions
+                or ext_lower in self.video_extensions
+                or ext_lower in self.flow_extensions
+                or ext_lower in self.npz_extensions):
+            return False
+        # Unknown extension — treat as raw.
+        return True
+
     def load_image(self, file_path, override_settings=None):
         _, ext = os.path.splitext(file_path)
         ext_lower = ext.lower()
-        self.is_raw = ext_lower in self.raw_extensions or (override_settings is not None)
 
         self.is_video = False
         if self.video_cap:
              self.video_cap.release()
              self.video_cap = None
 
-        if ext_lower == '.npz':
+        if ext_lower in self.npz_extensions:
+            self.is_raw = False
             self._load_npz_file(file_path)
         elif ext_lower in self.video_extensions:
-             self._load_video(file_path)
+            self.is_raw = False
+            self._load_video(file_path)
         elif ext_lower in self.flow_extensions:
-             self._load_optical_flow(file_path)
-        elif self.is_raw or override_settings:
-            # If we have settings, we treat it as raw even if extension is png
+            self.is_raw = False
+            self._load_optical_flow(file_path)
+        elif self.is_raw_path(file_path) or override_settings:
+            # Known raw extension, unknown extension, or explicit override.
+            self.is_raw = True
             self._load_raw_image(file_path, override_settings)
         else:
+            self.is_raw = False
             self._load_standard_image(file_path)
         return True
 
