@@ -1195,8 +1195,8 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                         # Final safety clamp
                         norm_data = np.nan_to_num(norm_data, nan=0.0, posinf=1.0, neginf=0.0)
 
-                    import matplotlib.cm as cm
-                    colored_data = cm.get_cmap(self.colormap)(norm_data)
+                    import matplotlib
+                    colored_data = matplotlib.colormaps[self.colormap](norm_data)
                 image_data_8bit = (colored_data[:, :, :3] * 255).astype(np.uint8)
                 processed_data = image_data_8bit # Update processed_data to hold the 3D RGB array
                 # QImage build deferred to the unified proxy/build section below.
@@ -1880,8 +1880,8 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                  qn_gradient.setColorAt(1, QColor(255, 255, 255))
             else:
                  # Sample colormap at 0, 0.25, 0.5, 0.75, 1
-                 import matplotlib.cm as cm
-                 cmap = cm.get_cmap(cmap_name)
+                 import matplotlib
+                 cmap = matplotlib.colormaps[cmap_name]
                  for i in range(11):
                      pos = i / 10.0
                      rgba = cmap(pos)
