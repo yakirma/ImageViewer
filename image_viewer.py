@@ -803,7 +803,7 @@ class ImageViewer(QMainWindow):
         self.colormap_combo.addItems([
             "gray", "turbo", "viridis", "magma", "inferno", "plasma",  # Standard / Uniform
             "bone", "hot", "cool", "copper", "pink",                   # Classic Sequential
-            "seismic", "coolwarm", "bwr", "spectral",                 # Diverging
+            "seismic", "coolwarm", "bwr", "Spectral",                 # Diverging
             "hsv", "twilight",                                        # Cyclic
             "flow",                                                   # Optical Flow
             "jet", "rainbow", "ocean", "terrain"                      # Misc
@@ -2119,7 +2119,15 @@ class ImageViewer(QMainWindow):
              # If mode is "flow", the data is now RGB, so set_colormap("flow") might act as "none" 
              # or simply be ignored by ImageLabel if data is RGB.
              self.active_label.set_colormap(name)
-            
+
+             # The label may have normalized or rejected the name (e.g. an
+             # unknown colormap falls back to "gray"); keep the combo in sync.
+             resolved = self.active_label.colormap
+             if resolved != self.colormap_combo.currentText():
+                 self.colormap_combo.blockSignals(True)
+                 self.colormap_combo.setCurrentText(resolved)
+                 self.colormap_combo.blockSignals(False)
+
              # Broadcast invalidation to all windows using this image as overlay
              path = getattr(self.active_label, 'file_path', self.current_file_path)
              if path:

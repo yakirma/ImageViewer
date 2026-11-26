@@ -52,6 +52,29 @@ from utils import flow_to_color
 from settings import load_folder_history, save_folder_history, load_filter_history, save_filter_history
 
 
+def resolve_colormap_name(name):
+    """Return a colormap name that apply_colormap can use.
+
+    "gray" and the special "flow" mode pass through without importing
+    matplotlib. Other names must exist in ``matplotlib.colormaps`` (which is
+    case-sensitive); a case-insensitive match is accepted (e.g. a saved
+    "spectral" becomes "Spectral"), and anything else falls back to "gray"
+    so a bad name never leaves the label stuck raising on every redraw.
+    """
+    if name in ("gray", "flow"):
+        return name
+    import matplotlib
+    if isinstance(name, str) and name:
+        if name in matplotlib.colormaps:
+            return name
+        lowered = name.lower()
+        for candidate in matplotlib.colormaps:
+            if candidate.lower() == lowered:
+                return candidate
+    print(f"Unknown colormap {name!r}; falling back to 'gray'")
+    return "gray"
+
+
 class SharedViewState(QObject):
     """An object to hold and synchronize view parameters for multiple labels."""
     view_changed = pyqtSignal()
@@ -1045,7 +1068,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self.apply_colormap()
 
     def set_colormap(self, name):
-        self.colormap = name
+        self.colormap = resolve_colormap_name(name)
         self.apply_colormap()
 
     def apply_colormap(self, is_new_image=False):
