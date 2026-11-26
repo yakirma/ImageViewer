@@ -2512,14 +2512,15 @@ class ImageViewer(QMainWindow):
 
                      width = guess_width
                      height = int(file_size / (width * guess_bpp))
-                     if "NV12" in guess_format or "NV21" in guess_format:
+                     if any(f in guess_format for f in ("NV12", "NV21", "I420")):
                          height -= height % 2  # 4:2:0 chroma needs whole row pairs
                      if height < 1: height = 1
                  
                  self.info_pane.update_info(width, height, dtype, self.image_handler.dtype_map,
                                             file_size=file_size, color_format=guess_format)
-                 self.info_pane.show()
-                 self.toggle_info_pane() # Ensure visible
+                 # Show the Info pane so the user can correct the estimate
+                 # (toggle_info_pane() after show() would hide it again).
+                 self._set_dock_visibility_preserving_window(self.info_pane, True)
                  
                  self.status_bar.showMessage("Resolution missing from filename. Using estimated parameters.", 10000)
                  
@@ -2579,6 +2580,15 @@ class ImageViewer(QMainWindow):
                         
                      # Save successful load to history
                      settings.update_raw_history(file_path, guess_settings)
+
+                     # Sticky raw settings (inherited by the next raw file),
+                     # as the regular load path below does.
+                     self.last_raw_settings = {
+                         'width': self.image_handler.width,
+                         'height': self.image_handler.height,
+                         'dtype': self.image_handler.dtype,
+                         'color_format': self.image_handler.color_format
+                     }
                      
                      # Synchronous update
                      self.image_label.repaint()

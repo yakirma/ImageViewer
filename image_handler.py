@@ -509,6 +509,17 @@ class ImageHandler:
         bpp = float(itemsize * channels)
         if "YUV" in color_format:
             bpp = 1.5 if ("NV12" in color_format or "NV21" in color_format) else 2.0
+        if ext == ".yuv":
+            # A bare .yuv is conventionally planar 4:2:0 (ffmpeg yuv420p /
+            # test sequences): prefer I420 when it uses the whole file, else
+            # fall back to a single-plane (Grayscale) layout if that fits.
+            dims = self.guess_exact_dims(file_size, 1.5, "YUV I420")
+            if dims:
+                return dims[0], dims[1], dtype, "YUV I420", 1.5
+            dims = self.guess_exact_dims(file_size, bpp, color_format)
+            if dims:
+                return dims[0], dims[1], dtype, color_format, bpp
+            return 0, 0, dtype, "YUV I420", 1.5
         dims = self.guess_exact_dims(file_size, bpp, color_format) or (0, 0)
         return dims[0], dims[1], dtype, color_format, bpp
 
