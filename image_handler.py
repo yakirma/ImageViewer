@@ -102,6 +102,10 @@ class ImageHandler:
              self.video_cap.release()
              self.video_cap = None
 
+        # Drop any state left over from a previously opened NPZ so that a
+        # non-NPZ file doesn't inherit its keys/arrays (and close the handle).
+        self._reset_npz_state()
+
         if ext_lower in self.npz_extensions:
             self.is_raw = False
             self._load_npz_file(file_path)
@@ -119,6 +123,18 @@ class ImageHandler:
             self.is_raw = False
             self._load_standard_image(file_path)
         return True
+
+    def _reset_npz_state(self):
+        """Close any open NpzFile and clear all NPZ bookkeeping."""
+        if self.npz_data is not None:
+            try:
+                self.npz_data.close()
+            except Exception:
+                pass
+        self.npz_keys = {}
+        self.npz_data = None
+        self.current_npz_key = None
+        self.npz_file_path = None
 
     def _load_video(self, file_path):
         import cv2
