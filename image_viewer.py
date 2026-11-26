@@ -1340,6 +1340,7 @@ class ImageViewer(QMainWindow):
         self.overlay_cache = {}  # (source_path, target_path) -> QPixmap (resized to match target view)
 
     def display_montage(self, file_paths, is_manual=False):
+        self._raw_recovery_path = None
         if is_manual and self.thumbnail_pane and file_paths:
             self.thumbnail_pane.add_to_manual_paths(file_paths)
             
@@ -1969,7 +1970,28 @@ class ImageViewer(QMainWindow):
             self.progress_bar.setVisible(True)
             QApplication.processEvents()
             self.image_handler.load_image(self.current_file_path, override_settings=raw_settings)
-            if self.active_label:
+            recovery_path = getattr(self, '_raw_recovery_path', None)
+            if (recovery_path and recovery_path == self.current_file_path
+                    and self.stacked_widget.currentWidget() is not self.montage_widget):
+                # First successful decode of a file whose initial load failed:
+                # show it in the main view (the active label may be None or
+                # still hold the previous image).
+                self._raw_recovery_path = None
+                self.image_label.file_path = self.current_file_path
+                self.image_label.metadata = {
+                    'width': self.image_handler.width,
+                    'height': self.image_handler.height,
+                    'dtype': self.image_handler.dtype,
+                    'color_format': self.image_handler.color_format,
+                    'file_size': os.path.getsize(self.current_file_path),
+                    'is_raw': self.image_handler.is_raw,
+                }
+                self.stacked_widget.setCurrentWidget(self.image_display_container)
+                self._set_active_montage_label(self.image_label)
+                self.update_image_display(reset_view=True)
+                self.histogram_action.setEnabled(True)
+                self.last_raw_settings = dict(raw_settings)
+            elif self.active_label:
                 self.active_label.set_data(self.image_handler.original_image_data)
             
             # Update channel options (e.g. if format changed from Raw to Bayer RGB)
@@ -2347,7 +2369,20 @@ class ImageViewer(QMainWindow):
                 self.thumbnail_pane.show()
                 self.thumbnail_pane.raise_()
 
+    def _yuv_layout_fits(self, file_path, color_format, file_size):
+        """True if a uint8, resolution-named raw file is exactly one frame of `color_format`."""
+        w, h, dtype = self.image_handler.parse_resolution(file_path)
+        if w <= 0 or h <= 0 or isinstance(dtype, str) or np.dtype(dtype) != np.uint8:
+            return False
+        try:
+            return file_size == self.image_handler._yuv_expected_size(w, h, color_format)
+        except ValueError:
+            return False
+
     def open_file(self, file_path=None, override_settings=None, maintain_view_state=None, is_manual=False):
+        # Path of a raw file with a parsed resolution that failed to load; the
+        # InfoPane was left editable so the user can pick a format for it.
+        self._raw_recovery_path = None
         if file_path and self.thumbnail_pane:
             if is_manual:
                 self.thumbnail_pane.add_to_manual_paths([file_path])
@@ -2399,13 +2434,17 @@ class ImageViewer(QMainWindow):
         # [REFINEMENT] Inherit settings only if target file has no explicit settings (filename or history)
         if is_raw and override_settings:
             basename = os.path.basename(actual_file_path)
-            has_explicit = bool(re.search(r"[\-_](\d+)x(\d+)", basename))
-            if not has_explicit:
-                history = settings.load_raw_history()
-                if actual_file_path in history:
-                    has_explicit = True
-            
-            if has_explicit:
+            has_res_in_name = bool(re.search(r"[\-_](\d+)x(\d+)", basename))
+            inherited_fmt = override_settings.get('color_format', 'Grayscale')
+            if has_res_in_name and "YUV" in inherited_fmt and \
+                    self._yuv_layout_fits(actual_file_path, inherited_fmt, file_size):
+                # Resolution comes from the filename, but keep an inherited YUV
+                # layout when the file size matches it exactly (it can't be
+                # inferred from W/H/dtype alone).
+                fw, fh, fdtype = self.image_handler.parse_resolution(actual_file_path)
+                override_settings = {'width': fw, 'height': fh, 'dtype': fdtype,
+                                     'color_format': inherited_fmt}
+            elif has_res_in_name or actual_file_path in settings.load_raw_history():
                 # Target has its own explicit/historical settings, ignore inherited override
                 override_settings = None
 
@@ -2433,6 +2472,12 @@ class ImageViewer(QMainWindow):
                  except Exception:
                      guess_bpp = 1.0
 
+                 # Extensions like .nv12/.yuyv fix the layout; account for its
+                 # bytes-per-pixel so the size guess is right.
+                 guess_format = self.image_handler.yuv_extension_formats.get(ext.lower(), 'Grayscale')
+                 if "YUV" in guess_format:
+                     guess_bpp = 1.5 if ("NV12" in guess_format or "NV21" in guess_format) else 2.0
+
                  # Guess Parameters using 4:3 Aspect Ratio
                  guess_width = int(np.sqrt((file_size / guess_bpp) * (4.0/3.0)))
                  # Align to 16
@@ -2441,9 +2486,12 @@ class ImageViewer(QMainWindow):
 
                  width = guess_width
                  height = int(file_size / (width * guess_bpp))
+                 if "NV12" in guess_format or "NV21" in guess_format:
+                     height -= height % 2  # 4:2:0 chroma needs whole row pairs
                  if height < 1: height = 1
                  
-                 self.info_pane.update_info(width, height, dtype, self.image_handler.dtype_map, file_size=file_size)
+                 self.info_pane.update_info(width, height, dtype, self.image_handler.dtype_map,
+                                            file_size=file_size, color_format=guess_format)
                  self.info_pane.show()
                  self.toggle_info_pane() # Ensure visible
                  
@@ -2467,7 +2515,7 @@ class ImageViewer(QMainWindow):
                              'width': width,
                              'height': height,
                              'dtype': dtype, 
-                             'color_format': 'Grayscale'
+                             'color_format': guess_format
                       }
                  
                  # Use the guessed settings as override
@@ -2647,10 +2695,27 @@ class ImageViewer(QMainWindow):
                 self.open_file(actual_file_path, override_settings=None, maintain_view_state=maintain_view_state)
                 return
             
-            QMessageBox.critical(self, "Error", f"Error opening image:\n{e}")
-            self.math_transform_action.setEnabled(False)
-            self.info_action.setEnabled(False)
-            self.info_pane.set_raw_mode(False)
+            raw_w, raw_h, raw_dtype = (self.image_handler.parse_resolution(actual_file_path)
+                                       if is_raw and os.path.isfile(actual_file_path) else (0, 0, None))
+            if raw_w > 0 and raw_h > 0:
+                # Raw file with a resolution in its name that doesn't decode with
+                # the default layout (e.g. a 4:2:0 .raw). Keep the InfoPane
+                # editable so the user can pick the right format.
+                QMessageBox.critical(self, "Error", f"Error opening image:\n{e}\n\n"
+                                     "Choose the correct format in the Info pane.")
+                self.info_pane.blockSignals(True)
+                self.info_pane.update_info(raw_w, raw_h, raw_dtype, self.image_handler.dtype_map,
+                                           file_size=file_size)
+                self.info_pane.blockSignals(False)
+                self.info_pane.set_raw_mode(True)
+                self.info_action.setEnabled(True)
+                self._set_dock_visibility_preserving_window(self.info_pane, True)
+                self._raw_recovery_path = actual_file_path
+            else:
+                QMessageBox.critical(self, "Error", f"Error opening image:\n{e}")
+                self.math_transform_action.setEnabled(False)
+                self.info_action.setEnabled(False)
+                self.info_pane.set_raw_mode(False)
 
             self.histogram_action.setEnabled(False)
         

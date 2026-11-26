@@ -67,6 +67,12 @@ class ImageHandler:
             ".rgb": np.uint8, ".rgba": np.uint8, ".bgr": np.uint8, ".bgra": np.uint8
         }
         
+        # Extensions that unambiguously identify a YUV layout (.yuv does not).
+        self.yuv_extension_formats = {
+            ".nv12": "YUV NV12", ".nv21": "YUV NV21",
+            ".yuyv": "YUV YUYV", ".uyvy": "YUV UYVY",
+        }
+
         # NPZ file support
         self.npz_keys = {}  # {key: is_valid_image}
         self.current_npz_key = None
@@ -315,10 +321,30 @@ class ImageHandler:
                  is_signed = np.dtype(container).kind == 'i'
                  is_float = np.dtype(container).kind == 'f'
 
+            # Auto-select a YUV layout from unambiguous extensions.
+            ext = os.path.splitext(file_name)[1].lower()
+            ext_format = self.yuv_extension_formats.get(ext)
+            if ext_format:
+                color_format = ext_format
+            elif ext == ".yuv" and os.path.getsize(file_name) == self._yuv_expected_size(width, height, "YUV I420"):
+                # A .yuv frame of exactly 1.5*W*H bytes is 4:2:0; default to
+                # planar I420 (ffmpeg yuv420p / test-sequence convention).
+                color_format = "YUV I420"
+
         self.width = width
         self.height = height
         self.dtype = dtype
         self.color_format = color_format
+
+        # YUV layouts are byte-packed planes, not W*H*C arrays: decode them
+        # before the generic channel heuristic (which would misread them).
+        if "YUV" in color_format:
+            raw_data = np.fromfile(file_name, dtype=np.uint8)
+            expected_size = self._yuv_expected_size(width, height, color_format)
+            if raw_data.size < expected_size:
+                raise ValueError(f"For {width}x{height} and format {color_format}, expected minimum {expected_size} bytes, found {raw_data.size}")
+            self.original_image_data = self._process_yuv(raw_data[:expected_size], width, height, color_format)
+            return
 
         # raw file reading
         raw_data = np.fromfile(file_name, dtype=container)
@@ -367,32 +393,12 @@ class ImageHandler:
              
         self.original_image_data = raw_data
         
-        # For non-YUV, non-Bayer single-channel images, we're done
-        if "YUV" not in color_format and "Bayer" not in color_format:
+        # For non-Bayer single-channel images, we're done
+        if "Bayer" not in color_format:
             return
 
-        expected_size = width * height
-        if "YUV" in color_format:
-            if "NV12" in color_format or "NV21" in color_format or "I420" in color_format:
-                 expected_size = int(width * height * 1.5)
-            elif "YUYV" in color_format or "UYVY" in color_format:
-                 expected_size = width * height * 2
-        
-        if raw_data.size < expected_size:
-            if "YUV" in color_format and dtype != np.uint8:
-                 raw_data = np.fromfile(file_name, dtype=np.uint8)
-            
-            if raw_data.size < expected_size:
-                 pass
-    
-        if raw_data.size != expected_size:
-             if raw_data.size > expected_size:
-                 raw_data = raw_data[:expected_size]
-             elif raw_data.size < expected_size:
-                 raise ValueError(f"For {width}x{height} and format {color_format}, expected minimum {expected_size} elements, found {raw_data.size}")
-
         # Post-Processing: Masking for non-standard bits
-        if not is_float and ("YUV" not in color_format):
+        if not is_float:
              container_bits = np.dtype(container).itemsize * 8
              if bits < container_bits:
                  mask = (1 << bits) - 1
@@ -403,13 +409,8 @@ class ImageHandler:
                      raw_data = (raw_data ^ sign_bit) - sign_bit
 
         # Reshaping
-        if "YUV" in color_format:
-            self.original_image_data = self._process_yuv(raw_data, width, height, color_format)
-        elif "Bayer" in color_format:
-             image = raw_data.reshape((height, width))
-             self.original_image_data = self._debayer(image, color_format)
-        else:
-             self.original_image_data = raw_data.reshape((height, width))
+        image = raw_data.reshape((height, width))
+        self.original_image_data = self._debayer(image, color_format)
 
     def _parse_dtype_string(self, type_str):
         type_str = type_str.lower().strip()
@@ -521,21 +522,40 @@ class ImageHandler:
         
         return rgb.astype(img.dtype)
         
+    @staticmethod
+    def _yuv_expected_size(width, height, format_str):
+        """Number of bytes a YUV frame of the given layout occupies."""
+        if "NV12" in format_str or "NV21" in format_str or "I420" in format_str:
+            # 4:2:0 — full-res Y plus two quarter-res chroma planes (rounded up).
+            return width * height + 2 * ((width + 1) // 2) * ((height + 1) // 2)
+        if "YUYV" in format_str or "UYVY" in format_str:
+            if width % 2:
+                raise ValueError(f"{format_str} requires an even width, got {width}")
+            return width * height * 2
+        raise ValueError(f"Unsupported YUV format: {format_str}")
+
     def _process_yuv(self, data, width, height, format_str):
         data = data.astype(np.float32) # Using float for calculation
         
         Y, U, V = None, None, None
         
-        if "NV12" in format_str or "NV21" in format_str:
+        if "NV12" in format_str or "NV21" in format_str or "I420" in format_str:
             y_end = width * height
+            cw, ch = (width + 1) // 2, (height + 1) // 2
             Y = data[:y_end].reshape((height, width))
-            uv = data[y_end:].reshape((height // 2, width // 2, 2))
-            uv_full = np.repeat(np.repeat(uv, 2, axis=0), 2, axis=1)
-            
-            if "NV12" in format_str:
-                U = uv_full[..., 0]; V = uv_full[..., 1]
+            if "I420" in format_str:
+                # Planar: U plane then V plane.
+                U_sub = data[y_end:y_end + cw * ch].reshape((ch, cw))
+                V_sub = data[y_end + cw * ch:y_end + 2 * cw * ch].reshape((ch, cw))
             else:
-                V = uv_full[..., 0]; U = uv_full[..., 1]
+                # Semi-planar: interleaved UV (NV12) or VU (NV21).
+                uv = data[y_end:y_end + 2 * cw * ch].reshape((ch, cw, 2))
+                if "NV12" in format_str:
+                    U_sub = uv[..., 0]; V_sub = uv[..., 1]
+                else:
+                    V_sub = uv[..., 0]; U_sub = uv[..., 1]
+            U = np.repeat(np.repeat(U_sub, 2, axis=0), 2, axis=1)[:height, :width]
+            V = np.repeat(np.repeat(V_sub, 2, axis=0), 2, axis=1)[:height, :width]
                 
         elif "YUYV" in format_str or "UYVY" in format_str:
              half_w = width // 2
