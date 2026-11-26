@@ -2927,7 +2927,8 @@ class ImageViewer(QMainWindow):
                     else: ext = ".png" # Default
                     file_name += ext
                 
-                self.active_label.current_pixmap.save(file_name)
+                # Full resolution, not the display proxy (I20).
+                self.active_label.full_resolution_image().save(file_name)
 
     def update_status_bar(self, x_coord, y_coord):
         if self.sender() is not self.active_label: return
@@ -3042,7 +3043,7 @@ class ImageViewer(QMainWindow):
             if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                 if self.active_label and self.active_label.current_pixmap:
                     clipboard = QApplication.clipboard()
-                    clipboard.setImage(self.active_label.current_pixmap.toImage())
+                    clipboard.setImage(self.active_label.full_resolution_image())  # not the proxy (I20)
                     self.status_bar.showMessage("Image Copied to Clipboard", 2000)
                 return
 

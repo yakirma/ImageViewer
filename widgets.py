@@ -628,6 +628,13 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self._crosshair_pos = None
         self._fit_scale = 1.0
         self._proxy_scale = 1.0 # Scale of the display pixmap relative to original data
+        # Full-resolution colormapped uint8 array behind a proxied current_pixmap
+        # (I06). The proxy is only used for zoomed-out display; when zoomed in
+        # past the proxy's resolution, paint draws a full-res tile of the
+        # visible region built from this array (cached in _tile).
+        self._full_rgb = None
+        self._full_rgb_owner = None  # the proxy pixmap _full_rgb belongs to
+        self._tile = None  # (owner pixmap, (x0, y0, x1, y1) in image px, QPixmap, stride)
 
         self.is_active = False
         self.crosshair_enabled = False
@@ -692,6 +699,128 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self._single_interaction_timer.setSingleShot(True)
         self._single_interaction_timer.setInterval(180)
         self._single_interaction_timer.timeout.connect(self._end_single_interaction)
+
+    @property
+    def current_pixmap(self):
+        return self._current_pixmap
+
+    @current_pixmap.setter
+    def current_pixmap(self, pixmap):
+        self._current_pixmap = pixmap
+        if pixmap is None or pixmap is not getattr(self, '_full_rgb_owner', None):
+            # Cleared or replaced by someone else: the full-res backing data
+            # no longer describes what is shown.
+            self._full_rgb = None
+            self._full_rgb_owner = None
+            self._tile = None
+
+    def _has_full_res(self):
+        return self._full_rgb is not None and self._full_rgb_owner is self._current_pixmap
+
+    @staticmethod
+    def _array_to_qimage(arr):
+        """Build an owning QImage from a uint8 (H,W), (H,W,3) or (H,W,4) array."""
+        if not arr.flags['C_CONTIGUOUS']:
+            arr = np.ascontiguousarray(arr)
+        h, w = arr.shape[:2]
+        if arr.ndim == 3 and arr.shape[2] == 4:
+            fmt, stride = QImage.Format.Format_RGBA8888, w * 4
+        elif arr.ndim == 3:
+            fmt, stride = QImage.Format.Format_RGB888, w * 3
+        else:
+            fmt, stride = QImage.Format.Format_Grayscale8, w
+        # .copy() makes the QImage own its buffer, so arr can be dropped.
+        return QImage(arr.data, w, h, stride, fmt).copy()
+
+    def full_resolution_image(self):
+        """The displayed (colormapped) image at the data's full resolution,
+        even when current_pixmap is a downsampled proxy (I20)."""
+        if self._has_full_res():
+            return self._array_to_qimage(self._full_rgb)
+        if self.current_pixmap is not None:
+            return self.current_pixmap.toImage()
+        return None
+
+    def _image_size(self):
+        """(w, h) of the image in original-data pixels."""
+        if self.original_data is not None:
+            h, w = self.original_data.shape[:2]
+            return float(w), float(h)
+        if self.current_pixmap is not None and self._proxy_scale > 0:
+            return (self.current_pixmap.width() / self._proxy_scale,
+                    self.current_pixmap.height() / self._proxy_scale)
+        return 0.0, 0.0
+
+    # Full-res tile limits, in tile pixels (samples) per dimension: the
+    # visible region uses at most _TILE_MAX_DIM, plus at least _TILE_MIN_MARGIN
+    # on each side for panning.
+    _TILE_MAX_DIM = 4096
+    _TILE_MIN_MARGIN = 256
+
+    def _visible_image_rect(self):
+        """Visible region in integer image pixels (x0, y0, x1, y1), or None."""
+        scale = self._get_effective_scale_factor()
+        if scale <= 0:
+            return None
+        W, H = self._image_size()
+        off = self._get_effective_offset()
+        left = (0 - (self.width() / 2 + off.x())) / scale + W / 2
+        top = (0 - (self.height() / 2 + off.y())) / scale + H / 2
+        right = left + self.width() / scale
+        bottom = top + self.height() / scale
+        x0, y0 = max(0, int(np.floor(left))), max(0, int(np.floor(top)))
+        x1, y1 = min(int(W), int(np.ceil(right))), min(int(H), int(np.ceil(bottom)))
+        if x0 >= x1 or y0 >= y1:
+            return None
+        return x0, y0, x1, y1
+
+    def _tile_stride(self, vis):
+        """Sampling stride for a tile covering `vis`: 1 (every source pixel)
+        unless the visible region exceeds _TILE_MAX_DIM, in which case the
+        screen shows fewer than ~4096 px across it and a nearest-neighbour
+        subsample with stride ceil(v / _TILE_MAX_DIM) is still finer than
+        the screen. Returns None when that is no finer than the proxy."""
+        v = max(vis[2] - vis[0], vis[3] - vis[1])
+        stride = max(1, -(-v // self._TILE_MAX_DIM))
+        step = int(round(1.0 / self._proxy_scale)) if self._proxy_scale > 0 else 1
+        return None if stride >= step else stride
+
+    def _full_res_tile(self, vis, allow_build):
+        """Cached full-res tile covering `vis`, rebuilt (with a pan margin)
+        when needed and allowed. Returns (rect, pixmap, stride, covers) or
+        None (draw the proxy). During interaction a stale tile is returned
+        as-is for partial coverage; `covers` says whether it is exact."""
+        stride = self._tile_stride(vis)
+        tile = self._tile
+        if tile is not None and tile[0] is self._current_pixmap:
+            _, rect, pix, t_stride = tile
+            tx0, ty0, tx1, ty1 = rect
+            covers = (t_stride == stride and tx0 <= vis[0] and ty0 <= vis[1]
+                      and tx1 >= vis[2] and ty1 >= vis[3])
+            if covers or not allow_build:
+                return rect, pix, t_stride, covers
+        elif not allow_build:
+            return None
+        if stride is None:
+            self._tile = None
+            return None
+        H, W = self._full_rgb.shape[:2]
+        x0, y0, x1, y1 = vis
+        cap = (self._TILE_MAX_DIM + 2 * self._TILE_MIN_MARGIN) * stride
+
+        def margin(v):
+            return int(min(max(64 * stride, v // 2), max(0, (cap - v) // 2)))
+
+        mx, my = margin(x1 - x0), margin(y1 - y0)
+        # Snap to the stride grid so tiles at the same stride sample the same
+        # source pixels (no shimmer when the tile is rebuilt while panning).
+        x0 = max(0, (x0 - mx) // stride * stride)
+        y0 = max(0, (y0 - my) // stride * stride)
+        x1, y1 = min(W, x1 + mx), min(H, y1 + my)
+        img = self._array_to_qimage(self._full_rgb[y0:y1:stride, x0:x1:stride])
+        rect = (x0, y0, x1, y1)
+        self._tile = (self._current_pixmap, rect, QPixmap.fromImage(img), stride)
+        return rect, self._tile[2], stride, True
 
     def _begin_single_interaction(self):
         """Mark the start of a user-driven pan/zoom in single-view mode.
@@ -807,15 +936,9 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             return
 
         scale = self._get_effective_scale_factor()
-        p_w = self.current_pixmap.width()
-        p_h = self.current_pixmap.height()
-        
-        if self._proxy_scale > 0:
-            w = (p_w / self._proxy_scale) * scale
-            h = (p_h / self._proxy_scale) * scale
-        else:
-            w = p_w * scale
-            h = p_h * scale
+        img_w, img_h = self._image_size()
+        w = img_w * scale
+        h = img_h * scale
 
         target_rect = QRectF(0, 0, w, h)
         target_rect.moveCenter(QPointF(self.rect().center()) + self._get_effective_offset())
@@ -1086,41 +1209,31 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             return
 
         h, w = processed_data.shape[:2]
-        c_out = processed_data.shape[2] if processed_data.ndim == 3 else 1
-        
+        if not processed_data.flags['C_CONTIGUOUS']:
+            processed_data = np.ascontiguousarray(processed_data)
+        full_rgb = processed_data
+
         self._proxy_scale = 1.0
         if max(h, w) > MAX_DIM:
             import math
             step = max(1, int(math.ceil(max(h, w) / MAX_DIM)))
             if step > 1:
                 self._proxy_scale = 1.0 / step
-                if processed_data.ndim == 3:
-                     processed_data = processed_data[::step, ::step, :]
-                else:
-                     processed_data = processed_data[::step, ::step]
-
-        h, w = processed_data.shape[:2]
-        if not processed_data.flags['C_CONTIGUOUS']:
-            processed_data = np.ascontiguousarray(processed_data)
-            
-        # Select correct QImage Format and Stride
-        if processed_data.ndim == 3:
-            if c_out == 4:
-                fmt = QImage.Format.Format_RGBA8888
-                stride = w * 4
-            else:
-                fmt = QImage.Format.Format_RGB888
-                stride = w * 3
-        else:
-            fmt = QImage.Format.Format_Grayscale8
-            stride = w
+                processed_data = processed_data[::step, ::step]
 
         # Build the QImage once from the (possibly downsampled) processed_data.
-        # .copy() makes the QImage own its buffer, so the temporary bytes are
-        # safe to drop immediately afterwards.
-        _bytes = processed_data.tobytes()
-        q_image = QImage(_bytes, w, h, stride, fmt).copy()
+        q_image = self._array_to_qimage(processed_data)
         pixmap = QPixmap.fromImage(q_image)
+        # Keep the full-res array when proxied so zoomed-in views and
+        # export/copy use real pixels (I06, I20). Set the owner before
+        # update_pixmap_content so the current_pixmap setter keeps it.
+        if self._proxy_scale < 1.0:
+            self._full_rgb = full_rgb
+            self._full_rgb_owner = pixmap
+        else:
+            self._full_rgb = None
+            self._full_rgb_owner = None
+        self._tile = None
         
         if is_new_image:
             self.processed_data = None 
@@ -1205,11 +1318,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                 img_cy = h_widget / 2 + offset.y()
                 
                 # Visual dimensions
-                draw_scale = scale
-                if self._proxy_scale > 0:
-                     draw_scale = scale / self._proxy_scale
-                
-                vis_h = self.current_pixmap.height() * draw_scale
+                vis_h = self._image_size()[1] * scale
                 
                 # Image Top Y
                 img_top_y = img_cy - vis_h / 2
@@ -1529,25 +1638,28 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             return
 
         painter = QPainter(self)
-        
+        self._paint_contents(painter)
+
+    def _paint_contents(self, painter):
+        """All of paintEvent's drawing; split out so it can render to any
+        paint device (tests render to a QImage, as QOpenGLWidget cannot
+        paint on the offscreen platform)."""
         # Calculate Effective Transform
         offset = self._get_effective_offset()
         scale = self._get_effective_scale_factor()
+        img_w, img_h = self._image_size()
 
         painter.save()
         
         # Apply Zoom and Pan (Center-based)
         painter.translate(self.width() / 2 + offset.x(), self.height() / 2 + offset.y())
         
-        # Calculate draw_scale accounting for Proxy
+        # Work in ORIGINAL image pixel coordinates (origin at the top-left).
+        # The proxy pixmap is scaled up by 1/_proxy_scale when drawn.
         draw_scale = scale
-        if self._proxy_scale > 0:
-            draw_scale = scale / self._proxy_scale
-            
-        painter.scale(draw_scale, draw_scale)
-        
-        # Move back by half the PIXMAP size (center it)
-        painter.translate(-self.current_pixmap.width() / 2, -self.current_pixmap.height() / 2)
+        painter.scale(scale, scale)
+        painter.translate(-img_w / 2, -img_h / 2)
+        inv_proxy = 1.0 / self._proxy_scale if self._proxy_scale > 0 else 1.0
         
         # Determine if we should use Smooth Transformation
         # Use Fast if interacting (scrolling/dragging) to improve performance,
@@ -1561,7 +1673,11 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         elif scale_factor_for_hint > 1.0:
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.zoom_in_interp == Qt.TransformationMode.SmoothTransformation)
-        else: # scale == 1.0 or not use_smooth for zoom out
+        elif scale_factor_for_hint == 1.0:
+            # 1:1 shows source pixels exactly; smoothing would only blur them
+            # when the image sits at a half-pixel offset (odd sizes).
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+        else: # not use_smooth for zoom out
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.zoom_out_interp == Qt.TransformationMode.SmoothTransformation and use_smooth)
 
         # Antialiasing OFF for the pixmap draw (pixel-sharp rendering of the image data).
@@ -1570,33 +1686,57 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
 
         # Draw Image (Thumbnail Optimized)
         drawn = False
+        # Extent of the proxy pixmap in original pixels (>= image size when
+        # the proxy step does not divide it evenly).
+        proxy_w = self.current_pixmap.width() * inv_proxy
         if self.thumbnail_pixmap and scale < 0.5: # Only use thumb if significantly zoomed out
-             target_width = self.current_pixmap.width() * scale
+             # True on-screen width: scale is relative to the ORIGINAL
+             # resolution, not the proxy (I31).
+             target_width = proxy_w * scale
              # If target on screen is smaller than thumbnail, use thumbnail
              if target_width < self.thumbnail_pixmap.width():
                  painter.save()
-                 # Adjust scale: We are in "Original Image Space".
-                 # Thumbnail is smaller. We need to scale UP the drawing context to make the thumbnail fill the Original space.
-                 # Ratio > 1.0
-                 width_ratio = self.current_pixmap.width() / self.thumbnail_pixmap.width()
+                 width_ratio = proxy_w / self.thumbnail_pixmap.width()
                  painter.scale(width_ratio, width_ratio)
                  painter.drawPixmap(0, 0, self.thumbnail_pixmap)
                  painter.restore()
                  drawn = True
-        
+
+        if not drawn and self._has_full_res() and scale > self._proxy_scale:
+            # Zoomed in past the proxy's resolution: draw real pixels for the
+            # visible region (I06). While panning/zooming, don't rebuild the
+            # tile; draw the proxy plus whatever the cached tile covers, and
+            # the end-of-interaction repaint builds the exact tile.
+            vis = self._visible_image_rect()
+            if vis is not None:
+                interacting = self._is_user_interacting()
+                tile = self._full_res_tile(vis, allow_build=not interacting)
+                if tile is None or not tile[3]:
+                    painter.save()
+                    painter.scale(inv_proxy, inv_proxy)
+                    painter.drawPixmap(0, 0, self.current_pixmap)
+                    painter.restore()
+                if tile is not None:
+                    (tx0, ty0, _, _), tile_pix, t_stride, _ = tile
+                    painter.save()
+                    painter.translate(tx0, ty0)
+                    if t_stride != 1:
+                        painter.scale(t_stride, t_stride)
+                    painter.drawPixmap(0, 0, tile_pix)
+                    painter.restore()
+            drawn = True
+
         if not drawn:
+            painter.save()
+            painter.scale(inv_proxy, inv_proxy)
             painter.drawPixmap(0, 0, self.current_pixmap)
+            painter.restore()
 
         # Draw Overlays (in Original Image Space)
         if self.overlays:
             painter.save()
-            # If the label is using a proxy, the painter coordinate system 
-            # is currently aligned to PIXMAP pixels (scaled by draw_scale).
-            # Overlays are now scaled to match the ORIGINAL resolution for sharpness.
-            # So we must scale the painter by _proxy_scale to draw at original res.
-            if self._proxy_scale > 0:
-                painter.scale(self._proxy_scale, self._proxy_scale)
-            
+            # The painter is already in original-image pixel coordinates;
+            # overlays are scaled to the ORIGINAL resolution for sharpness.
             # Get target dimensions (Original image space)
             orig_size = self.get_original_size()
             
@@ -1639,8 +1779,8 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
         # Calculate target rect for Crosshair (Widget Coordinates)
-        w = self.current_pixmap.width() * draw_scale
-        h = self.current_pixmap.height() * draw_scale
+        w = img_w * scale
+        h = img_h * scale
         target_rect = QRectF(0, 0, w, h)
         target_rect.moveCenter(QPointF(self.rect().center()) + offset)
 
