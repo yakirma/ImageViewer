@@ -2341,7 +2341,9 @@ class ImageViewer(QMainWindow):
     def open_files(self, file_paths):
         """
         Refined multi-file opening logic:
-        - <= 3 files: Open as montage.
+        - 1 file: Open in the main view (single-image pipeline: video playback,
+          raw resolution prompts/history, load error reporting).
+        - 2-3 files: Open as montage.
         - > 3 files: Open first in main view, add all to sidebar, show sidebar.
         """
         if not file_paths:
@@ -2352,7 +2354,9 @@ class ImageViewer(QMainWindow):
         if not valid_paths:
             return
 
-        if len(valid_paths) <= 3:
+        if len(valid_paths) == 1:
+            self.open_file(valid_paths[0], is_manual=True)
+        elif len(valid_paths) <= 3:
             self.display_montage(valid_paths, is_manual=True)
         else:
             if self.thumbnail_pane:
