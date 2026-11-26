@@ -25,19 +25,29 @@ if str(ROOT) not in sys.path:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_side_effects(monkeypatch):
+def _isolate_side_effects(monkeypatch, tmp_path):
     """Neutralize ImageViewer side-effects that would touch the network,
     the user's settings file, or the file system."""
     import image_viewer as iv_mod
+    import settings as settings_mod
+    import widgets as widgets_mod
 
     # Block the update checker from making a real GitHub API call.
     monkeypatch.setattr(iv_mod.CheckForUpdates, "run", lambda self: None, raising=True)
     monkeypatch.setattr(iv_mod.CheckForUpdates, "start", lambda self, *a, **kw: None, raising=True)
 
-    # Avoid mutating the real QSettings during tests.
+    # Never touch the user's real settings. On macOS, QSettings("Org", "App")
+    # (and QSettings() with the app's org/name) always writes to the native
+    # plist regardless of setDefaultFormat/XDG_CONFIG_HOME, so redirect every
+    # module that constructs QSettings directly to a per-test INI file.
     from PyQt6.QtCore import QSettings
-    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(ROOT / ".pytest_qsettings"))
+    ini_path = str(tmp_path / "qsettings.ini")
+
+    def _isolated_qsettings(*_args, **_kwargs):
+        return QSettings(ini_path, QSettings.Format.IniFormat)
+
+    for mod in (settings_mod, widgets_mod):
+        monkeypatch.setattr(mod, "QSettings", _isolated_qsettings, raising=True)
 
 
 @pytest.fixture

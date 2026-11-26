@@ -46,6 +46,7 @@ from widgets import ZoomableDraggableLabel, InfoPane, MathTransformPane, ZoomSet
     ThumbnailPane, SharedViewState, FileExplorerPane, PointCloudViewer
 from image_handler import ImageHandler
 import settings
+from utils import split_npz_key
 
 # requests is imported lazily inside the network paths (update checker,
 # DA3 model download). It transitively pulls urllib3 + ssl on first import,
@@ -1388,10 +1389,7 @@ class ImageViewer(QMainWindow):
         
         for file_path in file_paths:
             # Handle NPZ key paths (format: "file.npz#key_name")
-            npz_key_to_load = None
-            actual_file_path = file_path
-            if '#' in file_path:
-                actual_file_path, npz_key_to_load = file_path.rsplit('#', 1)
+            actual_file_path, npz_key_to_load = split_npz_key(file_path)
             
             temp_handler = ImageHandler()
             basename = os.path.basename(actual_file_path)
@@ -2340,12 +2338,7 @@ class ImageViewer(QMainWindow):
             self.thumbnail_pane.unremove_files([file_path])
         
         # Handle NPZ key paths (format: "file.npz#key_name")
-        npz_key_to_switch = None
-        actual_file_path = file_path  # The actual file on disk
-        if '#' in file_path:
-            actual_file, key_name = file_path.rsplit('#', 1)
-            npz_key_to_switch = key_name
-            actual_file_path = actual_file
+        actual_file_path, npz_key_to_switch = split_npz_key(file_path)
         
         # Store the original path (with NPZ key if present) for overlay tracking
         self.current_file_path = file_path
@@ -2356,9 +2349,9 @@ class ImageViewer(QMainWindow):
         overlays_to_remove = []
         for (src, tgt) in self.overlay_alphas.keys():
             # Extract base file paths for comparison
-            src_base = src.rsplit('#', 1)[0] if '#' in src else src
-            tgt_base = tgt.rsplit('#', 1)[0] if '#' in tgt else tgt
-            current_base = file_path.rsplit('#', 1)[0] if '#' in file_path else file_path
+            src_base = split_npz_key(src)[0]
+            tgt_base = split_npz_key(tgt)[0]
+            current_base = actual_file_path
             # Remove pairs where neither source nor target matches the current file
             if src_base != current_base and tgt_base != current_base:
                 overlays_to_remove.append((src, tgt))

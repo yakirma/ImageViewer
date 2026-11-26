@@ -132,3 +132,20 @@ def flow_to_color(flow_uv, max_flow=None):
     v = v / (rad_max + epsilon)
 
     return compute_color(u, v).astype(np.uint8)
+
+
+def split_npz_key(path):
+    """Split an NPZ key path of the form ``"file.npz#key"``.
+
+    Returns ``(file_path, key)``; ``key`` is ``None`` when ``path`` is not an
+    NPZ key path. Only splits when the part before the last ``'#'`` ends with
+    ``.npz`` and either that file exists or the full path does not, so that
+    ordinary paths containing ``'#'`` (e.g. ``/work/C#proj/x.png``) are kept
+    intact.
+    """
+    if not path or '#' not in path:
+        return path, None
+    base, key = path.rsplit('#', 1)
+    if base.lower().endswith('.npz') and (os.path.exists(base) or not os.path.exists(path)):
+        return base, key
+    return path, None
