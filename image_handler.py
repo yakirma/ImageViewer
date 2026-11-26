@@ -1,3 +1,4 @@
+import math
 import os
 import re
 import numpy as np
@@ -307,9 +308,14 @@ class ImageHandler:
                 dtype = str(dtype_str) # logical dtype is string
         else:
             width, height, dtype_raw = self.parse_resolution(file_name)
-            
+
             if width == 0 or height == 0:
-                 raise ValueError("Resolution (_WxH) not found in filename.")
+                 # No size in the name: use an estimate that fits the file
+                 # exactly (e.g. for thumbnails), else give up.
+                 width, height, dtype_raw, guess_fmt, _ = self.guess_raw_layout(file_name)
+                 if width == 0 or height == 0:
+                     raise ValueError("Resolution (_WxH) not found in filename.")
+                 color_format = guess_fmt
 
             if isinstance(dtype_raw, str):
                  container, bits, is_signed, is_float = self._parse_dtype_string(dtype_raw)
@@ -437,17 +443,81 @@ class ImageHandler:
         
         return container, bits, is_signed, False
 
+    # Resolutions tried first (exact pixel-count match) when a raw file has no
+    # size in its name; plain factor searches get 16:9 sizes wrong.
+    COMMON_RAW_RESOLUTIONS = [
+        (1920, 1080), (1280, 720), (3840, 2160), (4096, 2160), (2560, 1440),
+        (640, 480), (1280, 960), (1280, 800), (1920, 1200), (2048, 1536),
+        (1600, 1200), (4000, 3000), (7680, 4320), (2048, 1080), (1440, 1080),
+        (1280, 1024), (1024, 768), (800, 600), (320, 240), (752, 480),
+        (2592, 1944), (3264, 2448), (4032, 3024), (4056, 3040), (4208, 3120),
+    ]
+
+    @classmethod
+    def guess_exact_dims(cls, file_size, bpp, color_format="Grayscale"):
+        """(width, height) with width*height*bpp == file_size, or None.
+
+        Tries, in order: a common resolution, a square, then the factor pair
+        closest to 4:3 (aspect within 4:1, preferring 16-aligned widths).
+        """
+        pixels = file_size / bpp if bpp > 0 else 0
+        if pixels < 1 or pixels != int(pixels):
+            return None
+        pixels = int(pixels)
+        need_even = "YUV" in color_format
+
+        def ok(w, h):
+            return w * h == pixels and not (need_even and (w % 2 or h % 2))
+
+        for w, h in cls.COMMON_RAW_RESOLUTIONS:
+            if ok(w, h):
+                return w, h
+        side = math.isqrt(pixels)
+        if ok(side, side):
+            return side, side
+        best, best_score = None, None
+        for h in range(1, side + 1):
+            if pixels % h:
+                continue
+            w = pixels // h
+            if w > 4 * h or not ok(w, h):
+                continue
+            score = (abs(math.log((w / h) / (4.0 / 3.0))), w % 16 != 0)
+            if best_score is None or score < best_score:
+                best, best_score = (w, h), score
+        return best
+
+    def guess_raw_layout(self, file_name, file_size=None):
+        """Estimate parameters for a raw file without a resolution in its name.
+
+        Returns (width, height, dtype, color_format, bytes_per_pixel); width and
+        height are 0 when no size uses the whole file exactly.
+        """
+        ext = os.path.splitext(file_name)[1].lower()
+        if file_size is None:
+            file_size = os.path.getsize(file_name)
+        dtype = self.dtype_map.get(ext, np.uint8)
+        try:
+            container = self._parse_dtype_string(dtype)[0] if isinstance(dtype, str) else dtype
+            itemsize = np.dtype(container).itemsize
+        except Exception:
+            itemsize = 1
+        color_format = self.yuv_extension_formats.get(ext, "Grayscale")
+        channels = {".rgb": 3, ".bgr": 3, ".rgba": 4, ".bgra": 4}.get(ext, 1)
+        if channels > 1:
+            color_format = "RGB" if channels == 3 else "RGBA"
+        bpp = float(itemsize * channels)
+        if "YUV" in color_format:
+            bpp = 1.5 if ("NV12" in color_format or "NV21" in color_format) else 2.0
+        dims = self.guess_exact_dims(file_size, bpp, color_format) or (0, 0)
+        return dims[0], dims[1], dtype, color_format, bpp
+
     def parse_resolution(self, file_name):
+        """Resolution from a `_WxH`/`-WxH` filename tag, else (0, 0)."""
         basename = os.path.basename(file_name)
         match = re.search(r"[\-_](\d+)x(\d+)", basename)
         width, height = (int(match.group(1)), int(match.group(2))) if match else (0, 0)
-        
-        if width == 0:
-             size = os.path.getsize(file_name)
-             side = int(np.sqrt(size))
-             if side * side == size:
-                 width, height = side, side
-        
+
         # Return 0,0 if not found instead of raising
         # if width == 0:
         #      raise ValueError("Resolution (_WxH) not found in filename.")

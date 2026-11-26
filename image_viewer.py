@@ -2383,6 +2383,29 @@ class ImageViewer(QMainWindow):
         except ValueError:
             return False
 
+    def _clear_main_view_after_failed_load(self):
+        """Drop the previously displayed image after a load failed."""
+        self.stacked_widget.setCurrentWidget(self.image_display_container)
+        label = self.image_label
+        if self.active_label is not label:
+            # So an open histogram/info pane stops tracking a montage label.
+            self._set_active_montage_label(label)
+        self.image_handler.original_image_data = None
+        label.original_data = None
+        label.inspection_data = None
+        label.pristine_data = None
+        label.base_inspection_data = None
+        label.processed_data = None
+        label.current_pixmap = None
+        label.thumbnail_pixmap = None
+        if hasattr(label, 'metadata'):
+            del label.metadata  # stale; _update_active_view skips the Info pane without it
+        label.update()
+        self.video_toolbar.hide()
+        self.playback_timer.stop()
+        self.histogram_action.setEnabled(False)
+        self.math_transform_action.setEnabled(False)
+
     def open_file(self, file_path=None, override_settings=None, maintain_view_state=None, is_manual=False):
         # Path of a raw file with a parsed resolution that failed to load; the
         # InfoPane was left editable so the user can pick a format for it.
@@ -2463,36 +2486,27 @@ class ImageViewer(QMainWindow):
                  self.info_pane.set_raw_mode(True)
                  self.stacked_widget.setCurrentWidget(self.image_display_container)
                  
-                 # Infer dtype from extension
-                 dtype = self.image_handler.dtype_map.get(ext.lower(), np.uint8)
-                 
-                 # Determine BPP from dtype
-                 try:
-                     if isinstance(dtype, str):
-                          container, _, _, _ = self.image_handler._parse_dtype_string(dtype)
-                          guess_bpp = float(np.dtype(container).itemsize)
-                     else:
-                          guess_bpp = float(np.dtype(dtype).itemsize)
-                 except Exception:
-                     guess_bpp = 1.0
+                 # Estimate from the file size, accounting for the dtype,
+                 # channels (.rgb/.rgba) and YUV layout implied by the extension.
+                 # Common resolutions, then a square, then the factor pair
+                 # closest to 4:3 that uses the whole file.
+                 ex_w, ex_h, dtype, guess_format, guess_bpp = \
+                     self.image_handler.guess_raw_layout(actual_file_path, file_size)
+                 exact = (ex_w, ex_h) if ex_w and ex_h else None
+                 if exact:
+                     width, height = exact
+                 else:
+                     # Guess Parameters using 4:3 Aspect Ratio
+                     guess_width = int(np.sqrt((file_size / guess_bpp) * (4.0/3.0)))
+                     # Align to 16
+                     guess_width = (guess_width // 16) * 16
+                     if guess_width < 1: guess_width = 1280
 
-                 # Extensions like .nv12/.yuyv fix the layout; account for its
-                 # bytes-per-pixel so the size guess is right.
-                 guess_format = self.image_handler.yuv_extension_formats.get(ext.lower(), 'Grayscale')
-                 if "YUV" in guess_format:
-                     guess_bpp = 1.5 if ("NV12" in guess_format or "NV21" in guess_format) else 2.0
-
-                 # Guess Parameters using 4:3 Aspect Ratio
-                 guess_width = int(np.sqrt((file_size / guess_bpp) * (4.0/3.0)))
-                 # Align to 16
-                 guess_width = (guess_width // 16) * 16
-                 if guess_width < 1: guess_width = 1280
-
-                 width = guess_width
-                 height = int(file_size / (width * guess_bpp))
-                 if "NV12" in guess_format or "NV21" in guess_format:
-                     height -= height % 2  # 4:2:0 chroma needs whole row pairs
-                 if height < 1: height = 1
+                     width = guess_width
+                     height = int(file_size / (width * guess_bpp))
+                     if "NV12" in guess_format or "NV21" in guess_format:
+                         height -= height % 2  # 4:2:0 chroma needs whole row pairs
+                     if height < 1: height = 1
                  
                  self.info_pane.update_info(width, height, dtype, self.image_handler.dtype_map,
                                             file_size=file_size, color_format=guess_format)
@@ -2524,6 +2538,10 @@ class ImageViewer(QMainWindow):
                  
                  # Use the guessed settings as override
                  override_settings = guess_settings
+
+                 # Nothing from a previous (video) file applies to this one.
+                 self.video_toolbar.hide()
+                 self.playback_timer.stop()
 
                  try:
                      self.image_handler.load_image(file_path, override_settings=guess_settings)
@@ -2567,8 +2585,27 @@ class ImageViewer(QMainWindow):
                          self._refresh_thumbnail_pane()
                      
                  except Exception as e:
-                     pass
-                     
+                     # Don't leave the previous image on screen / in the handler
+                     # looking like this file. Keep the Info pane open so the
+                     # user can enter the right parameters (reapply_raw_parameters
+                     # then shows the file via _raw_recovery_path).
+                     self._clear_main_view_after_failed_load()
+                     self.info_pane.blockSignals(True)
+                     self.info_pane.update_info(guess_settings['width'], guess_settings['height'],
+                                                guess_settings['dtype'], self.image_handler.dtype_map,
+                                                file_size=file_size,
+                                                color_format=guess_settings.get('color_format', guess_format))
+                     self.info_pane.blockSignals(False)
+                     self.info_pane.set_raw_mode(True)
+                     self.info_action.setEnabled(True)
+                     self._set_dock_visibility_preserving_window(self.info_pane, True)
+                     self._raw_recovery_path = actual_file_path
+                     msg = (f"Could not open {os.path.basename(actual_file_path)} with estimated "
+                            f"parameters ({guess_settings['width']}x{guess_settings['height']}): {e}. "
+                            "Enter the correct width/height/format in the Info pane.")
+                     self.status_bar.showMessage(msg, 15000)
+                     QMessageBox.warning(self, "Resolution Unknown", msg)
+
                  return # Stop here, as we've handled the load attempt manually
 
         # Proceed to load image (Standard or Raw with Resolution or Override)
