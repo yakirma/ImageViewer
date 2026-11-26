@@ -1,7 +1,7 @@
 PyQt6
 Pillow
 numpy
-matplotlib
+matplotlib>=3.6
 pyqtgraph
 opencv-python
 PyOpenGL
