@@ -27,6 +27,7 @@ jobs:
   test:
     name: Run tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Time estimate
         run: |
@@ -52,12 +53,14 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements-build.txt
-          pip install pytest pytest-qt
+          pip install pytest pytest-qt pytest-timeout
 
       - name: Run pytest
         env:
           QT_QPA_PLATFORM: offscreen
-        run: pytest tests/ -q
+        # --timeout: a hung test (e.g. an unpatched modal dialog) fails with a
+        # stack dump of every thread instead of blocking the job.
+        run: pytest tests/ -v --timeout=120 --timeout-method=thread
 
   # --------------------------------------------------------------------
   # Windows: PyInstaller → NSIS installer (.exe)

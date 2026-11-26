@@ -49,6 +49,52 @@ def _isolate_side_effects(monkeypatch, tmp_path):
     for mod in (settings_mod, widgets_mod):
         monkeypatch.setattr(mod, "QSettings", _isolated_qsettings, raising=True)
 
+    _block_modal_dialogs(monkeypatch)
+
+
+def _block_modal_dialogs(monkeypatch):
+    """Make every modal dialog return immediately with a "cancel" answer.
+
+    Under QT_QPA_PLATFORM=offscreen nobody can click a dialog, so a stray
+    QMessageBox.critical()/QDialog.exec() blocks the test run forever (this
+    hung CI for 25+ minutes). Tests that want to observe a dialog still
+    monkeypatch it themselves; their patch is applied after this autouse
+    fixture and therefore wins.
+    """
+    from PyQt6.QtWidgets import (
+        QColorDialog, QDialog, QFileDialog, QInputDialog, QMenu, QMessageBox,
+    )
+
+    SB = QMessageBox.StandardButton
+
+    def _msg(answer):
+        def _stub(*_a, **_k):
+            return answer
+        return staticmethod(_stub)
+
+    for name in ("critical", "warning", "information"):
+        monkeypatch.setattr(QMessageBox, name, _msg(SB.Ok))
+    monkeypatch.setattr(QMessageBox, "question", _msg(SB.No))
+    monkeypatch.setattr(QMessageBox, "about", _msg(None))
+    monkeypatch.setattr(QMessageBox, "aboutQt", _msg(None))
+
+    # Instance-level exec()/open() of QDialog subclasses (QMessageBox,
+    # QFileDialog, QInputDialog, custom dialogs): reject immediately.
+    def _reject(self, *_a, **_k):
+        return 0
+    for cls in (QDialog, QMessageBox, QFileDialog, QInputDialog, QColorDialog):
+        monkeypatch.setattr(cls, "exec", _reject)
+    monkeypatch.setattr(QMenu, "exec", lambda self, *a, **k: None)
+
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", _msg(("", "")))
+    monkeypatch.setattr(QFileDialog, "getOpenFileNames", _msg(([], "")))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", _msg(("", "")))
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", _msg(""))
+    monkeypatch.setattr(QInputDialog, "getInt", _msg((0, False)))
+    monkeypatch.setattr(QInputDialog, "getDouble", _msg((0.0, False)))
+    monkeypatch.setattr(QInputDialog, "getText", _msg(("", False)))
+    monkeypatch.setattr(QInputDialog, "getItem", _msg(("", False)))
+
 
 @pytest.fixture
 def viewer(qtbot, monkeypatch):
