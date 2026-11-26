@@ -58,8 +58,11 @@ def _set_view(label, scale, offset=(0.0, 0.0)):
 def _expected(scale, offset, data):
     """Nearest-neighbour expected gray values for each widget pixel."""
     h, w = data.shape
-    xs = (np.arange(VW) + 0.5 - (VW / 2 + offset[0])) / scale + w / 2
-    ys = (np.arange(VH) + 0.5 - (VH / 2 + offset[1])) / scale + h / 2
+    # The image top-left is drawn snapped to a whole pixel (I43).
+    left = np.floor(VW / 2 + offset[0] - w * scale / 2 + 0.5)
+    top = np.floor(VH / 2 + offset[1] - h * scale / 2 + 0.5)
+    xs = (np.arange(VW) + 0.5 - left) / scale
+    ys = (np.arange(VH) + 0.5 - top) / scale
     xi, yi = np.floor(xs).astype(int), np.floor(ys).astype(int)
     assert xi.min() >= 0 and xi.max() < w and yi.min() >= 0 and yi.max() < h
     return (data[np.ix_(yi, xi)] * 255).astype(np.uint8)

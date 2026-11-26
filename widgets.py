@@ -2,7 +2,7 @@ import time
 
 import numpy as np
 import re
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QPointF, QEvent, QObject, QTimer, QRectF, QSettings, QSortFilterProxyModel, QDir, QRegularExpression, QItemSelectionModel, QSize
+from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QPointF, QEvent, QObject, QTimer, QRectF, QSizeF, QSettings, QSortFilterProxyModel, QDir, QRegularExpression, QItemSelectionModel, QSize
 from PyQt6.QtGui import QPixmap, QPainter, QNativeGestureEvent, QDoubleValidator, QKeyEvent, QImage, QMouseEvent, QColor, QIcon, QFileSystemModel, QRadialGradient, QLinearGradient, QPen, QBrush
 from PyQt6.QtGui import QMatrix4x4
 from PyQt6.QtWidgets import (
@@ -786,9 +786,9 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         if scale <= 0:
             return None
         W, H = self._image_size()
-        off = self._get_effective_offset()
-        left = (0 - (self.width() / 2 + off.x())) / scale + W / 2
-        top = (0 - (self.height() / 2 + off.y())) / scale + H / 2
+        tl = self._image_top_left()  # same snapped origin as paint
+        left = -tl.x() / scale
+        top = -tl.y() / scale
         right = left + self.width() / scale
         bottom = top + self.height() / scale
         x0, y0 = max(0, int(np.floor(left))), max(0, int(np.floor(top)))
@@ -934,7 +934,8 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
 
     def set_crosshair_enabled(self, enabled):
         self.crosshair_enabled = enabled
-        self.setMouseTracking(enabled)
+        # Mouse tracking stays on regardless (set in __init__): the hover
+        # pixel readout (hover_moved) needs move events without a button held.
         if enabled:
             # Try to set initial position from current mouse location using QCursor
             # This ensures crosshair appears immediately without needing mouse move
@@ -954,6 +955,39 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         
         self.update()
 
+    def _view_center(self):
+        """Widget-space point the image centre is drawn at (before offset).
+
+        Must match the translation in _paint_contents (width()/2, height()/2);
+        QRect.center() is ((w-1)/2, (h-1)/2) and would be half a pixel off."""
+        return QPointF(self.width() / 2, self.height() / 2)
+
+    def _device_pixel_ratio(self):
+        try:
+            dpr = float(self.devicePixelRatioF())
+        except Exception:
+            dpr = 1.0
+        return dpr if dpr > 0 else 1.0
+
+    def _image_top_left(self):
+        """Widget-space top-left at which the image is drawn, snapped to a
+        whole device pixel.
+
+        Painting at a fractional translation lets Qt's rasteriser round it
+        (half away from zero) while the hover mapping floors, so the readout
+        disagreed with the drawn pixel (I43). Paint and hover both use this
+        snapped value; the stored pan offset stays unsnapped so panning and
+        montage sync keep their sub-pixel state."""
+        scale = self._get_effective_scale_factor()
+        img_w, img_h = self._image_size()
+        off = self._get_effective_offset()
+        c = self._view_center()
+        dpr = self._device_pixel_ratio()
+        lx = c.x() + off.x() - img_w * scale / 2
+        ty = c.y() + off.y() - img_h * scale / 2
+        return QPointF(np.floor(lx * dpr + 0.5) / dpr,
+                       np.floor(ty * dpr + 0.5) / dpr)
+
     def _update_crosshair_from_pos(self, local_pos):
         if self.original_data is None or self.current_pixmap is None:
             return
@@ -963,21 +997,20 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         w = img_w * scale
         h = img_h * scale
 
-        target_rect = QRectF(0, 0, w, h)
-        target_rect.moveCenter(QPointF(self.rect().center()) + self._get_effective_offset())
+        target_rect = QRectF(self._image_top_left(), QSizeF(w, h))
 
-        if target_rect.contains(QPointF(local_pos)):
-            # Calculate coordinate relative to the Display Rect (0 to 1)
-            rel_x = (local_pos.x() - target_rect.left()) / target_rect.width()
-            rel_y = (local_pos.y() - target_rect.top()) / target_rect.height()
-            
-            # Map to Original Image Coordinates
-            if self.original_data is not None:
-                 img_h, img_w = self.original_data.shape[:2]
-                 x = int(rel_x * img_w)
-                 y = int(rel_y * img_h)
-            else:
-                x = 0; y = 0 # Fallback
+        # Sample at the centre of the device pixel under the cursor, as the
+        # painter does, so the readout matches the pixel actually drawn there.
+        dpr = self._device_pixel_ratio()
+        local_pos = QPointF(local_pos)
+        sample = QPointF((np.floor(local_pos.x() * dpr) + 0.5) / dpr,
+                         (np.floor(local_pos.y() * dpr) + 0.5) / dpr)
+        if target_rect.contains(sample):
+            # Map to original image coordinates (same transform as paint;
+            # dividing by scale directly avoids rel*w rounding to w-1e-12).
+            img_h, img_w = self.original_data.shape[:2]
+            x = int(np.floor((sample.x() - target_rect.left()) / scale))
+            y = int(np.floor((sample.y() - target_rect.top()) / scale))
 
             if 0 <= x < img_w and 0 <= y < img_h:
                 if self.crosshair_enabled:
@@ -1489,7 +1522,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
 
             zoom_ratio = new_zoom_multiplier / old_zoom_multiplier
             if mouse_pos:
-                mouse_rel_center = mouse_pos - QPointF(self.rect().center())
+                mouse_rel_center = mouse_pos - self._view_center()
                 new_offset = mouse_rel_center - (mouse_rel_center - self.shared_state.offset) * zoom_ratio
                 self.shared_state.offset = new_offset
             else:
@@ -1506,7 +1539,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                 return
             zoom_ratio = new_scale_factor / old_scale_factor
             if mouse_pos:
-                mouse_rel_center = mouse_pos - QPointF(self.rect().center())
+                mouse_rel_center = mouse_pos - self._view_center()
                 new_offset = mouse_rel_center - (mouse_rel_center - self._pixmap_offset) * zoom_ratio
                 self._pixmap_offset = new_offset
             else:
@@ -1621,7 +1654,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
 
         # Not dragging — track hover for crosshair / status bar.
         if self.original_data is not None and self.current_pixmap is not None:
-            self._update_crosshair_from_pos(event.pos())
+            self._update_crosshair_from_pos(event.position())
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -1668,20 +1701,20 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         paint device (tests render to a QImage, as QOpenGLWidget cannot
         paint on the offscreen platform)."""
         # Calculate Effective Transform
-        offset = self._get_effective_offset()
         scale = self._get_effective_scale_factor()
         img_w, img_h = self._image_size()
 
         painter.save()
         
-        # Apply Zoom and Pan (Center-based)
-        painter.translate(self.width() / 2 + offset.x(), self.height() / 2 + offset.y())
-        
+        # Apply Zoom and Pan: image top-left snapped to a device pixel, shared
+        # with the hover mapping (I43).
+        top_left = self._image_top_left()
+        painter.translate(top_left)
+
         # Work in ORIGINAL image pixel coordinates (origin at the top-left).
         # The proxy pixmap is scaled up by 1/_proxy_scale when drawn.
         draw_scale = scale
         painter.scale(scale, scale)
-        painter.translate(-img_w / 2, -img_h / 2)
         inv_proxy = 1.0 / self._proxy_scale if self._proxy_scale > 0 else 1.0
         
         # Determine if we should use Smooth Transformation
@@ -1804,8 +1837,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         # Calculate target rect for Crosshair (Widget Coordinates)
         w = img_w * scale
         h = img_h * scale
-        target_rect = QRectF(0, 0, w, h)
-        target_rect.moveCenter(QPointF(self.rect().center()) + offset)
+        target_rect = QRectF(top_left, QSizeF(w, h))
 
         if self.crosshair_enabled and self._get_crosshair_norm_pos():
             norm_pos = self._get_crosshair_norm_pos()
