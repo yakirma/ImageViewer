@@ -67,7 +67,7 @@ class SharedViewState(QObject):
         
         # Interaction State for Performance Optimization
         self._is_interacting = False
-        self._interaction_timer = QTimer()
+        self._interaction_timer = QTimer(self)  # owned: dies with self (I39)
         self._interaction_timer.setInterval(200) # 200ms debounce
         self._interaction_timer.setSingleShot(True)
         self._interaction_timer.timeout.connect(self._end_interaction)
@@ -162,7 +162,7 @@ class HistogramWidget(QWidget):
         self.p1_99_btn = QPushButton("1%-99%")
         
         # Debounce timer for histogram region updates
-        self._region_update_timer = QTimer()
+        self._region_update_timer = QTimer(self)  # owned: dies with self (I39)
         self._region_update_timer.setSingleShot(True)
         self._region_update_timer.setInterval(200) # 200 ms
         self._region_update_timer.timeout.connect(self._emit_delayed_region_changed)
@@ -680,7 +680,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         self.show_colorbar = False # Toggle via external button
 
         # Debounce Timer for View Changed Signal (Histogram updates)
-        self._view_update_timer = QTimer()
+        self._view_update_timer = QTimer(self)  # owned: dies with self (I39)
         self._view_update_timer.setSingleShot(True)
         self._view_update_timer.setInterval(200) # 200ms debounce
         self._view_update_timer.timeout.connect(self.view_changed.emit)
@@ -688,7 +688,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         # Single-view interaction tracking (mirrors SharedViewState._is_interacting)
         # Used to drop smooth scaling during pan/zoom for snappier rendering.
         self._single_is_interacting = False
-        self._single_interaction_timer = QTimer()
+        self._single_interaction_timer = QTimer(self)  # owned: dies with self (I39)
         self._single_interaction_timer.setSingleShot(True)
         self._single_interaction_timer.setInterval(180)
         self._single_interaction_timer.timeout.connect(self._end_single_interaction)

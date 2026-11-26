@@ -48,10 +48,6 @@ def test_viewer_png_after_npz_shows_png(viewer, qtbot, tmp_path):
     npz, png = _files(tmp_path)
     viewer.open_file(npz)
     viewer.open_file(png)
-    # Flush deferred timer callbacks (dock resize singleShot, 200 ms
-    # histogram debounce) while the window is still alive; otherwise they
-    # can fire after teardown and segfault the next test.
-    qtbot.wait(300)
     combo = [viewer.channel_combo.itemText(i) for i in range(viewer.channel_combo.count())]
     assert "a" not in combo and "b" not in combo
     assert viewer.image_handler.original_image_data.shape == (10, 12, 3)

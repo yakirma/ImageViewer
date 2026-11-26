@@ -4,6 +4,7 @@ import re
 import platform
 import shutil
 import json
+import functools
 import tempfile
 import subprocess
 from datetime import datetime
@@ -603,7 +604,22 @@ class ImageViewer(QMainWindow):
         # Starting it here would block on `import requests` (which transitively
         # pulls urllib3 + _ssl) and the QThread setup before the user sees
         # anything. 1.5 s gives the UI room to settle.
-        QTimer.singleShot(1500, self._check_for_updates)
+        self._single_shot(1500, self._check_for_updates)
+
+    def _single_shot(self, msec, callback):
+        """QTimer.singleShot whose timer is a Qt child of this window.
+
+        PyQt6 lacks the context-object overload of QTimer.singleShot, so a
+        plain singleShot(lambda: ...) still fires after the window has been
+        deleted and touches freed C++ objects (I39). Owning the timer means it
+        is destroyed -- and never fires -- together with the window.
+        """
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(callback)
+        timer.timeout.connect(timer.deleteLater)
+        timer.start(msec)
+        return timer
 
     def _check_for_updates(self):
         self.update_checker = CheckForUpdates()
@@ -1926,7 +1942,7 @@ class ImageViewer(QMainWindow):
         self.resize(new_width, self.height())
         
         # Restore other dock sizes
-        QTimer.singleShot(0, lambda: self._restore_dock_sizes(other_docks))
+        self._single_shot(0, lambda: self._restore_dock_sizes(other_docks))
     
     def _restore_dock_sizes(self, docks):
         """Restore saved sizes for the given docks."""
@@ -3039,7 +3055,7 @@ class ImageViewer(QMainWindow):
                 target_w = max(100, int(target_w))
                 center.setMinimumWidth(target_w)
                 center.setMaximumWidth(target_w)
-                QTimer.singleShot(0, self._reset_center_constraints)
+                self._single_shot(0, self._reset_center_constraints)
         
         super().resizeEvent(event)
         
@@ -3471,21 +3487,35 @@ class ImageViewer(QMainWindow):
         except Exception:
             pass
             
+        # Stop repeating/debounce timers so nothing fires on a closed window (I39).
+        for timer_name in ('playback_timer', '_histogram_debounce_timer'):
+            timer = getattr(self, timer_name, None)
+            if timer is not None:
+                try:
+                    timer.stop()
+                except RuntimeError:
+                    pass
+
         # Call super first to let C++ handle its closure
         super().closeEvent(event)
         
         # Defer removal from global list to ensure Python object stays alive 
-        # until the C++ event handling is completely finished.
-        QTimer.singleShot(0, self._cleanup_window_list)
+        # until the C++ event handling is completely finished. Deliberately an
+        # unowned timer with a closure that touches no Qt state of `self`, so
+        # the removal still happens if the window is deleted right after close.
+        QTimer.singleShot(0, functools.partial(_remove_closed_window, self))
 
-    def _cleanup_window_list(self):
-        if hasattr(self, 'window_list') and self in self.window_list:
-            self.window_list.remove(self)
-            
-            # Notify all other windows to refresh their thumbnail pane
-            for win in self.window_list:
-                try:
-                    if hasattr(win, '_refresh_thumbnail_pane'):
-                        win._refresh_thumbnail_pane()
-                except RuntimeError:
-                    pass
+
+def _remove_closed_window(window):
+    """Remove a closed ImageViewer from its window list. Module-level (not a
+    bound method) so it is safe to run after the window's C++ side is gone."""
+    if hasattr(window, 'window_list') and window in window.window_list:
+        window.window_list.remove(window)
+
+        # Notify all other windows to refresh their thumbnail pane
+        for win in window.window_list:
+            try:
+                if hasattr(win, '_refresh_thumbnail_pane'):
+                    win._refresh_thumbnail_pane()
+            except RuntimeError:
+                pass
