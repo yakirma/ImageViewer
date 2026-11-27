@@ -103,15 +103,14 @@ def _overlay_display_array(data):
     """uint8 (H,W), (H,W,3) or (H,W,4) array for an overlay pixmap.
 
     Non-uint8 RGB(A) (e.g. 16-bit PNG) goes through the same auto-stretch as
-    the main view; grayscale is stretched by its finite min..max (constant or
+    the main view; grayscale (uint8 included, like the in-window path) is
+    stretched by its finite min..max (constant or
     all-NaN images -> black). Returns None for unsupported shapes.
     """
     if data.ndim == 3 and data.shape[2] in (3, 4):
         return np.ascontiguousarray(ZoomableDraggableLabel._rgb_to_uint8_auto(data))
     if data.ndim != 2:
         return None
-    if data.dtype == np.uint8:
-        return np.ascontiguousarray(data)
     arr = data.astype(np.float64)
     finite = arr[np.isfinite(arr)]
     lo = float(finite.min()) if finite.size else 0.0

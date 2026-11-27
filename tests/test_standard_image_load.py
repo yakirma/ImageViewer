@@ -333,7 +333,7 @@ def test_overlay_display_array_normalizes():
     assert out[0, 0] == 0 and out[0, 1] == 0 and out[0, 2] == 255
     assert not _overlay_display_array(np.full((2, 2), 7, np.uint16)).any()  # constant
     g8 = np.array([[5, 9]], np.uint8)
-    assert _overlay_display_array(g8).tolist() == [[5, 9]]
+    assert _overlay_display_array(g8).tolist() == [[0, 255]]  # stretched like in-window
     assert _overlay_display_array(np.zeros((2, 2, 5))) is None
 
 
