@@ -522,6 +522,14 @@ class ImageViewer(QMainWindow):
         self.image_handler = ImageHandler()
         self.playback_timer = QTimer(self)
         self.playback_timer.timeout.connect(self._video_timer_timeout)
+        # During playback the histogram is re-binned at most ~4 Hz (latest
+        # frame only) instead of on every frame (I44); pause/step/seek
+        # refresh it immediately.
+        self._playback_histogram_timer = QTimer(self)
+        self._playback_histogram_timer.setSingleShot(True)
+        self._playback_histogram_timer.setInterval(250)
+        self._playback_histogram_timer.timeout.connect(
+            lambda: self.update_histogram_data(data_changed=True))
         self.is_slider_pressed = False
         
         self.shared_state = SharedViewState()
@@ -1134,9 +1142,10 @@ class ImageViewer(QMainWindow):
         if self.current_math_expression:
             self.apply_math_transform(self.current_math_expression, from_update=True)
         
-        # 7. Trigger repaint and histogram update
+        # 7. Trigger repaint and histogram update. The displayed array was
+        # just replaced, so re-bin even in full-image mode (I44).
         target_label.repaint()
-        self.update_histogram_data()
+        self._refresh_histogram_for_new_data()
         
         # 8. Sync Montage labels for Video/Depth (Ensure all related labels update together)
         if is_montage and self.image_label.file_path and self.image_handler.is_video:
@@ -1230,6 +1239,9 @@ class ImageViewer(QMainWindow):
         else:
             self.playback_timer.stop()
             self.play_action.setText("▶")
+            # Show the paused frame's histogram right away.
+            self._playback_histogram_timer.stop()
+            self.update_histogram_data(data_changed=True)
 
     def _video_timer_timeout(self):
         if not self.image_handler.is_video:
@@ -1270,10 +1282,12 @@ class ImageViewer(QMainWindow):
         
     def _on_slider_released(self):
         self.is_slider_pressed = False
+        # Ensure frame is updated after release, in case valueChanged was blocked
+        # during drag. Done before resuming playback so the histogram refreshes
+        # immediately for the released position.
+        self._on_frame_slider_changed(self.video_slider.value())
         if self.was_playing_before_drag:
              self.playback_timer.start()
-        # Ensure frame is updated after release, in case valueChanged was blocked during drag
-        self._on_frame_slider_changed(self.video_slider.value())
 
     def _on_fps_changed(self, value):
         if self.playback_timer.isActive():
@@ -1673,6 +1687,9 @@ class ImageViewer(QMainWindow):
         self.colormap_combo.blockSignals(False)
 
         self.update_histogram_data(new_image=reset_histogram)
+        # update_histogram_data skips the full-image refresh when nothing
+        # was reloaded; still follow limits changed elsewhere (paste, I44).
+        self._sync_histogram_to_limits()
         
         # Update 3D point cloud viewer if it's open
         if hasattr(self, 'point_cloud_viewer') and self.point_cloud_viewer and self.point_cloud_viewer.isVisible():
@@ -2735,7 +2752,8 @@ class ImageViewer(QMainWindow):
                  if percentiles:
                       new_limits = self._get_limits_from_percentiles(self.image_handler.original_image_data, percentiles)
                       self.image_label.set_contrast_limits(*new_limits)
-                      
+                      self._sync_histogram_to_limits()
+
                  # Colormap
                  cmap = maintain_view_state.get('colormap')
                  if cmap:
@@ -2824,7 +2842,9 @@ class ImageViewer(QMainWindow):
                         new_limits = self._get_limits_from_percentiles(
                             self.image_handler.original_image_data, percentiles)
                         self.image_label.set_contrast_limits(*new_limits)
-                        self.update_histogram_data()
+                        # update_histogram_data() early-returns in full-image
+                        # mode, leaving the region stale; sync it directly.
+                        self._sync_histogram_to_limits()
                     else:
                         self._apply_histogram_preset(0, 100)
 
@@ -3075,15 +3095,23 @@ class ImageViewer(QMainWindow):
             action.triggered.connect(lambda *args, path=file_path: self.open_file(path))
             self.recent_files_menu.addAction(action)
 
-    def update_histogram_data(self, new_image=False):
+    def update_histogram_data(self, new_image=False, data_changed=False):
+        """Refresh the histogram from the active label.
+
+        new_image: a new image context (region may be reset to the data range
+        when there are no custom limits).
+        data_changed: the displayed array changed (channel/NPZ switch, video
+        frame) without being a new image: the bars must be re-binned even in
+        full-image mode, where an unchanged image is otherwise skipped (I44).
+        """
         if not self.active_label or not self.histogram_window.isVisible():
             return
-            
+
         use_visible_only = self.histogram_window.use_visible_checkbox.isChecked()
-        
-        # Optimization: If not using visible only (meaning full image), and we didn't just load a new image, 
-        # then the histogram data (full image) hasn't changed, so skip update.
-        if not use_visible_only and not new_image:
+
+        # Optimization: in full-image mode the histogram only changes when the
+        # data does, so skip pure view changes (pan/zoom).
+        if not use_visible_only and not new_image and not data_changed:
              # We might check if we actually have data in the histogram first?
              # Assuming if not new_image, we already populated it once.
              # However, let's be safe: if histogram is empty, we should run.
@@ -3091,48 +3119,61 @@ class ImageViewer(QMainWindow):
                  return
 
         visible_data = self._get_visible_image_data(use_visible_only=use_visible_only)
- 
-        # Only allow the histogram widget to reset the region if we don't have custom limits
-        # AND we are being told this is a new image context.
+
+        # Only allow the histogram widget to propagate a region reset if we
+        # don't have custom limits AND this is a new image context.
         has_custom_limits = self.active_label.contrast_limits is not None
         should_reset_region = new_image and not has_custom_limits
 
-        self.histogram_window.update_histogram(visible_data, should_reset_region)
-
+        limits = None
         if has_custom_limits:
-            min_v, max_v = self.active_label.contrast_limits
-            self.histogram_window.min_val_input.setText(f"{min_v:.2f}")
-            self.histogram_window.max_val_input.setText(f"{max_v:.2f}")
-            
-            # Block signals to prevent re-triggering set_contrast_limits
-            self.histogram_window.region.blockSignals(True)
-            self.histogram_window.region.setRegion([min_v, max_v])
-            self.histogram_window.region.blockSignals(False)
-        else:
-            if visible_data is not None and visible_data.size > 0:
-                if len(visible_data.shape) == 3:
-                    if visible_data.shape[2] >= 3:
-                        hist_data = np.dot(visible_data[..., :3], [0.2989, 0.5870, 0.1140])
-                    elif visible_data.shape[2] == 2:
-                        hist_data = np.linalg.norm(visible_data, axis=2)
-                    else:
-                        hist_data = visible_data[:, :, 0]
+            limits = self.active_label.contrast_limits
+        elif visible_data is not None and visible_data.size > 0:
+            if len(visible_data.shape) == 3:
+                if visible_data.shape[2] >= 3:
+                    # float32 is ample for a min/max and ~4x cheaper than the
+                    # float64 dot (runs per video frame).
+                    hist_data = visible_data[..., :3].astype(np.float32) @ np.array(
+                        [0.2989, 0.5870, 0.1140], dtype=np.float32)
+                elif visible_data.shape[2] == 2:
+                    hist_data = np.linalg.norm(visible_data, axis=2)
                 else:
-                    hist_data = visible_data
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    if hist_data.size > 0 and np.any(np.isfinite(hist_data)):
-                        min_v = np.nanmin(hist_data)
-                        max_v = np.nanmax(hist_data)
-                    else:
-                        min_v = max_v = 0.0
-                
-                self.histogram_window.min_val_input.setText(f"{min_v:.2f}")
-                self.histogram_window.max_val_input.setText(f"{max_v:.2f}")
-                
-                # Block signals here too just in case
-                self.histogram_window.region.blockSignals(True)
-                self.histogram_window.region.setRegion([min_v, max_v])
-                self.histogram_window.region.blockSignals(False)
+                    hist_data = visible_data[:, :, 0]
+            else:
+                hist_data = visible_data
+            # Finite values only: +-inf would be rejected as a region bound
+            # and leave the region stale (I44).
+            if np.issubdtype(hist_data.dtype, np.integer) or np.issubdtype(hist_data.dtype, np.bool_):
+                finite = hist_data
+            else:
+                finite = hist_data[np.isfinite(hist_data)]
+            if finite.size > 0:
+                limits = (float(np.min(finite)), float(np.max(finite)))
+            else:
+                limits = (0.0, 0.0)
+
+        # The widget moves the region to the limits and fits its x-axis
+        # around them, binning only once (I44).
+        self.histogram_window.update_histogram(visible_data, should_reset_region, limits=limits)
+
+    def _refresh_histogram_for_new_data(self):
+        """Re-bin after the displayed array changed. While a video plays,
+        coalesce to the throttle timer (latest frame, <= ~4 Hz) so the
+        histogram doesn't cost frame rate; otherwise refresh now."""
+        if self.playback_timer.isActive():
+            if self.histogram_window.isVisible() and not self._playback_histogram_timer.isActive():
+                self._playback_histogram_timer.start()
+            return
+        self._playback_histogram_timer.stop()
+        self.update_histogram_data(data_changed=True)
+
+    def _sync_histogram_to_limits(self):
+        """Move the histogram region to the active label's contrast limits
+        (silently: the image already uses them) and fit the x-axis around
+        them (I44). Use after limits change outside the histogram."""
+        if not self.active_label or self.active_label.contrast_limits is None:
+            return
+        self.histogram_window.set_region_limits(*self.active_label.contrast_limits)
 
     def keyPressEvent(self, event):
         # Universal Copy/Paste: Accept either Control or Meta to handle various OS/Keyboard configs
@@ -3413,19 +3454,22 @@ class ImageViewer(QMainWindow):
             else:
                 hist_data = visible_data
 
-            with np.errstate(divide='ignore', invalid='ignore'):
-                if hist_data.size > 0 and np.any(np.isfinite(hist_data)):
-                    min_val = np.nanpercentile(hist_data[np.isfinite(hist_data)], min_percent)
-                    max_val = np.nanpercentile(hist_data[np.isfinite(hist_data)], max_percent)
-                else:
-                    min_val = max_val = 0.0
+            # Filter non-finite values once and take both percentiles in one
+            # partition pass (same result, ~half the cost on large images).
+            if np.issubdtype(hist_data.dtype, np.floating):
+                finite = hist_data[np.isfinite(hist_data)]
+            else:
+                finite = hist_data.ravel()
+            if finite.size > 0:
+                min_val, max_val = (float(v) for v in np.percentile(finite, [min_percent, max_percent]))
+            else:
+                min_val = max_val = 0.0
             
             self.set_contrast_limits(min_val, max_val)
-            
-            # Block signals to prevent redundant set_contrast_limits call via region_changed
-            self.histogram_window.region.blockSignals(True)
-            self.histogram_window.region.setRegion([min_val, max_val])
-            self.histogram_window.region.blockSignals(False)
+
+            # Silent region move (no redundant set_contrast_limits via
+            # region_changed) + fit the histogram x-axis to the window (I44).
+            self.histogram_window.set_region_limits(min_val, max_val)
 
     def _get_visible_image_data(self, use_visible_only=False):
         if not self.active_label or self.active_label.original_data is None:
@@ -3697,7 +3741,8 @@ class ImageViewer(QMainWindow):
             pass
             
         # Stop repeating/debounce timers so nothing fires on a closed window (I39).
-        for timer_name in ('playback_timer', '_histogram_debounce_timer'):
+        for timer_name in ('playback_timer', '_histogram_debounce_timer',
+                           '_playback_histogram_timer'):
             timer = getattr(self, timer_name, None)
             if timer is not None:
                 try:

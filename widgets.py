@@ -168,10 +168,28 @@ class HistogramWidget(QWidget):
 
         self.region = pg.LinearRegionItem(values=[0, 255], orientation='vertical')
         self.region.sigRegionChanged.connect(self._on_region_changed)
+        self.region.sigRegionChangeFinished.connect(self._on_region_change_finished)
         self.plot_widget.addItem(self.region)
 
         self.histograms = []
         self.data = None
+        # Per-channel finite values, kept so the histogram can be re-binned
+        # over the visible x-range (I44).
+        self._channels = []
+        self._bounds = None
+        self._view_range = None   # x-range the axis was fitted to
+        self._bin_range = None    # x-range the bars are binned over
+        self._dirty = False
+        self._fitting = False
+        self._extent_item = None
+        # Re-bin over the visible x-range after user zoom/pan (debounced).
+        self._rebin_timer = QTimer(self)
+        self._rebin_timer.setSingleShot(True)
+        self._rebin_timer.setInterval(100)
+        self._rebin_timer.timeout.connect(self._rebin_to_view)
+        vb = self.plot_widget.getViewBox()
+        vb.setAutoVisible(y=True)
+        vb.sigXRangeChanged.connect(self._on_x_range_changed)
 
         # Use visible area option
         self.use_visible_checkbox = QCheckBox("Use Visible Area")
@@ -214,65 +232,253 @@ class HistogramWidget(QWidget):
         value_input_layout.addWidget(self.apply_value_btn)
         self.layout.addLayout(value_input_layout)
 
-    def update_histogram(self, data, new_image=False):
+    # Fraction of the contrast window added on each side of the histogram's
+    # x-axis when it is fitted to the current limits (I44).
+    VIEW_PADDING = 0.05
+    N_BINS = 256
+    # Pixels per channel kept for (re-)binning. A strided subsample this size
+    # is plenty for 256 display bins and keeps refits fast and memory small
+    # on very large images.
+    MAX_SAMPLES = 2_000_000
+
+    @classmethod
+    def _subsample(cls, data):
+        """Strided spatial subsample with at most ~MAX_SAMPLES pixels (a view
+        when possible, so large inputs are never copied whole)."""
+        if data.ndim < 2:
+            n = data.shape[0]
+            step = max(1, int(np.ceil(n / cls.MAX_SAMPLES)))
+            return data[::step]
+        npix = data.shape[0] * data.shape[1]
+        if npix <= cls.MAX_SAMPLES:
+            return data
+        step = int(np.ceil(np.sqrt(npix / cls.MAX_SAMPLES)))
+        return data[::step, ::step]
+
+    @staticmethod
+    def _finite_f32(values):
+        values = np.asarray(values, dtype=np.float32).ravel()
+        if values.size and not np.isfinite(values).all():
+            values = values[np.isfinite(values)]
+        return values
+
+    @staticmethod
+    def _exact_bounds(channel, sample):
+        """Exact min/max of the full channel when that is finite (one cheap
+        pass, no copy), else the finite sample's min/max."""
+        try:
+            lo = float(np.min(channel))
+            hi = float(np.max(channel))
+            if np.isfinite(lo) and np.isfinite(hi):
+                return lo, hi
+        except (ValueError, TypeError):
+            pass
+        if sample.size == 0:
+            return None
+        return float(sample.min()), float(sample.max())
+
+    def update_histogram(self, data, new_image=False, limits=None):
+        """Replace the histogram data.
+
+        limits: the contrast window the image uses. When given, the region is
+        moved there and the x-axis is fitted around it (I44). The move is
+        silent unless new_image is set (a reset then propagates as before).
+        Without limits, new_image resets the region to the data range.
+        """
+        self._channels = []
+        self._bounds = None
+        self._bin_range = None
+        if data is None or data.size == 0:
+            self.data = None
+            self._clear_plot()
+            self._view_range = None
+            return
+
+        sample = self._subsample(data)
+        bounds = []
+        if data.ndim == 3 and data.shape[2] == 3:  # RGB
+            colors = [(255, 0, 0, 150), (0, 255, 0, 150), (0, 0, 255, 150)]
+            sample_f = np.asarray(sample, dtype=np.float32)
+            # Luminance drives contrast/percentiles (widget preset buttons).
+            lum = sample_f @ np.array([0.2989, 0.5870, 0.1140], dtype=np.float32)
+            self.data = self._finite_f32(lum)
+            for i in range(3):
+                values = self._finite_f32(sample_f[..., i])
+                if values.size > 0:
+                    self._channels.append((values, colors[i]))
+                    b = self._exact_bounds(data[..., i], values)
+                    if b is not None:
+                        bounds.append(b)
+        else:  # Grayscale (and 2/4-channel data, pooled as before)
+            self.data = self._finite_f32(sample)
+            if self.data.size > 0:
+                self._channels.append((self.data, (200, 200, 200, 150)))
+                b = self._exact_bounds(data, self.data)
+                if b is not None:
+                    bounds.append(b)
+        if bounds:
+            self._bounds = (min(b[0] for b in bounds), max(b[1] for b in bounds))
+
+        if limits is not None:
+            self._move_region(limits[0], limits[1], quiet=not new_image)
+        elif new_image:
+            bounds = self._data_bounds()
+            if bounds is not None and bounds[0] < bounds[1]:
+                self.region.setRegion([bounds[0], bounds[1]])
+        self.fit_view_to_region(force=True)
+
+    def set_region_limits(self, min_val, max_val):
+        """Move the region to the image's contrast limits without emitting
+        region_changed (the image already uses them) and fit the x-axis
+        around them (I44)."""
+        self._move_region(min_val, max_val, quiet=True)
+        self.fit_view_to_region()
+
+    def _move_region(self, min_val, max_val, quiet):
+        try:
+            min_val = float(min_val)
+            max_val = float(max_val)
+        except (TypeError, ValueError):
+            return
+        if not (np.isfinite(min_val) and np.isfinite(max_val)):
+            return
+        self.min_val_input.setText(f"{min_val:.2f}")
+        self.max_val_input.setText(f"{max_val:.2f}")
+        if quiet:
+            self.region.blockSignals(True)
+            try:
+                self.region.setRegion([min_val, max_val])
+            finally:
+                self.region.blockSignals(False)
+        else:
+            self.region.setRegion([min_val, max_val])
+
+    def _data_bounds(self):
+        """Finite min/max over all plotted channels (None without data)."""
+        return self._bounds
+
+    def _compute_view_range(self):
+        """[lo - pad, hi + pad] around the region, pad = VIEW_PADDING of its
+        width. A degenerate region falls back to the data range."""
+        lo, hi = (float(v) for v in self.region.getRegion())
+        if not (np.isfinite(lo) and np.isfinite(hi)):
+            bounds = self._data_bounds()
+            if bounds is None:
+                return None
+            lo, hi = bounds
+        if hi < lo:
+            lo, hi = hi, lo
+        span = hi - lo
+        if span <= 0:
+            bounds = self._data_bounds()
+            if bounds is not None and bounds[1] > bounds[0]:
+                span = bounds[1] - bounds[0]
+            else:
+                span = max(abs(lo), 1.0)
+            pad = span * self.VIEW_PADDING
+            # Keep the (zero-width) region centred in a sensible window.
+            return lo - pad - span / 2, hi + pad + span / 2
+        pad = span * self.VIEW_PADDING
+        return lo - pad, hi + pad
+
+    def _clamped_bin_range(self, view):
+        """Bin over the part of `view` that holds data, so bars stay fine
+        however far the axis is zoomed out (falls back to the view itself)."""
+        lo, hi = view
+        b = self._data_bounds()
+        if b is not None:
+            c_lo, c_hi = max(lo, b[0]), min(hi, b[1])
+            if c_hi > c_lo:
+                return c_lo, c_hi
+        return lo, hi
+
+    def fit_view_to_region(self, force=False):
+        """Fit the x-axis around the region and re-bin the histogram over the
+        visible range so the bars stay fine when zoomed in (I44).
+
+        Changes only the plot's view and items, never the region, so it
+        cannot feed back into region_changed."""
+        view = self._compute_view_range()
+        if view is None:
+            self._clear_plot()
+            self._view_range = None
+            return
+        if not force and view == self._view_range:
+            return
+        self._view_range = view
+        self._fitting = True
+        try:
+            self.plot_widget.setXRange(view[0], view[1], padding=0)
+        finally:
+            self._fitting = False
+        self._rebin(self._clamped_bin_range(view), force=True)
+
+    def _on_x_range_changed(self, _vb, _rng):
+        # User zoom/pan/View All: re-bin over the new range once it settles.
+        # The fitter's own setXRange already re-bins.
+        if self._fitting:
+            return
+        self._rebin_timer.start()
+
+    def _rebin_to_view(self):
+        view = tuple(self.plot_widget.getViewBox().viewRange()[0])
+        self._rebin(self._clamped_bin_range(view))
+
+    def _rebin(self, bin_range, force=False):
+        if not force and bin_range == self._bin_range:
+            return
+        self._bin_range = bin_range
+        if not self.isVisible():
+            # Re-binned when shown (update_histogram also refreshes it).
+            self._dirty = True
+            return
+        self._dirty = False
+        self._redraw()
+
+    def _clear_plot(self):
         for item in self.histograms:
             self.plot_widget.removeItem(item)
         self.histograms.clear()
+        if self._extent_item is not None:
+            self.plot_widget.removeItem(self._extent_item)
+            self._extent_item = None
 
-        if data is None or data.size == 0:
-            self.data = None
+    def _redraw(self):
+        self._clear_plot()
+        if self._bin_range is None:
             return
+        lo, hi = self._bin_range
+        for values, brush in self._channels:
+            y, x = np.histogram(values, bins=self.N_BINS, range=(lo, hi))
+            hist = self.plot_widget.plot(x, y, stepMode="center", fillLevel=0, brush=brush)
+            self.histograms.append(hist)
+        # Invisible item spanning the full data range so auto-range /
+        # "View All" shows the whole distribution, not just the binned part.
+        b = self._data_bounds()
+        if b is not None:
+            # Fully transparent pen: pen=None would hide the curve and drop
+            # it from the auto-range bounds.
+            self._extent_item = pg.PlotDataItem([b[0], b[1]], [0, 0], pen=pg.mkPen(0, 0, 0, 0))
+            self.plot_widget.addItem(self._extent_item)
+        self.plot_widget.enableAutoRange(axis='y')
 
-        # Ensure we work with float64 for precision/finite checks
-        working_data = data.astype(np.float64)
-        
-        # We want self.data to be a 1D array of finite values for percentile calculations
-        # But we also need to draw histograms for channels if RGB.
-        
-        if working_data.ndim == 3 and working_data.shape[2] == 3:  # RGB
-            colors = [(255, 0, 0, 150), (0, 255, 0, 150), (0, 0, 255, 150)]
-            # Calculate luminance for the overall "self.data" used in contrast/percentiles
-            lum = np.dot(working_data[..., :3], [0.2989, 0.5870, 0.1140])
-            self.data = lum[np.isfinite(lum)] # Only keep finite for percentiles
-            
-            for i in range(3):
-                channel_data = working_data[..., i].flatten()
-                channel_finite = channel_data[np.isfinite(channel_data)]
-                if channel_finite.size > 0:
-                    y, x = np.histogram(channel_finite, bins=256)
-                    hist = self.plot_widget.plot(x, y, stepMode="center", fillLevel=0, brush=colors[i])
-                    self.histograms.append(hist)
-        else:  # Grayscale
-            flat_data = working_data.flatten()
-            self.data = flat_data[np.isfinite(flat_data)]
-            if self.data.size > 0:
-                y, x = np.histogram(self.data, bins=256)
-                hist = self.plot_widget.plot(x, y, stepMode="center", fillLevel=0, brush=(200, 200, 200, 150))
-                self.histograms.append(hist)
-
-        if self.data is None or self.data.size == 0:
-            return
-
-        # Double check self.data is finite (should be from logic above, but be defensive)
-        finite_data = self.data[np.isfinite(self.data)]
-        if finite_data.size == 0:
-            return
-
-        with np.errstate(divide='ignore', invalid='ignore'):
-            min_val = np.nanmin(finite_data)
-            max_val = np.nanmax(finite_data)
-            
-        if np.isfinite(min_val) and np.isfinite(max_val) and min_val < max_val:
-            self.plot_widget.setXRange(min_val, max_val, padding=0.05)
-            if new_image:
-                self.region.setRegion([min_val, max_val])
+    def showEvent(self, event):
+        super().showEvent(event)
+        if getattr(self, '_dirty', False) and self._bin_range is not None:
+            self._dirty = False
+            self._redraw()
 
     def _on_region_changed(self, region_item):
         min_val, max_val = region_item.getRegion()
         self.min_val_input.setText(f"{min_val:.2f}")
         self.max_val_input.setText(f"{max_val:.2f}")
-        # Debounce the expensive image update
+        # Debounce the expensive image update. The x-axis is deliberately
+        # not refitted here: rescaling under a dragging cursor is jumpy.
         self._region_update_timer.start()
+
+    def _on_region_change_finished(self, _region_item=None):
+        # Drag released (or a programmatic move finished): refit the axis.
+        self.fit_view_to_region()
 
     def _emit_delayed_region_changed(self):
         min_val, max_val = self.region.getRegion()
@@ -289,9 +495,10 @@ class HistogramWidget(QWidget):
             with np.errstate(divide='ignore', invalid='ignore'):
                 min_val = np.nanpercentile(finite_data, min_percent)
                 max_val = np.nanpercentile(finite_data, max_percent)
-                
+
             if np.isfinite(min_val) and np.isfinite(max_val):
                 self.region.setRegion([min_val, max_val])
+                self.fit_view_to_region()
 
     def _apply_custom_values(self):
         try:
@@ -303,6 +510,7 @@ class HistogramWidget(QWidget):
                 return
 
             self.region.setRegion([min_v, max_v])
+            self.fit_view_to_region()
         except ValueError:
             QMessageBox.warning(self, "Invalid Input", "Please enter valid numbers for values.")
 
