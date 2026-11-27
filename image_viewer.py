@@ -1964,12 +1964,35 @@ class ImageViewer(QMainWindow):
             
         self.zoom_status_label.setText(f"Zoom: {int(scale_factor * 100)}%")
 
+    # ImageHandler attributes a raw (re)load may overwrite.
+    _RAW_HANDLER_FIELDS = ('original_image_data', 'width', 'height', 'dtype', 'color_format', 'is_raw')
+    _LABEL_DATA_FIELDS = ('original_data', 'inspection_data', 'pristine_data',
+                          'base_inspection_data', 'contrast_limits', 'metadata')
+
+    def _snapshot_label_data(self, label):
+        return label, {f: getattr(label, f) for f in self._LABEL_DATA_FIELDS if hasattr(label, f)}
+
+    def _restore_label_data(self, label, snapshot):
+        for f, val in snapshot.items():
+            setattr(label, f, val)
+        if label.original_data is not None:
+            label.apply_colormap()
+        label.repaint()
+
     def reapply_raw_parameters(self, raw_settings):
         # Renamed argument to raw_settings to avoid shadowing global settings module if imported
+        # Snapshot handler/label state so a failed apply (e.g. a size that
+        # doesn't match the file) leaves the previous image fully intact
+        # instead of a mix of new dimensions and old data.
+        handler = self.image_handler
+        handler_snapshot = {f: getattr(handler, f, None) for f in self._RAW_HANDLER_FIELDS}
+        label_snapshot = None
         try:
             self.progress_bar.setVisible(True)
             QApplication.processEvents()
-            self.image_handler.load_image(self.current_file_path, override_settings=raw_settings)
+            handler.load_image(self.current_file_path, override_settings=raw_settings)
+            if handler.original_image_data is None:
+                raise ValueError("No image data decoded")
             recovery_path = getattr(self, '_raw_recovery_path', None)
             if (recovery_path and recovery_path == self.current_file_path
                     and self.stacked_widget.currentWidget() is not self.montage_widget):
@@ -1992,8 +2015,22 @@ class ImageViewer(QMainWindow):
                 self.histogram_action.setEnabled(True)
                 self.last_raw_settings = dict(raw_settings)
             elif self.active_label:
-                self.active_label.set_data(self.image_handler.original_image_data)
-            
+                label = self.active_label
+                label_snapshot = self._snapshot_label_data(label)
+                # The new decode is the label's new pristine base: math
+                # transforms, "restore original" and channel selection (which
+                # reads pristine_data in montage mode) must all use it.
+                label.set_data(handler.original_image_data, reset_view=True, is_pristine=True)
+                meta = getattr(label, 'metadata', None)
+                if isinstance(meta, dict):
+                    label.metadata = dict(meta, width=handler.width, height=handler.height,
+                                          dtype=handler.dtype, color_format=handler.color_format,
+                                          is_raw=handler.is_raw)
+                self.update_channel_options()
+                # Re-slice the selected channel and re-run any active math
+                # expression against the new data.
+                self.update_image_display(reset_view=True)
+
             # Update channel options (e.g. if format changed from Raw to Bayer RGB)
             self.update_channel_options()
             
@@ -2025,6 +2062,15 @@ class ImageViewer(QMainWindow):
             # Not modal: the user is usually mid-way through entering
             # parameters, and an intermediate combination that doesn't match
             # the file size is expected. Report it inline and in the status bar.
+            for f, val in handler_snapshot.items():
+                setattr(handler, f, val)
+            if label_snapshot is not None:
+                try:
+                    self._restore_label_data(*label_snapshot)
+                    self.update_channel_options()
+                    self.update_histogram_data(new_image=True)
+                except Exception:
+                    pass
             msg = f"Error applying parameters: {e}"
             self.info_pane.set_error_message(msg)
             self.status_bar.showMessage(msg, 10000)
