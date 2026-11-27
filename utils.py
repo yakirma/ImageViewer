@@ -3,22 +3,34 @@ import os
 
 def read_flow(filename):
     """
-    Read .flo file in Middlebury format
+    Read .flo file in Middlebury format.
+
+    Raises ValueError with a descriptive message when the file is empty, has a
+    bad magic number, invalid dimensions, or is truncated.
     """
     with open(filename, 'rb') as f:
         magic = np.fromfile(f, np.float32, count=1)
-        if 202021.25 != magic:
-            print('Magic number incorrect. Invalid .flo file')
-            return None
-        
-        w = np.fromfile(f, np.int32, count=1)[0]
-        h = np.fromfile(f, np.int32, count=1)[0]
-        
-        data = np.fromfile(f, np.float32, count=2*w*h)
-        
+        if magic.size != 1:
+            raise ValueError(f"Invalid .flo file (empty or too short): {filename}")
+        if magic[0] != np.float32(202021.25):
+            raise ValueError(f"Invalid .flo file (bad magic number {magic[0]!r}): {filename}")
+
+        dims = np.fromfile(f, np.int32, count=2)
+        if dims.size != 2:
+            raise ValueError(f"Invalid .flo file (missing width/height header): {filename}")
+        w, h = int(dims[0]), int(dims[1])
+        if w <= 0 or h <= 0:
+            raise ValueError(f"Invalid .flo file (bad dimensions {w}x{h}): {filename}")
+
+        expected = 2 * w * h
+        data = np.fromfile(f, np.float32, count=expected)
+        if data.size != expected:
+            raise ValueError(
+                f"Truncated .flo file: expected {expected} floats for {w}x{h} flow, "
+                f"found {data.size}: {filename}")
+
         # Reshape data into 3D array (height, width, 2)
-        flow = np.resize(data, (h, w, 2))
-        return flow
+        return data.reshape((h, w, 2))
 
 def make_color_wheel():
     """
@@ -105,6 +117,10 @@ def compute_color(u, v):
 
     return img
 
+# Middlebury convention: flow components above this magnitude are 'unknown'.
+UNKNOWN_FLOW_THRESH = 1e9
+
+
 def flow_to_color(flow_uv, max_flow=None):
     """
     Expects a 2D flow image of shape.
@@ -117,21 +133,33 @@ def flow_to_color(flow_uv, max_flow=None):
     assert flow_uv.ndim == 3, 'input flow must have shape [H,W,2]'
     assert flow_uv.shape[2] == 2, 'input flow must have shape [H,W,2]'
 
-    u = flow_uv[:, :, 0]
-    v = flow_uv[:, :, 1]
+    u = np.asarray(flow_uv[:, :, 0], dtype=np.float64)
+    v = np.asarray(flow_uv[:, :, 1], dtype=np.float64)
+
+    # Middlebury marks unknown flow with NaN or |component| > 1e9. Exclude
+    # such pixels from the magnitude normalization and paint them black.
+    with np.errstate(invalid='ignore'):
+        invalid = ~(np.isfinite(u) & np.isfinite(v)
+                    & (np.abs(u) <= UNKNOWN_FLOW_THRESH)
+                    & (np.abs(v) <= UNKNOWN_FLOW_THRESH))
+    if invalid.any():
+        u = np.where(invalid, 0.0, u)
+        v = np.where(invalid, 0.0, v)
 
     rad = np.sqrt(u ** 2 + v ** 2)
-    
-    if max_flow is not None and max_flow > 0:
+
+    if max_flow is not None and np.isfinite(max_flow) and max_flow > 0:
         rad_max = max_flow
     else:
-        rad_max = np.max(rad)
+        rad_max = float(np.max(rad)) if rad.size else 0.0
 
     epsilon = 1e-5
     u = u / (rad_max + epsilon)
     v = v / (rad_max + epsilon)
 
-    return compute_color(u, v).astype(np.uint8)
+    img = compute_color(u, v).astype(np.uint8)
+    img[invalid] = 0
+    return img
 
 
 def split_npz_key(path):

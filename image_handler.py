@@ -205,46 +205,61 @@ class ImageHandler:
     def _load_npz_file(self, file_path):
         """Load NPZ file and extract image arrays."""
         npz_file = np.load(file_path)
-        
-        # Store available keys and their validity
-        self.npz_keys = {}
-        for key in npz_file.files:
-            arr = npz_file[key]
-            self.npz_keys[key] = self._is_valid_image_array(arr)
-        
-        # If only one array, load it directly
-        if len(npz_file.files) == 1:
-            key = npz_file.files[0]
-            self.original_image_data = npz_file[key]
-            self.current_npz_key = key
-        else:
-            # Load first valid key
-            valid_key_found = False
+        try:
+            # Store available keys and their validity
+            keys = {}
             for key in npz_file.files:
-                if self.npz_keys[key]:
-                    self.original_image_data = npz_file[key]
-                    self.current_npz_key = key
-                    valid_key_found = True
-                    break
-            
-            if not valid_key_found:
+                try:
+                    arr = npz_file[key]
+                except Exception:
+                    # e.g. object arrays (allow_pickle=False) or corrupt members
+                    keys[key] = False
+                    continue
+                keys[key] = self._is_valid_image_array(arr)
+
+            # Load the first valid key (also covers the single-key case, which
+            # must pass the same validity checks).
+            first_valid = next((k for k in npz_file.files if keys[k]), None)
+            if first_valid is None:
+                if len(npz_file.files) == 1:
+                    raise ValueError(
+                        f"Array '{npz_file.files[0]}' in NPZ file is not an image array: {file_path}")
                 raise ValueError(f"No valid image arrays found in NPZ file: {file_path}")
-        
+            data = npz_file[first_valid]
+        except Exception:
+            npz_file.close()
+            self._reset_npz_state()
+            raise
+
+        self.npz_keys = keys
+        self.original_image_data = data
+        self.current_npz_key = first_valid
+
         # Store reference for switching keys later
         self.npz_file_path = file_path
         self.npz_data = npz_file
-        
+
         # Set dimensions
-        if self.original_image_data is not None:
-            if self.original_image_data.ndim == 2:
-                self.height, self.width = self.original_image_data.shape
-            elif self.original_image_data.ndim == 3:
-                self.height, self.width = self.original_image_data.shape[:2]
-            self.dtype = self.original_image_data.dtype
-    
+        if data.ndim == 2:
+            self.height, self.width = data.shape
+        else:
+            self.height, self.width = data.shape[:2]
+        self.dtype = data.dtype
+        self.color_format = self._color_format_for_array(data)
+
+    @staticmethod
+    def _color_format_for_array(arr):
+        """Describe an in-memory image array's layout for the Info pane."""
+        if arr.ndim == 3:
+            return {2: "RGB (Flow)", 3: "RGB", 4: "RGBA"}.get(arr.shape[2], "Grayscale")
+        return "Grayscale"
+
     def _is_valid_image_array(self, arr):
         """Check if array can be displayed as an image."""
         if not isinstance(arr, np.ndarray):
+            return False
+        # Object/string/void arrays cannot be rendered as pixels.
+        if arr.dtype.kind not in "biuf":
             return False
         if arr.ndim not in [2, 3]:
             return False
