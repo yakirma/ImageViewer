@@ -406,15 +406,24 @@ class InfoPane(QDockWidget):
         self.dtype_combo = QComboBox()
         self.dtype_combo.setEditable(True)  
         self.dtype_combo.setMinimumWidth(50)
-        self.dtype_combo.currentTextChanged.connect(self._on_parameter_change)
+        # Apply the dtype only when it is committed (picked from the list,
+        # Enter, or focus leaving the field), not on every keystroke: each
+        # change reloads the raw file.
+        self.dtype_combo.activated.connect(self._on_dtype_committed)
+        self.dtype_combo.lineEdit().editingFinished.connect(self._on_dtype_committed)
 
+        # keyboardTracking=False: valueChanged fires on Enter, focus loss and
+        # arrow/wheel steps, not for each typed digit (typing "1921" used to
+        # reload the file for 1, 19, 192 and 1921).
         self.width_spinbox = QSpinBox()
         self.width_spinbox.setRange(1, 100000)
+        self.width_spinbox.setKeyboardTracking(False)
         self.width_spinbox.setValue(1280) # Default to reasonable value
         self.width_spinbox.valueChanged.connect(self._on_width_changed)
         
         self.height_spinbox = QSpinBox()
         self.height_spinbox.setRange(1, 100000)
+        self.height_spinbox.setKeyboardTracking(False)
         self.height_spinbox.setValue(720) # Default to reasonable value
         self.height_spinbox.valueChanged.connect(self._on_parameter_change)
 
@@ -444,8 +453,17 @@ class InfoPane(QDockWidget):
         reset_layout.addStretch()
         reset_layout.addWidget(self.reset_button)
         self.layout.addRow("", reset_layout) # improved layout
+
+        # Inline feedback for parameter combinations that fail to decode
+        # (shown instead of a modal dialog).
+        self.error_label = QLabel()
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet("color: #d9534f;")
+        self.error_label.setVisible(False)
+        self.layout.addRow(self.error_label)
         
         self.defaults = {}
+        self._last_emitted = None
 
         self.setWidget(self.content_widget)
 
@@ -453,12 +471,16 @@ class InfoPane(QDockWidget):
         self._recalculate_height()
         self._on_parameter_change()
 
+    def _on_dtype_committed(self, *_):
+        self._recalculate_height()
+        self._emit_settings()
+
     def _on_parameter_change(self):
         # Trigger recalculation if needed (e.g. if type/format changes, height might need update?)
         # User request: "when swutching the image type/format, try finding the closet appropriate resolution."
         # This implies changing type/format ALSO affects resolution if we want to respect file size.
         sender = self.sender()
-        if sender == self.dtype_combo or sender == self.color_format_combo:
+        if sender == self.color_format_combo:
              self._recalculate_height()
         
         self._emit_settings()
@@ -507,14 +529,27 @@ class InfoPane(QDockWidget):
             self.height_spinbox.setValue(new_height)
             self.height_spinbox.blockSignals(False)
 
-    def _emit_settings(self):
-        settings = {
+    def _current_settings(self):
+        return {
             'width': self.width_spinbox.value(),
             'height': self.height_spinbox.value(),
             'dtype': self.dtype_combo.currentText(),
             'color_format': self.color_format_combo.currentText(),
         }
+
+    def _emit_settings(self, force=False):
+        settings = self._current_settings()
+        # A dtype commit can arrive twice (Enter emits both activated and
+        # editingFinished) and focus-out fires editingFinished even when
+        # nothing changed; don't reload the file for an unchanged set.
+        if not force and settings == self._last_emitted:
+            return
+        self._last_emitted = dict(settings)
         self.settings_changed.emit(settings) # Renamed signal
+
+    def set_error_message(self, message):
+        self.error_label.setText(message or "")
+        self.error_label.setVisible(bool(message))
 
     def _on_reset(self):
         if not self.defaults: return
@@ -525,7 +560,7 @@ class InfoPane(QDockWidget):
         self.dtype_combo.setCurrentText(self.defaults.get('dtype', 'uint8'))
         self.color_format_combo.setCurrentText(self.defaults.get('color_format', 'Grayscale'))
         self.blockSignals(False)
-        self._emit_settings()
+        self._emit_settings(force=True)
 
     def update_info(self, width, height, dtype, dtype_map, file_size=0, color_format="Grayscale"):
         self.file_size = file_size
@@ -578,6 +613,8 @@ class InfoPane(QDockWidget):
         self.height_spinbox.blockSignals(False)
         self.dtype_combo.blockSignals(False)
         self.color_format_combo.blockSignals(False)
+        self._last_emitted = self._current_settings()
+        self.set_error_message("")
 
 
     def set_raw_mode(self, is_raw):

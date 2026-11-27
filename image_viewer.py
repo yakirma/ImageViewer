@@ -2019,8 +2019,15 @@ class ImageViewer(QMainWindow):
             if self.active_label:
                 self.active_label.repaint()
 
+            self.info_pane.set_error_message("")
+
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error applying parameters:\n{e}")
+            # Not modal: the user is usually mid-way through entering
+            # parameters, and an intermediate combination that doesn't match
+            # the file size is expected. Report it inline and in the status bar.
+            msg = f"Error applying parameters: {e}"
+            self.info_pane.set_error_message(msg)
+            self.status_bar.showMessage(msg, 10000)
         finally:
              self.progress_bar.setVisible(False)
 
