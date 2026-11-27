@@ -2025,7 +2025,11 @@ class ImageViewer(QMainWindow):
         if self.sender() is not self.active_label: return
 
             
-        self.zoom_status_label.setText(f"Zoom: {int(scale_factor * 100)}%")
+        pct = scale_factor * 100
+        # Below 10% an integer percent is too coarse (fit of a huge image can
+        # be a few percent and zoom steps would read as 0%/1%) (I23).
+        text = f"{pct:.1f}%" if pct < 10 else f"{int(round(pct))}%"
+        self.zoom_status_label.setText(f"Zoom: {text}")
 
     # ImageHandler attributes a raw (re)load may overwrite.
     _RAW_HANDLER_FIELDS = ('original_image_data', 'width', 'height', 'dtype', 'color_format', 'is_raw')

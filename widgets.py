@@ -1787,6 +1787,13 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
 
 
 
+    def _min_zoom_scale(self):
+        """Smallest effective scale wheel/pinch zoom may reach: 10%, or half
+        of fit-to-view when fit itself is below 10% (I23), so huge images can
+        still be zoomed out past fit and zoomed in in normal steps."""
+        fit = self._fit_scale if self._fit_scale > 0 else 1.0
+        return min(0.1, fit * 0.5)
+
     def _apply_zoom(self, new_effective_scale, mouse_pos=None):
         if self.current_pixmap is None:
             return
@@ -1798,9 +1805,13 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             # Dynamic Limits for Shared State
             # Max Limit: Defined globally by the image with the largest Max Zoom Requirement
             max_mult = self.shared_state.max_zoom_limit
-            # Min Limit: 10% effective scale for the current image
-            min_mult = 0.1 / self._fit_scale
-            
+            # Min Limit: 10% effective scale, or half of fit for images
+            # whose fit is already below 10% (I23).
+            min_mult = self._min_zoom_scale() / self._fit_scale
+            # Never let the clamp itself move the view the "wrong" way.
+            min_mult = min(min_mult, old_zoom_multiplier)
+            max_mult = max(max_mult, old_zoom_multiplier)
+
             new_zoom_multiplier = max(min_mult, min(max_mult, new_zoom_multiplier))
 
             if abs(new_zoom_multiplier - old_zoom_multiplier) < 1e-9:
@@ -1818,8 +1829,11 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
             old_scale_factor = self._scale_factor
             
             # Dynamic Limit for Single View: 1 pixel takes the whole view
-            max_limit = max(self.width(), self.height())
-            new_scale_factor = max(0.1, min(float(max_limit), new_effective_scale))
+            max_limit = max(float(self.width()), float(self.height()), old_scale_factor)
+            # Min Limit: 10%, or half of fit for very large images (I23);
+            # never above the current scale so a step can't jump the wrong way.
+            min_limit = min(self._min_zoom_scale(), old_scale_factor)
+            new_scale_factor = max(min_limit, min(max_limit, new_effective_scale))
             
             if abs(new_scale_factor - old_scale_factor) < 1e-9:
                 return
