@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QFi
 from PyQt6.QtCore import Qt, QTimer, QEvent, QSize, pyqtSignal, QPoint
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QColor, QPalette
 from image_viewer import ImageViewer
-from single_instance import SingleInstance
+from single_instance import SingleInstance, absolute_paths
 
 # Define Custom Application Class at module level
 class ImageViewerApp(QApplication):
@@ -85,7 +85,7 @@ if __name__ == "__main__":
 
     # Check for file arguments (CLI support)
     if len(sys.argv) > 1:
-        file_paths = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+        file_paths = absolute_paths(sys.argv[1:])
         if file_paths:
             viewer.open_files(file_paths)
 

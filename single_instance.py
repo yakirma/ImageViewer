@@ -6,9 +6,18 @@ When a second instance is launched with file arguments, it sends
 the files to the existing instance and exits.
 """
 
-import sys
+import json
+import os
+import struct
+import time
+
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+
+_HEADER_FMT = '>I'
+_HEADER_SIZE = struct.calcsize(_HEADER_FMT)
+_MAX_MESSAGE_SIZE = 64 * 1024 * 1024
+_SEND_TIMEOUT_S = 5.0
 
 
 class SingleInstance(QObject):
@@ -21,7 +30,8 @@ class SingleInstance(QObject):
         self.app_id = app_id
         self.server = None
         self.is_primary = False
-        
+        self._buffers = {}  # QLocalSocket -> bytearray of received bytes
+
     def check_and_connect(self):
         """
         Check if another instance is running.
@@ -67,51 +77,122 @@ class SingleInstance(QObject):
     def send_files(self, file_paths):
         """
         Send file paths to the primary instance.
+
+        Paths are made absolute here, because the primary resolves them
+        against its own working directory (often '/' when launched from
+        the Finder), not ours.
+
+        Wire format: a 4-byte big-endian length followed by that many bytes
+        of UTF-8 JSON (a list of path strings). The receiver accumulates
+        bytes asynchronously until the whole message has arrived, so long
+        file lists split across several socket chunks are not truncated.
+
         Returns True if successful, False otherwise.
         """
-        if not file_paths:
-            return True
-        
-        # Filter out command-line flags
-        files = [f for f in file_paths if not f.startswith('-')]
+        files = absolute_paths(file_paths)
         if not files:
             return True
-        
+
         socket = QLocalSocket()
         socket.connectToServer(self.app_id)
-        
+
         if not socket.waitForConnected(1000):
             print(f"Error: Could not connect to primary instance: {socket.errorString()}")
             return False
-        
-        # Send file paths as newline-separated string
-        message = '\n'.join(files)
-        socket.write(message.encode('utf-8'))
-        socket.flush()
-        
-        if not socket.waitForBytesWritten(1000):
-            print(f"Error: Could not send files to primary instance")
-            return False
-        
+
+        socket.write(encode_message(files))
+
+        # Large payloads may need several writes; keep pumping until the
+        # whole message has been handed to the OS or we time out.
+        deadline = time.monotonic() + _SEND_TIMEOUT_S
+        while socket.bytesToWrite() > 0:
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                print("Error: Could not send files to primary instance")
+                socket.abort()
+                return False
+            socket.waitForBytesWritten(min(remaining_ms, 1000))
+
         socket.disconnectFromServer()
+        if socket.state() != QLocalSocket.LocalSocketState.UnconnectedState:
+            socket.waitForDisconnected(1000)
         return True
-    
+
     def _on_new_connection(self):
-        """Handle new connection from secondary instance"""
+        """Handle new connections from secondary instances without blocking.
+
+        Bytes are accumulated per socket via readyRead; the message is
+        parsed once the length-prefixed payload is complete.
+        """
         if not self.server:
             return
-        
-        client = self.server.nextPendingConnection()
-        if not client:
+
+        while True:
+            client = self.server.nextPendingConnection()
+            if not client:
+                return
+            self._buffers[client] = bytearray()
+            client.readyRead.connect(lambda c=client: self._on_ready_read(c))
+            client.disconnected.connect(lambda c=client: self._on_client_disconnected(c))
+            # Data may already be buffered before the signals were connected.
+            if client.bytesAvailable() > 0:
+                self._on_ready_read(client)
+
+    def _on_ready_read(self, client):
+        buf = self._buffers.get(client)
+        if buf is None:
             return
-        
-        # Wait for data
-        if client.waitForReadyRead(1000):
-            data = client.readAll().data().decode('utf-8')
-            files = [f.strip() for f in data.split('\n') if f.strip()]
-            
-            if files:
-                self.files_received.emit(files)
-        
+        buf.extend(client.readAll().data())
+
+        if len(buf) >= _HEADER_SIZE:
+            (length,) = struct.unpack(_HEADER_FMT, bytes(buf[:_HEADER_SIZE]))
+            if length > _MAX_MESSAGE_SIZE:
+                print("Warning: Rejecting oversized single-instance message")
+                self._finish_client(client)
+                return
+            if len(buf) >= _HEADER_SIZE + length:
+                payload = bytes(buf[_HEADER_SIZE:_HEADER_SIZE + length])
+                self._finish_client(client)
+                files = decode_payload(payload)
+                if files:
+                    self.files_received.emit(files)
+
+    def _on_client_disconnected(self, client):
+        # Drain anything that arrived together with the disconnect.
+        if client in self._buffers and client.bytesAvailable() > 0:
+            self._on_ready_read(client)
+        if client in self._buffers:
+            # Incomplete message: drop it.
+            self._finish_client(client)
+
+    def _finish_client(self, client):
+        if self._buffers.pop(client, None) is None:
+            return
+        try:
+            client.readyRead.disconnect()
+            client.disconnected.disconnect()
+        except TypeError:
+            pass
         client.disconnectFromServer()
         client.deleteLater()
+
+
+def absolute_paths(args):
+    """Drop command-line flags and make the remaining paths absolute."""
+    return [os.path.abspath(a) for a in args if a and not a.startswith('-')]
+
+
+def encode_message(files):
+    payload = json.dumps(list(files)).encode('utf-8')
+    return struct.pack(_HEADER_FMT, len(payload)) + payload
+
+
+def decode_payload(payload):
+    try:
+        data = json.loads(payload.decode('utf-8'))
+    except (UnicodeDecodeError, ValueError):
+        print("Warning: Ignoring malformed single-instance message")
+        return []
+    if not isinstance(data, list):
+        return []
+    return [f for f in data if isinstance(f, str) and f]
