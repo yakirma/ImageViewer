@@ -47,7 +47,7 @@ from widgets import ZoomableDraggableLabel, InfoPane, MathTransformPane, ZoomSet
     ThumbnailPane, SharedViewState, FileExplorerPane, PointCloudViewer
 from image_handler import ImageHandler
 import settings
-from utils import split_npz_key
+from utils import split_npz_key, flow_magnitude
 
 # requests is imported lazily inside the network paths (update checker,
 # DA3 model download). It transitively pulls urllib3 + ssl on first import,
@@ -1030,6 +1030,26 @@ class ImageViewer(QMainWindow):
         if self.active_label is not None and self.active_label.original_data is not None:
             self._apply_histogram_preset(0, 100)
 
+    def _sync_npz_key_metadata(self):
+        """After an NPZ key switch, refresh the main label's metadata and the
+        Info pane when the shown key's width/height/dtype/format changed (I45)."""
+        label = self.image_label
+        meta = getattr(label, 'metadata', None)
+        if meta is None:
+            return
+        h = self.image_handler
+        new = {'width': h.width, 'height': h.height, 'dtype': h.dtype,
+               'color_format': h.color_format}
+        if all(meta.get(k) == v for k, v in new.items()):
+            return
+        meta.update(new)
+        if self.active_label is label:
+            self.info_pane.blockSignals(True)
+            self.info_pane.update_info(meta['width'], meta['height'], meta['dtype'],
+                                       h.dtype_map, file_size=meta.get('file_size', 0),
+                                       color_format=meta['color_format'])
+            self.info_pane.blockSignals(False)
+
     def apply_channel_selection(self, image_data):
         """Slice image data based on selected channel option."""
         selection = self.channel_combo.currentText()
@@ -1044,6 +1064,12 @@ class ImageViewer(QMainWindow):
                     self.image_handler.height, self.image_handler.width = self.image_handler.original_image_data.shape
                 elif self.image_handler.original_image_data.ndim == 3:
                     self.image_handler.height, self.image_handler.width = self.image_handler.original_image_data.shape[:2]
+                # The new key's layout/dtype may differ (gray / RGB / flow):
+                # keep handler + Info pane metadata in sync (I45).
+                arr = self.image_handler.original_image_data
+                self.image_handler.dtype = arr.dtype
+                self.image_handler.color_format = ImageHandler._color_format_for_array(arr)
+                self._sync_npz_key_metadata()
                 return self.image_handler.original_image_data
         
         if image_data is None or image_data.ndim < 3:
@@ -3202,7 +3228,9 @@ class ImageViewer(QMainWindow):
                     hist_data = visible_data[..., :3].astype(np.float32) @ np.array(
                         [0.2989, 0.5870, 0.1140], dtype=np.float32)
                 elif visible_data.shape[2] == 2:
-                    hist_data = np.linalg.norm(visible_data, axis=2)
+                    # Flow magnitude; unknown vectors (NaN / |c| > 1e9) -> NaN
+                    # so they can't inflate the limits / max_flow (I46).
+                    hist_data = flow_magnitude(visible_data)
                 else:
                     hist_data = visible_data[:, :, 0]
             else:
@@ -3220,6 +3248,11 @@ class ImageViewer(QMainWindow):
 
         # The widget moves the region to the limits and fits its x-axis
         # around them, binning only once (I44).
+        # 2-channel (flow) limits live in vector-magnitude space: bin the
+        # magnitude (unknown vectors dropped) so the histogram, its region and
+        # its percentile buttons agree with them (I46).
+        if visible_data is not None and visible_data.ndim == 3 and visible_data.shape[2] == 2:
+            visible_data = flow_magnitude(visible_data)
         self.histogram_window.update_histogram(visible_data, should_reset_region, limits=limits)
 
     def _refresh_histogram_for_new_data(self):
@@ -3514,8 +3547,8 @@ class ImageViewer(QMainWindow):
                     # RGB: compute luminance
                     hist_data = np.dot(visible_data[..., :3], [0.2989, 0.5870, 0.1140])
                 elif visible_data.shape[2] == 2:
-                    # 2-channel: use magnitude
-                    hist_data = np.linalg.norm(visible_data, axis=2)
+                    # 2-channel: flow magnitude, unknown vectors -> NaN (I46)
+                    hist_data = flow_magnitude(visible_data)
                 else:
                     # Single channel in 3D array
                     hist_data = visible_data[:, :, 0]

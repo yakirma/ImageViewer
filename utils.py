@@ -121,6 +121,24 @@ def compute_color(u, v):
 UNKNOWN_FLOW_THRESH = 1e9
 
 
+def flow_magnitude(flow_uv):
+    """Per-pixel magnitude of an [H,W,2] flow, NaN where the vector is unknown.
+
+    Unknown follows flow_to_color: a non-finite component or
+    |component| > UNKNOWN_FLOW_THRESH. Callers deriving contrast / max_flow
+    limits filter non-finite values, so unknown vectors cannot inflate them.
+    """
+    u = np.asarray(flow_uv[..., 0], dtype=np.float64)
+    v = np.asarray(flow_uv[..., 1], dtype=np.float64)
+    with np.errstate(invalid='ignore', over='ignore'):
+        invalid = ~(np.isfinite(u) & np.isfinite(v)
+                    & (np.abs(u) <= UNKNOWN_FLOW_THRESH)
+                    & (np.abs(v) <= UNKNOWN_FLOW_THRESH))
+        mag = np.sqrt(u ** 2 + v ** 2)
+    mag[invalid] = np.nan
+    return mag
+
+
 def flow_to_color(flow_uv, max_flow=None):
     """
     Expects a 2D flow image of shape.

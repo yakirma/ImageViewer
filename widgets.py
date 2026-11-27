@@ -48,7 +48,7 @@ import os
 # The import pulls in matplotlib's font cache, pyparsing, and PIL on first
 # load — measurable startup cost (~50 ms in dev, multiple-second perceived
 # cost in the frozen bundle).
-from utils import flow_to_color, split_npz_key
+from utils import flow_to_color, flow_magnitude, split_npz_key
 from settings import load_folder_history, save_folder_history, load_filter_history, save_filter_history
 
 
@@ -1500,7 +1500,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                      data = data[:, :, 0] # Use Channel 0 for colormapping
                 elif data.ndim == 3 and data.shape[2] == 2:
                      # 2-Channel non-flow -> Use Magnitude
-                     data = np.linalg.norm(data, axis=2)
+                     data = flow_magnitude(data)  # unknown vectors -> NaN (I46)
 
                 processed_data = data.copy()
                 
