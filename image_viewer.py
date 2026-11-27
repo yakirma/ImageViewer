@@ -1393,11 +1393,117 @@ class ImageViewer(QMainWindow):
         self.overlay_alphas = {} # (source_path, target_path) -> alpha
         self.overlay_cache = {}  # (source_path, target_path) -> QPixmap (resized to match target view)
 
+    def _load_montage_files(self, file_paths):
+        """Load montage files without touching the UI.
+
+        Returns ``(loaded, failed_paths)`` where ``loaded`` is a list of
+        ``(file_path, actual_file_path, handler)`` for files that produced
+        non-empty data, in input order.
+        """
+        loaded = []
+        failed_paths = []
+        override_settings = getattr(self, '_temp_montage_override', None)
+        for file_path in file_paths:
+            # Handle NPZ key paths (format: "file.npz#key_name")
+            actual_file_path, npz_key_to_load = split_npz_key(file_path)
+        
+            temp_handler = ImageHandler()
+            basename = os.path.basename(actual_file_path)
+        
+            # [FIX] Clear override_settings for non-raw files to prevent metadata leakage
+            current_override = override_settings
+        
+            _, ext = os.path.splitext(actual_file_path)
+            ext_lower = ext.lower()
+        
+            if current_override and not temp_handler.is_raw_path(actual_file_path):
+                current_override = None
+            elif current_override:
+                # Check if target file has explicit resolution in name
+                if re.search(r"[\-_](\d+)x(\d+)", basename):
+                    current_override = None
+                # [NEW] Check if file size matches the override settings
+                elif current_override and os.path.exists(actual_file_path):
+                         try:
+                             fsize = os.path.getsize(actual_file_path)
+                             ow = current_override.get('width', 0)
+                             oh = current_override.get('height', 0)
+                             odtype = current_override.get('dtype', np.uint8)
+                         
+                             if isinstance(odtype, str):
+                                 # Try to parse string dtype
+                                 try:
+                                     cont, _, _, _ = temp_handler._parse_dtype_string(odtype)
+                                     bpp = np.dtype(cont).itemsize
+                                 except Exception:
+                                     bpp = 1
+                             else:
+                                 bpp = np.dtype(odtype).itemsize
+                             
+                             c_fmt = current_override.get('color_format', 'Grayscale')
+                             ch = 4 if 'RGBA' in c_fmt else (3 if 'RGB' in c_fmt else 1)
+                         
+                             expected_size = ow * oh * bpp * ch
+                         
+                             if fsize != expected_size:
+                                 current_override = None
+                         except Exception:
+                             pass
+
+            try:
+                temp_handler.load_image(actual_file_path, override_settings=current_override)
+                # ... (rest of loading) ...
+
+
+            
+                # If this is an NPZ file with a specific key, switch to that key
+                if npz_key_to_load and hasattr(temp_handler, 'npz_keys'):
+                    if npz_key_to_load in temp_handler.npz_keys and temp_handler.npz_keys[npz_key_to_load]:
+                        temp_handler.original_image_data = temp_handler.npz_data[npz_key_to_load]
+                        temp_handler.current_npz_key = npz_key_to_load
+                        # Update dimensions
+                        if temp_handler.original_image_data.ndim == 2:
+                            temp_handler.height, temp_handler.width = temp_handler.original_image_data.shape
+                        elif temp_handler.original_image_data.ndim == 3:
+                            temp_handler.height, temp_handler.width = temp_handler.original_image_data.shape[:2]
+            except Exception:
+                # Load failed (e.g. missing resolution and no override);
+                # reported to the user after the loop.
+                failed_paths.append(file_path)
+                continue
+            
+            # A requested NPZ key that doesn't exist is a failure, not a
+            # silent fallback to the default key.
+            if npz_key_to_load and temp_handler.current_npz_key != npz_key_to_load:
+                failed_paths.append(file_path)
+                continue
+
+            data = temp_handler.original_image_data
+            if data is None or data.size == 0:
+                failed_paths.append(file_path)
+                continue
+            loaded.append((file_path, actual_file_path, temp_handler))
+        return loaded, failed_paths
+
     def display_montage(self, file_paths, is_manual=False):
+        loaded = []
+        if file_paths:
+            # Load everything BEFORE tearing down the current view: if no file
+            # loads, the previous montage / single image stays untouched.
+            loaded, failed_paths = self._load_montage_files(file_paths)
+            if failed_paths:
+                names = ", ".join(os.path.basename(p) for p in failed_paths)
+                self.status_bar.showMessage(
+                    f"Montage: could not load {len(failed_paths)} file(s): {names}", 15000)
+            if not loaded:
+                return
+            file_paths = [fp for fp, _, _ in loaded]
+
         self._raw_recovery_path = None
         if is_manual and self.thumbnail_pane and file_paths:
             self.thumbnail_pane.add_to_manual_paths(file_paths)
             
+
         # Cache state of existing montage labels (for re-applying when refreshing montage)
         # This prevents losing colormap/contrast when adding 3rd image to an existing 2-image montage
         existing_states = {} # path -> state_dict
@@ -1456,166 +1562,96 @@ class ImageViewer(QMainWindow):
         max_montage_zoom = 100.0
 
         row, col = 0, 0
-        override_settings = getattr(self, '_temp_montage_override', None)
-        
-        for file_path in file_paths:
-            # Handle NPZ key paths (format: "file.npz#key_name")
-            actual_file_path, npz_key_to_load = split_npz_key(file_path)
-            
-            temp_handler = ImageHandler()
-            basename = os.path.basename(actual_file_path)
-            
-            # [FIX] Clear override_settings for non-raw files to prevent metadata leakage
-            current_override = override_settings
-            
-            _, ext = os.path.splitext(actual_file_path)
-            ext_lower = ext.lower()
-            
-            if current_override and not temp_handler.is_raw_path(actual_file_path):
-                current_override = None
-            elif current_override:
-                # Check if target file has explicit resolution in name
-                if re.search(r"[\-_](\d+)x(\d+)", basename):
-                    current_override = None
-                # [NEW] Check if file size matches the override settings
-                elif current_override and os.path.exists(actual_file_path):
-                         try:
-                             fsize = os.path.getsize(actual_file_path)
-                             ow = current_override.get('width', 0)
-                             oh = current_override.get('height', 0)
-                             odtype = current_override.get('dtype', np.uint8)
-                             
-                             if isinstance(odtype, str):
-                                 # Try to parse string dtype
-                                 try:
-                                     cont, _, _, _ = temp_handler._parse_dtype_string(odtype)
-                                     bpp = np.dtype(cont).itemsize
-                                 except Exception:
-                                     bpp = 1
-                             else:
-                                 bpp = np.dtype(odtype).itemsize
-                                 
-                             c_fmt = current_override.get('color_format', 'Grayscale')
-                             ch = 4 if 'RGBA' in c_fmt else (3 if 'RGB' in c_fmt else 1)
-                             
-                             expected_size = ow * oh * bpp * ch
-                             
-                             if fsize != expected_size:
-                                 current_override = None
-                         except Exception:
-                             pass
-
-            try:
-                temp_handler.load_image(actual_file_path, override_settings=current_override)
-                # ... (rest of loading) ...
-
-
-                
-                # If this is an NPZ file with a specific key, switch to that key
-                if npz_key_to_load and hasattr(temp_handler, 'npz_keys'):
-                    if npz_key_to_load in temp_handler.npz_keys and temp_handler.npz_keys[npz_key_to_load]:
-                        temp_handler.original_image_data = temp_handler.npz_data[npz_key_to_load]
-                        temp_handler.current_npz_key = npz_key_to_load
-                        # Update dimensions
-                        if temp_handler.original_image_data.ndim == 2:
-                            temp_handler.height, temp_handler.width = temp_handler.original_image_data.shape
-                        elif temp_handler.original_image_data.ndim == 3:
-                            temp_handler.height, temp_handler.width = temp_handler.original_image_data.shape[:2]
-            except Exception:
-                # Fallback if load fails (e.g. missing resolution and no override)
-                continue
-                
+        for file_path, actual_file_path, temp_handler in loaded:
             data = temp_handler.original_image_data
 
-            if data is not None and data.size > 0:
-                # Update Max Zoom Limit
-                dims = max(temp_handler.width, temp_handler.height)
-                if dims > max_montage_zoom: max_montage_zoom = float(dims)
+            # Update Max Zoom Limit
+            dims = max(temp_handler.width, temp_handler.height)
+            if dims > max_montage_zoom: max_montage_zoom = float(dims)
 
-                image_label = ZoomableDraggableLabel(shared_state=self.montage_shared_state)
-                image_label.set_data(data, is_pristine=True)
-                image_label.file_path = file_path # Store for overlay restoration
-                image_label.open_companion_depth.connect(self._on_open_companion_depth)
+            image_label = ZoomableDraggableLabel(shared_state=self.montage_shared_state)
+            image_label.set_data(data, is_pristine=True)
+            image_label.file_path = file_path # Store for overlay restoration
+            image_label.open_companion_depth.connect(self._on_open_companion_depth)
                 
-                # Store metadata for Info Pane
-                image_label.metadata = {
-                    'width': temp_handler.width,
-                    'height': temp_handler.height,
-                    'dtype': temp_handler.dtype,
-                    'color_format': getattr(temp_handler, 'color_format', 'Grayscale'),
-                    'file_size': os.path.getsize(actual_file_path) if os.path.isfile(actual_file_path) else 0,
-                    'is_raw': temp_handler.is_raw
+            # Store metadata for Info Pane
+            image_label.metadata = {
+                'width': temp_handler.width,
+                'height': temp_handler.height,
+                'dtype': temp_handler.dtype,
+                'color_format': getattr(temp_handler, 'color_format', 'Grayscale'),
+                'file_size': os.path.getsize(actual_file_path) if os.path.isfile(actual_file_path) else 0,
+                'is_raw': temp_handler.is_raw
+            }
+
+            state_applied = False
+                
+            # 1. Try to inherit from PREVIOUS montage state
+            if file_path in existing_states:
+                state = existing_states[file_path]
+                filtered_state = {
+                    'colormap': state.get('colormap'),
+                    'contrast_limits': state.get('contrast_limits')
                 }
+                image_label.set_view_state(filtered_state)
+                if state.get('channel_selection'):
+                    image_label._channel_selection = state['channel_selection']
+                state_applied = True
+                
+            # 2. If not found, check other open windows
+            if not state_applied:
+                for window in self.window_list:
+                    # Retrieve the path safely, handling potential missing attribute or closed window
+                    try:
+                        # Skip windows in Montage Mode as their current_file_path might be stale
+                        if window.stacked_widget.currentWidget() == window.montage_widget:
+                            continue
 
-                state_applied = False
-                
-                # 1. Try to inherit from PREVIOUS montage state
-                if file_path in existing_states:
-                    state = existing_states[file_path]
-                    filtered_state = {
-                        'colormap': state.get('colormap'),
-                        'contrast_limits': state.get('contrast_limits')
-                    }
-                    image_label.set_view_state(filtered_state)
-                    if state.get('channel_selection'):
-                        image_label._channel_selection = state['channel_selection']
-                    state_applied = True
-                
-                # 2. If not found, check other open windows
-                if not state_applied:
-                    for window in self.window_list:
-                        # Retrieve the path safely, handling potential missing attribute or closed window
-                        try:
-                            # Skip windows in Montage Mode as their current_file_path might be stale
-                            if window.stacked_widget.currentWidget() == window.montage_widget:
-                                continue
+                        win_path = getattr(window, 'current_file_path', None)
+                        if win_path == file_path and window.active_label:
+                            state = window.active_label.get_view_state()
+                            # Only inherit Colormap and Contrast (preserve Montage's layout/zoom)
+                            filtered_state = {
+                                'colormap': state.get('colormap'),
+                                'contrast_limits': state.get('contrast_limits')
+                            }
+                            image_label.set_view_state(filtered_state)
+                            break
+                    except Exception:
+                        pass # Ignore errors accessing other windows
 
-                            win_path = getattr(window, 'current_file_path', None)
-                            if win_path == file_path and window.active_label:
-                                state = window.active_label.get_view_state()
-                                # Only inherit Colormap and Contrast (preserve Montage's layout/zoom)
-                                filtered_state = {
-                                    'colormap': state.get('colormap'),
-                                    'contrast_limits': state.get('contrast_limits')
-                                }
-                                image_label.set_view_state(filtered_state)
-                                break
-                        except Exception:
-                            pass # Ignore errors accessing other windows
+            # Use centralized method to set initial text/visibility based on pane state
+            self._update_overlay_labels()
+            image_label.clicked.connect(lambda label=image_label: self._set_active_montage_label(label))
+            self.montage_labels.append(image_label)
 
-                # Use centralized method to set initial text/visibility based on pane state
-                self._update_overlay_labels()
-                image_label.clicked.connect(lambda label=image_label: self._set_active_montage_label(label))
-                self.montage_labels.append(image_label)
+            # Container for Image + Active Indicator Line
+            container = QWidget()
+            container_layout = QVBoxLayout(container)
+            container_layout.setContentsMargins(0, 0, 0, 0)
+            container_layout.setSpacing(0)
+                
+            container_layout.addWidget(image_label)
+                
+            # Active Indicator Line
+            line = QFrame()
+            line.setFixedHeight(4)
+            line.setStyleSheet("background-color: transparent;")
+            container_layout.addWidget(line)
+                
+            # Attach line to label for easy access
+            image_label.indicator_line = line
 
-                # Container for Image + Active Indicator Line
-                container = QWidget()
-                container_layout = QVBoxLayout(container)
-                container_layout.setContentsMargins(0, 0, 0, 0)
-                container_layout.setSpacing(0)
+            self.montage_layout.addWidget(container, row, col)
+            # Removed hover_moved connection for activation (Click only)
+            image_label.hover_moved.connect(self.update_status_bar) # Just update status bar, don't activate
                 
-                container_layout.addWidget(image_label)
-                
-                # Active Indicator Line
-                line = QFrame()
-                line.setFixedHeight(4)
-                line.setStyleSheet("background-color: transparent;")
-                container_layout.addWidget(line)
-                
-                # Attach line to label for easy access
-                image_label.indicator_line = line
-
-                self.montage_layout.addWidget(container, row, col)
-                # Removed hover_moved connection for activation (Click only)
-                image_label.hover_moved.connect(self.update_status_bar) # Just update status bar, don't activate
-                
-                col += 1
-                if col % 3 == 0:
-                    row += 1
-                    col = 0
-        if self.montage_labels:
-            self.montage_shared_state.max_zoom_limit = max_montage_zoom
-            self._set_active_montage_label(self.montage_labels[0])
+            col += 1
+            if col % 3 == 0:
+                row += 1
+                col = 0
+        self.montage_shared_state.max_zoom_limit = max_montage_zoom
+        self._set_active_montage_label(self.montage_labels[0])
 
         self.stacked_widget.setCurrentWidget(self.montage_widget)
         # Let Qt coalesce the paint with other pending events instead of a
@@ -2478,7 +2514,8 @@ class ImageViewer(QMainWindow):
             return
 
         # Filter out invalid paths
-        valid_paths = [p for p in file_paths if os.path.exists(p)]
+        # (NPZ key paths "file.npz#key" are checked via their base file.)
+        valid_paths = [p for p in file_paths if os.path.exists(split_npz_key(p)[0])]
         if not valid_paths:
             return
 
@@ -3269,6 +3306,8 @@ class ImageViewer(QMainWindow):
         # Single Key Shortcuts - Strict NoModifier Check
         if event.key() == Qt.Key.Key_C and event.modifiers() == Qt.KeyboardModifier.NoModifier:
             if self.stacked_widget.currentWidget() == self.montage_widget:
+                if not self.montage_labels:
+                    return
                 is_enabled = not self.montage_labels[0].crosshair_enabled
                 for label in self.montage_labels:
                     label.set_crosshair_enabled(is_enabled)

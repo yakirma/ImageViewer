@@ -48,7 +48,7 @@ import os
 # The import pulls in matplotlib's font cache, pyparsing, and PIL on first
 # load — measurable startup cost (~50 ms in dev, multiple-second perceived
 # cost in the frozen bundle).
-from utils import flow_to_color
+from utils import flow_to_color, split_npz_key
 from settings import load_folder_history, save_folder_history, load_filter_history, save_filter_history
 
 
@@ -2665,11 +2665,14 @@ class ThumbnailPane(QDockWidget):
                         # Single image mode: add to gallery
                         # Check if this is an NPZ file with multiple keys
                         if hasattr(widget.image_handler, 'npz_keys') and len(widget.image_handler.npz_keys) > 1:
-                            # Add thumbnails for each valid NPZ key
+                            # Add thumbnails for each valid NPZ key. current_file_path
+                            # may already be keyed ("x.npz#a"); strip it so we don't
+                            # build "x.npz#a#b".
+                            npz_base_path = split_npz_key(widget.current_file_path)[0]
                             for key in widget.image_handler.npz_keys.keys():
                                 if widget.image_handler.npz_keys[key]:  # Only valid keys
                                     # Create a unique identifier for this NPZ key
-                                    npz_key_path = f"{widget.current_file_path}#{key}"
+                                    npz_key_path = f"{npz_base_path}#{key}"
                                     seen_in_windows.add(npz_key_path)
                                     # Get or generate pixmap for this key
                                     if key == widget.image_handler.current_npz_key:
