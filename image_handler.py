@@ -354,6 +354,9 @@ class ImageHandler:
 
         # raw file reading
         raw_data = np.fromfile(file_name, dtype=container)
+        # N-bit samples in a wider container (u10/u12/u14, intN): drop the
+        # unused high bits and sign-extend, for every plane layout.
+        raw_data = self._mask_packed_bits(raw_data, container, bits, is_signed, is_float)
         total_elements = raw_data.size
         expected_pixels = width * height
         
@@ -403,20 +406,25 @@ class ImageHandler:
         if "Bayer" not in color_format:
             return
 
-        # Post-Processing: Masking for non-standard bits
-        if not is_float:
-             container_bits = np.dtype(container).itemsize * 8
-             if bits < container_bits:
-                 mask = (1 << bits) - 1
-                 raw_data = raw_data & mask
-                 if is_signed:
-                     # Sign extension
-                     sign_bit = 1 << (bits - 1)
-                     raw_data = (raw_data ^ sign_bit) - sign_bit
+        self.original_image_data = self._debayer(raw_data, color_format)
 
-        # Reshaping
-        image = raw_data.reshape((height, width))
-        self.original_image_data = self._debayer(image, color_format)
+    @staticmethod
+    def _mask_packed_bits(raw_data, container, bits, is_signed, is_float):
+        """Keep the low `bits` of each sample; sign-extend if signed."""
+        if is_float or bits <= 0:
+            return raw_data
+        container = np.dtype(container)
+        container_bits = container.itemsize * 8
+        if bits >= container_bits:
+            return raw_data
+        # Work on the unsigned view so masking ignores the container's sign.
+        u = raw_data.view(np.dtype(f"u{container.itemsize}"))
+        u = u & np.array((1 << bits) - 1, dtype=u.dtype)
+        if not is_signed:
+            return u.view(container)
+        sign_bit = np.array(1 << (bits - 1), dtype=u.dtype)
+        # (x ^ s) - s in the signed container gives the two's-complement value.
+        return (u ^ sign_bit).view(container) - sign_bit.astype(container)
 
     def _parse_dtype_string(self, type_str):
         type_str = type_str.lower().strip()
