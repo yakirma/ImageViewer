@@ -255,25 +255,93 @@ class ImageHandler:
             return False
         return True
 
+    @staticmethod
+    def _is_16bit_color(img):
+        """True if PIL opened a 16-bit-per-channel RGB(A) file as 8-bit RGB(A).
+
+        PIL has no 16-bit multi-channel modes, so it silently truncates such
+        PNG/TIFF files to 8 bits; the decoder's raw mode (e.g. 'RGB;16B')
+        still reveals the true depth.
+        """
+        if img.mode not in ("RGB", "RGBA"):
+            return False
+        try:
+            tile = img.tile
+        except Exception:
+            return False
+        if not tile:
+            return False
+        args = tile[0][3] if len(tile[0]) > 3 else None
+        rawmode = args if isinstance(args, str) else (args[0] if args and isinstance(args[0], str) else "")
+        return ";16" in rawmode
+
+    @staticmethod
+    def _apply_exif_orientation(arr, orientation):
+        """Apply an EXIF Orientation (1-8) to an HxW[xC] array."""
+        if orientation == 2:
+            arr = arr[:, ::-1]
+        elif orientation == 3:
+            arr = arr[::-1, ::-1]
+        elif orientation == 4:
+            arr = arr[::-1]
+        elif orientation == 5:
+            arr = np.swapaxes(arr, 0, 1)
+        elif orientation == 6:
+            arr = np.rot90(arr, -1)
+        elif orientation == 7:
+            arr = np.swapaxes(arr[::-1, ::-1], 0, 1)
+        elif orientation == 8:
+            arr = np.rot90(arr, 1)
+        return np.ascontiguousarray(arr)
+
+    @staticmethod
+    def _read_16bit_color_cv2(file_name):
+        """Decode a 16-bit RGB(A) file with OpenCV, returning RGB(A) order."""
+        import cv2
+        buf = np.fromfile(file_name, dtype=np.uint8)  # unicode-safe on Windows
+        arr = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)
+        if arr is None or arr.dtype != np.uint16 or arr.ndim != 3 or arr.shape[2] not in (3, 4):
+            return None
+        if arr.shape[2] == 4:
+            return cv2.cvtColor(arr, cv2.COLOR_BGRA2RGBA)
+        return cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
+
     def _load_standard_image(self, file_name):
+        from PIL import ImageOps
         if file_name.lower().endswith((".heic", ".heif")):
             _ensure_heif_opener()
         with Image.open(file_name) as img:
-            if img.mode.startswith("I;16") or img.mode in ("I", "F"):
-                self.original_image_data = np.array(img)
-            elif img.mode == "L":
-                self.original_image_data = np.array(img)
-            elif img.mode == "RGBA":
-                self.original_image_data = np.array(img)
-            elif img.mode == "RGB":
-                self.original_image_data = np.array(img)
-            elif img.mode.startswith("RGB") or img.mode.startswith("RGBA"):
-                 self.original_image_data = np.array(img)
-            else:
-                # Fallback for P (Palette), CMYK, YCbCr, etc. -> Convert to RGB
-                self.original_image_data = np.array(img.convert("RGB"))
+            data = None
+            if self._is_16bit_color(img):
+                try:
+                    data = self._read_16bit_color_cv2(file_name)
+                except Exception:
+                    data = None
+                if data is not None:
+                    try:
+                        orientation = img.getexif().get(0x0112, 1)
+                    except Exception:
+                        orientation = 1
+                    data = self._apply_exif_orientation(data, orientation)
 
-            self.width, self.height = img.width, img.height
+            if data is None:
+                # Honor EXIF Orientation (phone JPEG/HEIC); no-op without EXIF.
+                try:
+                    img = ImageOps.exif_transpose(img)
+                except Exception:
+                    pass
+                if img.mode.startswith("I;16") or img.mode in ("I", "F", "L", "RGB", "RGBA"):
+                    data = np.array(img)
+                elif img.mode in ("LA", "La", "PA", "RGBa") or (
+                        img.mode == "P" and "transparency" in img.info):
+                    # Keep the alpha channel instead of dropping it.
+                    data = np.array(img.convert("RGBA"))
+                else:
+                    # Fallback for P (Palette), CMYK, YCbCr, etc. -> Convert to RGB
+                    data = np.array(img.convert("RGB"))
+            self.original_image_data = data
+
+            self.height, self.width = data.shape[:2]
             self.dtype = self.original_image_data.dtype
             
             # Set color format to display in info pane
