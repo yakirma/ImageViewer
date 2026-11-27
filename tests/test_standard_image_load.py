@@ -256,3 +256,118 @@ def test_16bit_rgb_displays_and_reports_true_values(viewer, tmp_path):
     assert out[0, 0, 0] < 20 and out[0, -1, 0] > 235
     assert np.all(np.diff(out[0, :, 0]) >= 0)
     assert 60 < out[0, 0, 1] < 200  # mid-level green, not clipped
+
+
+# ------------------------------------- reviewer follow-ups (16-bit alpha etc.)
+
+def _pixmap_rgba(label):
+    img = label.current_pixmap.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+    buf = np.frombuffer(img.constBits().asstring(img.sizeInBytes()), np.uint8)
+    return buf.reshape(img.height(), img.bytesPerLine() // 4, 4)[:, : img.width()].astype(int)
+
+
+def _painted_rgb(label):
+    from PyQt6.QtGui import QPainter
+    img = QImage(label.size(), QImage.Format.Format_RGB32)
+    img.fill(0)
+    p = QPainter(img)
+    label._paint_contents(p)
+    p.end()
+    buf = np.frombuffer(img.constBits().asstring(img.sizeInBytes()), np.uint8)
+    arr = buf.reshape(img.height(), img.bytesPerLine() // 4, 4)[:, : img.width()]
+    return arr[..., [2, 1, 0]].astype(int)
+
+
+def _rgba16_partial_alpha():
+    a = np.zeros((16, 16, 4), np.uint16)
+    a[..., 0] = 65535
+    a[..., 3] = 16384  # 25 % opaque
+    return a
+
+
+def test_uint16_rgba_partial_alpha_with_contrast_limits(qtbot):
+    from widgets import ZoomableDraggableLabel
+    lab = ZoomableDraggableLabel()
+    qtbot.addWidget(lab)
+    lab.resize(64, 64)
+    lab.set_data(_rgba16_partial_alpha())
+    lab.set_contrast_limits(0.0, 65535.0)
+    px = _pixmap_rgba(lab)
+    # Blended onto the dark-gray (40) background at 25 % -> ~94, not 255.
+    expected = 255 * 0.25 + 40 * 0.75
+    assert abs(px[8, 8, 0] - expected) <= 3
+    assert abs(px[8, 8, 1] - 40 * 0.75) <= 3
+    painted = _painted_rgb(lab)
+    cy, cx = painted.shape[0] // 2, painted.shape[1] // 2
+    assert painted[cy, cx, 0] < 150
+
+
+def test_uint16_rgba_partial_alpha_auto_path(qtbot):
+    from widgets import ZoomableDraggableLabel
+    lab = ZoomableDraggableLabel()
+    qtbot.addWidget(lab)
+    lab.resize(64, 64)
+    lab.set_data(_rgba16_partial_alpha())
+    if lab.contrast_limits:
+        pytest.skip("label applied contrast limits by default")
+    px = _pixmap_rgba(lab)
+    assert abs(px[8, 8, 3] - 64) <= 2  # 16384/65535 * 255
+
+
+def test_overlay_display_array_normalizes():
+    from image_viewer import _overlay_display_array
+    rgb16 = np.zeros((2, 3, 3), np.uint16)
+    rgb16[..., 0] = [[0, 30000, 60000]] * 2
+    out = _overlay_display_array(rgb16)
+    assert out.dtype == np.uint8 and out.shape == (2, 3, 3)
+    assert out[0, 0, 0] == 0 and out[0, 2, 0] == 255 and 120 < out[0, 1, 0] < 135
+
+    rgba16 = np.dstack([rgb16, np.full((2, 3), 16384, np.uint16)])
+    out = _overlay_display_array(rgba16)
+    assert out.shape == (2, 3, 4) and abs(int(out[0, 0, 3]) - 64) <= 1
+
+    g16 = np.array([[1000, 2000, 3000]], np.uint16)
+    assert _overlay_display_array(g16).tolist() == [[0, 127, 255]]
+    gf = np.array([[np.nan, 0.0, 0.5, np.inf]], np.float32)
+    out = _overlay_display_array(gf)
+    assert out[0, 0] == 0 and out[0, 1] == 0 and out[0, 2] == 255
+    assert not _overlay_display_array(np.full((2, 2), 7, np.uint16)).any()  # constant
+    g8 = np.array([[5, 9]], np.uint8)
+    assert _overlay_display_array(g8).tolist() == [[5, 9]]
+    assert _overlay_display_array(np.zeros((2, 2, 5))) is None
+
+
+def test_overlay_fallback_uses_normalized_16bit(viewer, tmp_path):
+    """End-to-end: an overlay built from a 16-bit RGB file that is not open in
+    any window is stretched to 8 bits, not reinterpreted as RGB888 bytes."""
+    import cv2
+    a = np.zeros((8, 8, 3), np.uint16)
+    a[:, :4, 0] = 65535
+    src = str(tmp_path / "ov16.png")
+    cv2.imwrite(src, a[..., ::-1].copy())
+    tgt = str(tmp_path / "target.png")
+    Image.fromarray(np.zeros((8, 8, 3), np.uint8)).save(tgt)
+    viewer.open_file(tgt)
+    active = viewer.active_label.file_path
+    pair = (src, active)
+    viewer.overlay_alphas[pair] = 0.5
+    viewer._update_overlays()
+    assert pair in viewer.overlay_cache
+    qimg = viewer.overlay_cache[pair].toImage().convertToFormat(QImage.Format.Format_RGB888)
+    assert (qimg.width(), qimg.height()) == (8, 8)
+    c = qimg.pixelColor(0, 0)
+    assert (c.red(), c.green(), c.blue()) == (255, 0, 0)
+    c = qimg.pixelColor(7, 0)
+    assert (c.red(), c.green(), c.blue()) == (0, 0, 0)
+
+
+def test_exif_transpose_matches_loader_for_depth_input(tmp_path):
+    """DA3Worker feeds ImageOps.exif_transpose(img).convert('RGB'); it must have
+    the same shape as what the viewer displays."""
+    from PIL import ImageOps
+    arr = _quadrant_rgb()
+    p = tmp_path / "o6.jpg"
+    _save_jpeg_with_orientation(p, arr, 6)
+    with Image.open(p) as raw:
+        depth_in = np.array(ImageOps.exif_transpose(raw).convert("RGB"))
+    assert depth_in.shape == _load(p).original_image_data.shape

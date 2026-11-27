@@ -1463,7 +1463,12 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                                 else:
                                      alpha_u8 = np.clip(alpha, 0, 255).astype(np.uint8)
                             else:
-                                alpha_u8 = np.clip(alpha, 0, 255).astype(np.uint8)
+                                alpha_f32 = alpha.astype(np.float32)
+                                # 16-bit alpha (e.g. 16-bit RGBA PNG): scale by the
+                                # dtype max like _rgb_to_uint8_auto, don't clip.
+                                if alpha.dtype.kind == 'u' and alpha.size and alpha.max() > 255:
+                                    alpha_f32 *= 255.0 / float(np.iinfo(alpha.dtype).max)
+                                alpha_u8 = np.clip(alpha_f32, 0, 255).astype(np.uint8)
                             
                             # Manual Blending (Simple Arithmetic)
                             # Flatten alpha to 0.0-1.0

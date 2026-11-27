@@ -99,6 +99,29 @@ class CheckForUpdates(QThread):
             print(f"Update check failed: {e}")
 
 
+def _overlay_display_array(data):
+    """uint8 (H,W), (H,W,3) or (H,W,4) array for an overlay pixmap.
+
+    Non-uint8 RGB(A) (e.g. 16-bit PNG) goes through the same auto-stretch as
+    the main view; grayscale is stretched by its finite min..max (constant or
+    all-NaN images -> black). Returns None for unsupported shapes.
+    """
+    if data.ndim == 3 and data.shape[2] in (3, 4):
+        return np.ascontiguousarray(ZoomableDraggableLabel._rgb_to_uint8_auto(data))
+    if data.ndim != 2:
+        return None
+    if data.dtype == np.uint8:
+        return np.ascontiguousarray(data)
+    arr = data.astype(np.float64)
+    finite = arr[np.isfinite(arr)]
+    lo = float(finite.min()) if finite.size else 0.0
+    hi = float(finite.max()) if finite.size else 0.0
+    with np.errstate(invalid='ignore', over='ignore'):
+        out = (arr - lo) * (255.0 / (hi - lo)) if hi > lo else np.zeros_like(arr)
+        out = np.nan_to_num(out, nan=0.0, posinf=255.0, neginf=0.0)
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
     try:
@@ -430,7 +453,10 @@ class DA3Worker(QThread):
                     self.finished.emit(out_dir)
             else:
                 # Single Image Mode
-                img = Image.open(self.image_path).convert('RGB')
+                from PIL import ImageOps
+                # Match the displayed (EXIF-transposed) orientation.
+                with Image.open(self.image_path) as raw_img:
+                    img = ImageOps.exif_transpose(raw_img).convert('RGB')
                 img_np = np.array(img)
                 
                 # Run inference
@@ -3700,27 +3726,11 @@ class ImageViewer(QMainWindow):
                              temp_handler.load_image(source_path, override_settings=override)
                              
                              if temp_handler.original_image_data is not None:
-                                  data = temp_handler.original_image_data
-                                  if data.ndim == 2:
-                                      h, w = data.shape
-                                      # Normalize to uint8
-                                      img_8bit = ((data - data.min()) / (data.max() - data.min()) * 255).astype(np.uint8)
-                                      qimg = QImage(img_8bit.data, w, h, w, QImage.Format.Format_Grayscale8)
-                                      source_pixmap = QPixmap.fromImage(qimg)
-                                  elif data.ndim == 3:
-                                      if data.shape[2] == 3:
-                                          h, w, _ = data.shape
-                                          if not data.flags['C_CONTIGUOUS']:
-                                               data = np.ascontiguousarray(data)
-                                          qimg = QImage(data.data, w, h, 3*w, QImage.Format.Format_RGB888)
-                                          source_pixmap = QPixmap.fromImage(qimg)
-                                      elif data.shape[2] == 4:
-                                          h, w, _ = data.shape
-                                          if not data.flags['C_CONTIGUOUS']:
-                                               data = np.ascontiguousarray(data)
-                                          qimg = QImage(data.data, w, h, 4*w, QImage.Format.Format_RGBA8888)
-                                          source_pixmap = QPixmap.fromImage(qimg)
-                                      
+                                  disp = _overlay_display_array(temp_handler.original_image_data)
+                                  if disp is not None:
+                                      source_pixmap = QPixmap.fromImage(
+                                          ZoomableDraggableLabel._array_to_qimage(disp))
+
                         except Exception:
                              pass
                     
