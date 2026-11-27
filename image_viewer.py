@@ -823,7 +823,7 @@ class ImageViewer(QMainWindow):
         # Channel Selector
         self.channel_combo = QComboBox(self)
         self.channel_combo.addItem("Default")
-        self.channel_combo.currentTextChanged.connect(lambda: self.update_image_display(reset_view=False))
+        self.channel_combo.currentTextChanged.connect(self._on_channel_changed)
         toolbar.addWidget(QLabel("  Channel:", self))
         toolbar.addWidget(self.channel_combo)
         
@@ -984,6 +984,15 @@ class ImageViewer(QMainWindow):
                 self.channel_combo.setCurrentIndex(index)
 
         self.channel_combo.blockSignals(False)
+
+    def _on_channel_changed(self, *_):
+        """Channel / NPZ-key switch: the displayed array (and its value scale)
+        changes, so the previous contrast window no longer applies. Re-fit it
+        the same way a fresh open does (0-100% preset) instead of keeping the
+        old absolute limits (which could render the new data black/flat)."""
+        self.update_image_display(reset_view=False)
+        if self.active_label is not None and self.active_label.original_data is not None:
+            self._apply_histogram_preset(0, 100)
 
     def apply_channel_selection(self, image_data):
         """Slice image data based on selected channel option."""
@@ -2796,6 +2805,16 @@ class ImageViewer(QMainWindow):
                     self.channel_combo.blockSignals(False)
                     # Manually trigger the update
                     self.update_image_display(reset_view=False)
+                    # The contrast fitted above belongs to the first key's data;
+                    # re-fit it to the requested key (different value scale).
+                    percentiles = (maintain_view_state or {}).get('contrast_percentiles')
+                    if percentiles:
+                        new_limits = self._get_limits_from_percentiles(
+                            self.image_handler.original_image_data, percentiles)
+                        self.image_label.set_contrast_limits(*new_limits)
+                        self.update_histogram_data()
+                    else:
+                        self._apply_histogram_preset(0, 100)
 
             # Update thumbnail pane - ensure new image is in gallery
             if not self._updating_from_thumbnail:

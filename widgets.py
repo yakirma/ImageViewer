@@ -792,6 +792,51 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
         # .copy() makes the QImage own its buffer, so arr can be dropped.
         return QImage(arr.data, w, h, stride, fmt).copy()
 
+    @staticmethod
+    def _rgb_to_uint8_auto(data):
+        """Convert an (H,W,3|4) RGB(A) array to uint8 when no contrast limits
+        are set, without wrapping non-uint8 values modulo 256 (I14).
+
+        uint8 passes through; float data within [0, 1] is scaled by 255;
+        integer data already within [0, 255] passes through; anything else is
+        stretched by the global finite min..max over the RGB channels (the
+        same as the grayscale path and the single-view 0-100% preset).
+        Alpha: float within [0, 1] -> *255, otherwise clipped to [0, 255],
+        or scaled by the dtype max for unsigned integers above 255.
+        """
+        if data.dtype == np.uint8:
+            return data.astype(np.uint8)
+        arr = data.astype(np.result_type(data.dtype, np.float32), copy=False)
+        rgb = arr[..., :3]
+        finite = rgb[np.isfinite(rgb)]
+        lo = float(finite.min()) if finite.size else 0.0
+        hi = float(finite.max()) if finite.size else 0.0
+        is_float = data.dtype.kind == 'f'
+        offset, scale = 0.0, 1.0
+        if is_float and lo >= 0.0 and hi <= 1.0:
+            scale = 255.0
+        elif not is_float and lo >= 0.0 and hi <= 255.0:
+            pass
+        elif hi > lo:
+            offset, scale = lo, 255.0 / (hi - lo)
+        else:
+            offset = lo  # constant image -> black
+        with np.errstate(invalid='ignore', over='ignore'):
+            out = (rgb - offset) * scale
+            out = np.nan_to_num(out, nan=0.0, posinf=255.0, neginf=0.0)
+            out = np.clip(out, 0, 255).astype(np.uint8)
+            if data.shape[2] == 4:
+                alpha = arr[..., 3]
+                a_fin = alpha[np.isfinite(alpha)]
+                a_max = float(a_fin.max()) if a_fin.size else 0.0
+                if is_float and a_max <= 1.0:
+                    alpha = alpha * 255.0
+                elif data.dtype.kind == 'u' and a_max > 255.0:
+                    alpha = alpha * (255.0 / float(np.iinfo(data.dtype).max))
+                alpha = np.clip(np.nan_to_num(alpha, nan=255.0, posinf=255.0, neginf=0.0), 0, 255)
+                out = np.dstack([out, alpha.astype(np.uint8)])
+        return out
+
     def full_resolution_image(self):
         """The displayed (colormapped) image at the data's full resolution,
         even when current_pixmap is a downsampled proxy (I20)."""
@@ -1234,10 +1279,7 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
                     else:
                         processed_data = np.zeros_like(data, dtype=np.uint8)
                 else:
-                    processed_data = data.astype(np.uint8)
-                    # If data was float in [0, 1], rescale before truncation.
-                    if data.dtype.kind == 'f' and data.max() <= 1.0:
-                         processed_data = (data * 255).astype(np.uint8)
+                    processed_data = self._rgb_to_uint8_auto(data)
                 # QImage build deferred to the unified proxy/build section below.
 
             else:  # Grayscale / Colormapped
@@ -1257,36 +1299,30 @@ class ZoomableDraggableLabel(QOpenGLWidget): # Inherits QOpenGLWidget for GPU ac
 
 
                 with np.errstate(divide='ignore', invalid='ignore'):
+                    # Normalize to [0, 1]. With contrast limits, map the limits
+                    # (not the clipped data's own min/max) to 0 and 1, so limits
+                    # wider than the data keep their meaning and montage images
+                    # sharing limits render on a common scale (I13).
+                    # float32 for <=16-bit/float32 input, float64 for wider types.
+                    proc = processed_data.astype(np.result_type(processed_data.dtype, np.float32), copy=False)
                     if self.contrast_limits:
                         # Sanitize contrast limits: if not finite, fallback to defaults
                         raw_min, raw_max = self.contrast_limits
                         min_val = raw_min if np.isfinite(raw_min) else 0.0
                         max_val = raw_max if np.isfinite(raw_max) else 255.0
-
-                        # Use a copy to avoid modifying original_data
-                        processed_data = np.clip(processed_data, min_val, max_val)
-                        # Replace NaNs with min_val
-                        processed_data = np.nan_to_num(processed_data, nan=min_val)
-
-                    # Use nanmin/nanmax to be ultra-safe with any remaining non-finite values
-                    with np.errstate(divide='ignore', invalid='ignore'):
-                        # COMPLETELY sanitize processed_data for normalization
-                        # Replace non-finite with 0 to prevent internal subtract warnings
-                        safe_proc = np.nan_to_num(processed_data, nan=0.0, posinf=0.0, neginf=0.0)
-                        
-                        if safe_proc.size > 0:
-                            curr_min = np.nanmin(safe_proc)
-                            curr_max = np.nanmax(safe_proc)
-                        else:
-                            curr_min = curr_max = 0.0
-                    
-                    if curr_min == curr_max or not np.isfinite(curr_min) or not np.isfinite(curr_max):
-                        norm_data = np.zeros_like(processed_data, dtype=float)
                     else:
-                        with np.errstate(divide='ignore', invalid='ignore'):
-                            norm_data = (safe_proc - curr_min) / (curr_max - curr_min)
-                        # Final safety clamp
-                        norm_data = np.nan_to_num(norm_data, nan=0.0, posinf=1.0, neginf=0.0)
+                        finite = proc[np.isfinite(proc)]
+                        if finite.size > 0:
+                            min_val, max_val = float(finite.min()), float(finite.max())
+                        else:
+                            min_val = max_val = 0.0
+
+                    if max_val > min_val:
+                        norm_data = (proc - min_val) / (max_val - min_val)
+                        # NaN -> 0, +inf -> 1, -inf -> 0, then clamp to [0, 1].
+                        norm_data = np.clip(np.nan_to_num(norm_data, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+                    else:
+                        norm_data = np.zeros(proc.shape, dtype=float)
 
                     import matplotlib
                     colored_data = matplotlib.colormaps[self.colormap](norm_data)
