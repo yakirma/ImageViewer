@@ -5,6 +5,41 @@ import numpy as np
 from PIL import Image
 from utils import read_flow, flow_to_color
 
+
+def as_displayable(arr):
+    """Cast boolean arrays to uint8 0/1 so display/stat code (np.percentile,
+    histograms, colormaps) never sees numpy bool, which breaks subtraction.
+    Other arrays are returned unchanged."""
+    if isinstance(arr, np.ndarray) and arr.dtype == np.bool_:
+        return arr.astype(np.uint8)
+    return arr
+
+
+class _DisplayableNpz:
+    """Thin proxy over np.lib.npyio.NpzFile whose item access returns
+    display-safe arrays (bool -> uint8). Every other attribute (files, close,
+    fid, ...) is forwarded, so callers indexing ``handler.npz_data[key]``
+    (key switching, montage loads, thumbnails) get uint8 for bool keys."""
+
+    def __init__(self, npz_file):
+        self._npz = npz_file
+
+    def __getitem__(self, key):
+        return as_displayable(self._npz[key])
+
+    def __contains__(self, key):
+        return key in self._npz
+
+    def __iter__(self):
+        return iter(self._npz)
+
+    def __len__(self):
+        return len(self._npz)
+
+    def __getattr__(self, name):
+        return getattr(self._npz, name)
+
+
 # cv2 and pillow_heif are imported lazily — they're heavy native libs only
 # needed when opening videos / HEIC files. Deferring saves ~80 ms in dev
 # and several seconds of perceived startup in the frozen bundle.
@@ -204,7 +239,7 @@ class ImageHandler:
 
     def _load_npz_file(self, file_path):
         """Load NPZ file and extract image arrays."""
-        npz_file = np.load(file_path)
+        npz_file = _DisplayableNpz(np.load(file_path))
         try:
             # Store available keys and their validity
             keys = {}
@@ -779,4 +814,5 @@ class ImageHandler:
         if not isinstance(transformed_data, np.ndarray):
             raise ValueError("Expression must return a NumPy array.")
 
-        return transformed_data
+        # Comparisons (e.g. "x > 5") yield bool masks; show them as 0/1.
+        return as_displayable(transformed_data)
