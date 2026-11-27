@@ -6,46 +6,77 @@ import platform
 if platform.system() == "Windows":
     os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QFileDialog, QMessageBox, QSplitter
-from PyQt6.QtCore import Qt, QTimer, QEvent, QSize, pyqtSignal, QPoint
+from PyQt6.QtCore import Qt, QTimer, QEvent, QSize, pyqtSignal, QPoint, QObject
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QColor, QPalette
 from image_viewer import ImageViewer
 from single_instance import SingleInstance, absolute_paths
+
+class FileOpenBatcher(QObject):
+    """Collects paths from macOS FileOpen events and opens them together.
+
+    Finder delivers one FileOpen event per selected file, in quick
+    succession. Paths are buffered and, once no new path has arrived for
+    ``delay_ms``, handed to a single ``ImageViewer.open_files()`` call so
+    2-3 files become one montage instead of one window per file. If no
+    ImageViewer window exists yet (FileOpen events can arrive during a cold
+    start), the paths are kept and delivery is retried until one does.
+    """
+
+    RETRY_MS = 100
+
+    def __init__(self, delay_ms=50, parent=None):
+        super().__init__(parent)
+        self.delay_ms = delay_ms
+        self.file_buffer = []
+        self.open_timer = QTimer(self)
+        self.open_timer.setSingleShot(True)
+        self.open_timer.timeout.connect(self.flush)
+
+    def add(self, file_path):
+        if not file_path:
+            return
+        self.file_buffer.append(file_path)
+        self.open_timer.start(self.delay_ms)  # Wait for more files
+
+    @staticmethod
+    def _target_window():
+        app = QApplication.instance()
+        if app is None:
+            return None
+        active = app.activeWindow()
+        if isinstance(active, ImageViewer):
+            return active
+        viewers = [w for w in app.topLevelWidgets() if isinstance(w, ImageViewer)]
+        visible = [w for w in viewers if w.isVisible()]
+        return (visible or viewers or [None])[0]
+
+    def flush(self):
+        if not self.file_buffer:
+            return
+        target = self._target_window()
+        if target is None:
+            # Cold start: no window yet. Keep the files and try again.
+            self.open_timer.start(self.RETRY_MS)
+            return
+        files = list(self.file_buffer)
+        self.file_buffer.clear()
+        target.open_files(files)
+        target.raise_()
+        target.activateWindow()
+
 
 # Define Custom Application Class at module level
 class ImageViewerApp(QApplication):
     def __init__(self, argv):
         super().__init__(argv)
-        self.file_buffer = []
-        self.open_timer = QTimer()
-        self.open_timer.setSingleShot(True)
-        self.open_timer.timeout.connect(self._flush_file_buffer)
+        self.file_opener = FileOpenBatcher(parent=self)
 
     def event(self, event):
         if event.type() == QEvent.Type.FileOpen:
-            file_path = event.file()
-            if file_path:
-                self.file_buffer.append(file_path)
-                self.open_timer.start(50)  # Wait 50ms for more files
+            self.file_opener.add(event.file())
             return True
         return super().event(event)
-        
-    def _flush_file_buffer(self):
-        if not self.file_buffer:
-            return
-            
-        files = list(self.file_buffer)
-        self.file_buffer.clear()
-        
-        top_widgets = self.topLevelWidgets()
-        for widget in top_widgets:
-            if isinstance(widget, ImageViewer):
-                widget.open_files(files)
-                widget.raise_()
-                widget.activateWindow()
-                return
-        
-        # If no window found (unlikely if app is running), we could create one,
-        # but for this specific flow 'viewer' object usually exists.
+
 
 def _default_log_path():
     """Per-user log file location (e.g. ~/Library/Application Support/ImageViewer

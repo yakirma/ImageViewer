@@ -3673,30 +3673,12 @@ class ImageViewer(QMainWindow):
                 return True
             return False
         
-        # 2. Handle MacOS FileOpen Events
+        # 2. MacOS FileOpen events (Finder "Open With", Dock drops) are NOT
+        # handled here: this filter is installed app-wide, so consuming them
+        # would bypass ImageViewerApp.event (main.py), which batches the files
+        # of one Finder request into a single open_files() call (montage).
         elif event.type() == QEvent.Type.FileOpen:
-            # MacOS specific event for opening files (e.g. from Finder)
-            file_path = event.file()
-            
-            # Check if we can reuse an existing empty window
-            target_window = None
-            for win in self.window_list:
-                if not win.current_file_path:
-                    target_window = win
-                    break
-            
-            if target_window:
-                target_window.show()
-                target_window.raise_()
-                target_window.activateWindow()
-                target_window.open_file(file_path)
-            else:
-                # All windows full, create new one
-                new_window = self.__class__(window_list=self.window_list)
-                new_window.show()
-                new_window.open_file(file_path)
-            
-            return True
+            return False
 
         return super().eventFilter(source, event)
 
