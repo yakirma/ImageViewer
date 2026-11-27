@@ -533,6 +533,9 @@ class ImageViewer(QMainWindow):
         self.montage_shared_state = None
         self.montage_labels = []
         self.active_label = None
+        # (signal, slot) pairs wired to the current active label by
+        # _update_active_view; disconnected exactly on the next switch.
+        self._active_label_connections = []
 
         screen_geometry = self.screen().geometry()
         self.resize(int(screen_geometry.width() * 0.55), screen_geometry.height() // 2)
@@ -1307,6 +1310,9 @@ class ImageViewer(QMainWindow):
         self.histogram_window = HistogramWidget()
         self.histogram_window.hide()
         self.histogram_window.use_visible_checkbox.toggled.connect(lambda: self.update_histogram_data(new_image=False))
+        # Connected once here; set_contrast_limits routes to whichever label
+        # is active, so it never needs rewiring on active-label switches.
+        self.histogram_window.region_changed.connect(self.set_contrast_limits)
 
         # Debounce the histogram recompute so it doesn't run on every pan pixel.
         # The active label's view_changed signal restarts this timer; it then
@@ -1605,23 +1611,23 @@ class ImageViewer(QMainWindow):
                 pass
         self._update_active_view()
 
+    def _disconnect_active_label_signals(self):
+        for signal, slot in self._active_label_connections:
+            try:
+                signal.disconnect(slot)
+            except (TypeError, RuntimeError):
+                # Already disconnected, or the label's C++ object is gone.
+                pass
+        self._active_label_connections = []
+
     def _update_active_view(self, reset_histogram=True):
         if not self.active_label:
             return
 
-        # Disconnect all signals first to prevent multiple connections
-        try:
-
-            self.image_label.zoom_factor_changed.disconnect()
-            self.image_label.hover_moved.disconnect()
-            self.image_label.view_changed.disconnect()
-            for label in self.montage_labels:
-                label.zoom_factor_changed.disconnect()
-                label.hover_moved.disconnect()
-                label.view_changed.disconnect()
-            self.histogram_window.region_changed.disconnect()
-        except TypeError:
-            pass
+        # Disconnect exactly what we wired to the previous active label. Each
+        # disconnect is independent so one failure (e.g. a deleted montage
+        # label) can't leave the rest connected and let slots pile up.
+        self._disconnect_active_label_signals()
 
         # Enable relevant tools/actions
         self.histogram_action.setEnabled(True)
@@ -1643,14 +1649,20 @@ class ImageViewer(QMainWindow):
             self.info_pane.set_raw_mode(m.get('is_raw', False))
         
         # Connect signals for the active label
-        self.active_label.zoom_factor_changed.connect(self._on_image_label_zoom_changed)
-        
+        label = self.active_label
+        connections = [
+            (label.zoom_factor_changed, self._on_image_label_zoom_changed),
+            (label.view_changed, self._on_view_changed_debounced),
+        ]
+        # Montage labels already get hover -> status bar at creation time.
+        if not any(label is m for m in self.montage_labels):
+            connections.append((label.hover_moved, self.update_status_bar))
+        for signal, slot in connections:
+            signal.connect(slot)
+        self._active_label_connections = connections
+
         # Ensure overlay is correct (e.g. if switching views)
         self._update_overlay_labels()
-
-        self.active_label.hover_moved.connect(self.update_status_bar)
-        self.active_label.view_changed.connect(self._on_view_changed_debounced)
-        self.histogram_window.region_changed.connect(self.set_contrast_limits)
 
         self.colormap_combo.setEnabled(True)
         self.update_channel_options()
