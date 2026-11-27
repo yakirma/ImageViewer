@@ -26,6 +26,7 @@ def _expected(lo, hi):
 
 def _assert_fits(v, lo, hi):
     got = _xrange(v)
+    lo, hi = float(lo), float(hi)
     exp = _expected(lo, hi)
     tol = (hi - lo) * 1e-3 + 1e-9
     assert got[0] == pytest.approx(exp[0], abs=tol)
